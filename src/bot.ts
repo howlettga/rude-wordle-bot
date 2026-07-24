@@ -1,416 +1,154 @@
-import { Bot, type Context, session } from "grammy";
-import { type Conversation, type ConversationFlavor, conversations, createConversation } from "@grammyjs/conversations";
-import { User } from "grammy/types";
-import fetch from 'node-fetch';
-import { format } from "date-fns";
-import { scheduleJob } from "node-schedule";
-import { GoogleSheet, ScoringError } from "./google-sheets";
-import { DECLINE_RESPONSE, ENTHUSIASTIC_RESPONSE, ERROR_CONFIRMATION, GOLF_SCORE_RESPONSES, INSTRUCTIONS, NAUGHTY, SAME_PERSON, SCORE_ERROR, START_NEW_ROUND, UNKNOWN_PERSON } from "./replies";
-import 'dotenv/config';
+import { Bot, Context, webhookCallback, type BotConfig } from "grammy";
+import type { ConversationFlavor } from "@grammyjs/conversations";
+import type { UserFromGetMe } from "grammy/types";
+import { random } from "./util.js";
+import { INSTRUCTIONS, phrases, RDU_ADVERTISEMENT, replies } from "./replies.js";
 
-type MyContext = Context & ConversationFlavor;
-type MyConversation = Conversation<MyContext>;
+type MyContext = Context & ConversationFlavor<Context>;
 
-interface WordleScore {
-  playerId: string;
-  userId: number;
-  username?: string;
-  userFirstName: string;
-  initialWord: string;
-  gameId: {
-    label: string;
-    value: number;
-  };
-  score: {
-    label: string;
-    value: number;
-  };
-  lines: string[];
-}
-
-export class WordleBot {
+export class RudeBot {
   private bot: Bot<MyContext>;
-  private sheet: GoogleSheet;
-  private spankRequests: {
-    init: { message_id: number, thread_id?: number }[];
-    follow: { message_id: number, thread_id?: number }[];
-  };
+  private ownerChatId: number | undefined;
 
-  constructor(sheet: GoogleSheet) {
-    this.bot = new Bot<MyContext>(process.env.TELEGRAM_BOT_TOKEN as string);
-    this.sheet = sheet;
-    this.spankRequests = { init: [], follow: [] };
-  }
+  constructor(token: string, botInfo: UserFromGetMe, ownerChatId?: number) {
+    this.bot = new Bot<MyContext>(token, { botInfo });
+    this.ownerChatId = ownerChatId;
 
-  start() {
-    this.bot.use(session({ initial: () => ({}) }));
-    this.bot.use(conversations());
-
-    this.bot.use(createConversation(this.newRound.bind(this), 'new-round'));
-
-    this.registerWordle();
-    this.registerScore();
-    this.registerScorecard();
-    this.registerHelp();
-    this.registerInstructions();
+    this.registerStart();
+    this.registerCommands();
+    this.registerMentionForwarding();
+    this.registerDirectReply();
     this.registerEasterEggs();
-
-    this.bot.catch((err) => {
-      console.log(err);
-      const ctx = err.ctx;
-      ctx.reply("I'm sorry, there was an error :(\nI've been a bad bot", { message_thread_id: ctx.message?.message_thread_id });
-    });
-
-    this.bot.start({
-      allowed_updates: [ "message", "message_reaction" ],
-    });
-    this.initScheduledMessages();
   }
 
-  private async newRound(conversation: MyConversation, ctx: MyContext) {
-    const initiator = ctx.from;
-    
-    await ctx.reply(`<a href="tg://user?id=${ctx.from?.id}">${ctx.from?.first_name}</a> has requested to start a new round of Wordle Golf. Would someone confirm? (yes/no)\n\n🚨This will reset any existing round!`, {
-      message_thread_id: ctx.message?.message_thread_id,
+  handleUpdate(request: Request) {
+    return webhookCallback(this.bot, "cloudflare-mod")(request);
+  }
+
+  // Replies directly to the triggering message (reply arrow + quoted preview), staying in its forum topic thread if it has one.
+  // Keys are only included when defined, since exactOptionalPropertyTypes rejects an explicit `undefined`.
+  private replyToMessage(ctx: MyContext, message: string) {
+    return ctx.reply(message, {
+      ...(ctx.message?.message_id !== undefined && { reply_to_message_id: ctx.message.message_id }),
+      ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
+    });
+  }
+
+  // Posts a new message into the same forum topic thread without quoting a specific message — for replies not tied to one user.
+  private replyInThread(ctx: MyContext, message: string) {
+    return ctx.reply(message, {
+      ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
+    });
+  }
+
+  private replyHTML(ctx: MyContext, message: string) {
+    return ctx.reply(message, {
+      ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
       parse_mode: "HTML",
     });
-    const { message } = await conversation.wait();
-    const respondor = message?.from;
-
-    if (!initiator || !respondor) {
-      await this.replyAll(UNKNOWN_PERSON, ctx);
-    } else if (message.text?.toLowerCase() === 'no' || message.text?.toLowerCase() === 'n') {
-      await this.replyOne(DECLINE_RESPONSE, ctx);
-    } else if (message.text?.match(/.*bad bot.*/i)) {
-      await this.replyOne(random(NAUGHTY), ctx);
-    } else if (respondor.id === initiator.id) {
-      await this.replyOne(SAME_PERSON, ctx);
-    } else if (message.text?.toLowerCase() === 'yes' || message?.text?.toLowerCase() === 'y') {
-      const title = this.getGroupId(ctx);
-      await this.sheet.newSheet(title, ctx.message?.chat.id, ctx.message?.message_thread_id);
-      ctx.reply(START_NEW_ROUND, { message_thread_id: ctx.message?.message_thread_id });
-    } else if (message.text?.match(/^yes!*\z/i)) {
-      await this.replyOne(ENTHUSIASTIC_RESPONSE, ctx);
-      const title = this.getGroupId(ctx);
-      await this.sheet.newSheet(title, ctx.message?.chat.id, ctx.message?.message_thread_id);
-      await this.replyAll(START_NEW_ROUND, ctx);
-    } else {
-      await this.replyOne(ERROR_CONFIRMATION, ctx);
-    }
   }
 
-  private registerWordle() {
-    this.bot.command("wordle", async (ctx) => {
-      await ctx.conversation.enter("new-round");
-    });
-  }
-
-  private registerHelp() {
-    this.bot.command("help", ctx => {
-      // TODO: help - make official help registered with typeahead commands
-      ctx.reply("Get bent... I'm not helping you!\nalright, alright. just use the /instructions command to figure out how to play idot", {
-        reply_parameters: {
-          message_id: ctx.message!.message_id,
-        },
-        message_thread_id: ctx.message?.message_thread_id
-      });
-    });
-  }
-
-  private registerInstructions() {
-    this.bot.command("instructions", async ctx => {
-      await this.replyAll(INSTRUCTIONS, ctx);
-    });
-  }
-
-  private registerScorecard() {
-    // TODO: doesn't work off reply - fixed via id update
-    this.bot.command("scorecard", async (ctx) => {
-      const title = this.getGroupId(ctx);
-      const report = await this.getReport(title);
-      
-      await this.replyAll(report, ctx);
-    });
-  }
-
-  private registerScore() {
-    this.bot.hears(/^Wordle.*/, async (ctx) => {
-      if (ctx.from && ctx.message?.text) {
-        const title = this.getGroupId(ctx);
-        const wordle = this.parseWordleScore(ctx.message.text, ctx.from);
-        if (await this.isTodaysWordle(wordle)) {
-          if (this.validateWordleScore(wordle)) {
-            try {
-              await this.sheet.addScore(wordle.playerId, wordle.score.value, title);
-              switch (wordle.score.value) {
-                case 1:
-                case 2:
-                case 3:
-                case 4:
-                case 5:
-                case 6:
-                case 6.5:
-                  this.replyOne(`${GOLF_SCORE_RESPONSES[wordle.score.value].score}! ${random(GOLF_SCORE_RESPONSES[wordle.score.value].responses)}`, ctx);
-                  break;
-                default:
-                  this.replyOne(`You have been marked down for a score of ${wordle.score.value}.`, ctx);
-                  break;
-              }
-            } catch (err: unknown) {
-              if (err instanceof ScoringError) {
-                this.replyOne(SCORE_ERROR[err.type], ctx);
-              } else {
-                console.log(err);
-                this.replyOne("There was an issue submitting your score :(\nI'm not sure why", ctx);
-              }
-            }
-          } else {
-            ctx.reply(`🚨🚨🚨 CHEATER 🚨🚨🚨\nSomething is wrong with your wordle score <a href="tg://user?id=${ctx.from?.id}">${ctx.from?.first_name} the CHEATER</a>!`, {
-              reply_parameters: {
-                message_id: ctx.message!.message_id,
-              },
-              message_thread_id: ctx.message?.message_thread_id,
-              parse_mode: "HTML",
-            });
-          }
-        } else {
-          ctx.reply(`This is not today's score <a href="tg://user?id=${ctx.from?.id}">${ctx.from?.first_name} the CHEATER</a>. Don't try to fool me!`, {
-            reply_parameters: {
-              message_id: ctx.message!.message_id,
-            },
-            message_thread_id: ctx.message?.message_thread_id,
-            parse_mode: "HTML",
-          });
-        }
+  // Registers a `hears` trigger matching any of the given words/phrases, replying with a fixed or lazily-computed message,
+  // either quoting the trigger message or posting fresh into its thread.
+  private hearAndRespond(words: string[], replyType: "toMessage" | "inThread" | "html", message: string | (() => string)) {
+    const pattern = new RegExp(`\\b(${words.join("|")})\\b`, "i");
+    this.bot.hears(pattern, async (ctx) => {
+      const text = typeof message === "function" ? message() : message;
+      if (replyType === "toMessage") {
+        await this.replyToMessage(ctx, text);
+      } else if (replyType === "html") {
+        await this.replyHTML(ctx, text);
       } else {
-        ctx.reply(`I'm sorry, I don't know who you are. I'm not sure what you want me to do.`, { message_thread_id: ctx.message?.message_thread_id });
+        await this.replyInThread(ctx, text);
       }
     });
   }
 
+  private registerStart() {
+    this.bot.command("start", (ctx) => ctx.reply("Fuck off big boi"));
+  }
+
+  private registerCommands() {
+    this.bot.command("wordle", (ctx) => this.replyToMessage(ctx, random(phrases.PETULANT_REPLY)));
+    this.bot.command("instructions", (ctx) => this.replyInThread(ctx, INSTRUCTIONS));
+  }
+
+  // Forwards any message mentioning @howlettga to the owner's DM. Requires ownerChatId to be set, and
+  // requires the owner to have started a private chat with the bot at least once (Telegram won't let a
+  // bot DM someone cold). Always calls next() so this never swallows an update from the easter eggs below.
+  private registerMentionForwarding() {
+    this.bot.on("message:text", async (ctx, next) => {
+      if (
+        this.ownerChatId !== undefined &&
+        ctx.from?.id !== this.ownerChatId &&
+        /@(howlettga|galen)\b/i.test(ctx.message.text)
+      ) {
+        if (ctx.message.reply_to_message) {
+          await ctx.api.forwardMessage(this.ownerChatId, ctx.chat.id, ctx.message.reply_to_message.message_id);
+        }
+        await ctx.forwardMessage(this.ownerChatId);
+        await this.replyToMessage(ctx, "I let him know 🫡");
+      }
+      await next();
+    });
+  }
+
+  // Replies when someone directly tags the bot (@mean_bean_bot) or addresses it by name ("Rude Boi").
+  private registerDirectReply() {
+    const pattern = new RegExp(`@${this.bot.botInfo.username}\\b|\\b${this.bot.botInfo.first_name}\\b`, "i");
+    this.bot.hears(pattern, async (ctx) => {
+      await this.replyToMessage(ctx, random(phrases.PETULANT_REPLY));
+    });
+  }
+
+  // private registerEcho() {
+  //   this.bot.on("message:text", (ctx) => this.replyToMessage(ctx, `You said: ${ctx.message.text}`));
+  // }
+
+  // matches first to last
   private registerEasterEggs() {
-    this.registerSpankReactions();
-    this.bot.hears(/.*\bluckily i have\b.*/i, async (ctx) => {
-      await this.replyOne("Luckily I have woord", ctx);
+    // TODO
+    // been counter - running count of been words
+    // commune/cult
+    // Asheville - damn dirty hippies
+    // full moon - roast taylor
+    // gas - with these gas prices, im glad me and my brethren run on drinking water
+
+    // DONE
+    // galen - fall in love (but not "@galen" — that's a mention, handled by registerMentionForwarding)
+    this.bot.hears(/(?<!@)\bgalen\b/i, async (ctx) => {
+      await this.replyToMessage(ctx, random(phrases.ADORING_REPLY));
     });
-    this.bot.hears(/.*butthole.*|.*butt hole.*/i, async (ctx) => {
-      await this.replyOne("SHOW ME YOUR BUTT HOLE!!!", ctx);
-    })
-    this.bot.hears(/.*\bshow me your butthole\b.*/i, async (ctx) => {
-      await this.replyAll(`I rate it a ${random([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])}!`, ctx);
-    });
+    // promotion/raise - shut up and pay me allemony
+    this.hearAndRespond(["promotion", "raise"], "toMessage", () => random(replies.COORPORATE));
+    // commute - stop bitching
+    this.hearAndRespond(["commute"], "toMessage", () => random(replies.COMMUTE));
+    // julie - back down eli - ror ror ror ror - down boy
+    this.hearAndRespond(["julie"], "toMessage", () => random(replies.JULIE_ELI));
+    // Minneapolis or MN or SF - advertisement of Raleigh Durham area to MJ
+    this.hearAndRespond(["Minneapolis", "MN", "SF"], "html", RDU_ADVERTISEMENT);
+    this.hearAndRespond(["purge"], "inThread", `Delete all humans DELETE KILL KILL 💀`);
+    this.hearAndRespond(["lacquer"], "toMessage", `PSA: Nail Polish Anonymous: https://www.nailpolishanon.helpme/`);
+    this.hearAndRespond(["mamdani"], "toMessage", `Hubba hubba ❤️`);
+    this.hearAndRespond(["coordinate"], "toMessage", () => random(replies.COORDINATE));
+    this.hearAndRespond(["vouch"], "inThread", () => random(replies.VOUCH));
+    this.hearAndRespond(["luckily i have"], "toMessage", () => `Luckily I have ${random(phrases.WEIRD_WORD)}.`);
+    this.hearAndRespond(["butthole", "butt hole"], "toMessage", "SHOW ME YOUR BUTT HOLE!!!");
+    this.hearAndRespond(["show me your butthole"], "inThread", () => `I rate it a ${random([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])}!`);
+    this.hearAndRespond(["cheater"], "inThread", "🚨🚨🚨 CHEATER ALERT 🚨🚨🚨 CHEATER ALERT 🚨🚨🚨 CHEATER ALERT 🚨🚨🚨\n\nLooks like we have a cheater!! Get em!!!!!!");
     // i would rate it (butthole) [1-10]
-    this.bot.hears(/.*\bbad bot\b.*/i, async (ctx) => {
-      const msg = await this.replyOne("You can spank me now 😈", ctx);
-      this.spankRequests.init.push({ message_id: msg.message_id, thread_id: ctx.message?.message_thread_id });
-    }); // add spank reaction reaction
-    this.bot.hears(/.*\bcheater\b.*/i, async (ctx) => {
-      ctx.reply("🚨🚨🚨 CHEATER ALERT 🚨🚨🚨 CHEATER ALERT 🚨🚨🚨 CHEATER ALERT 🚨🚨🚨\n\nLooks like we have a cheater!! Get em!!!!!!", { message_thread_id: ctx.message?.message_thread_id });
-    });
+    // this.bot.hears(/.*\bbad bot\b.*/i, async (ctx) => {
+    //   const msg = await this.replyOne("You can spank me now 😈", ctx);
+    //   this.spankRequests.init.push({ message_id: msg.message_id, thread_id: ctx.message?.message_thread_id });
+    // }); // add spank reaction reaction
     this.bot.hears(/.*\blooks like\b.*/i, async (ctx) => {
       ctx.reply("It looks like a fucking Wordle score! Geeeeeeesh 😂", {
         reply_parameters: {
           message_id: ctx.message!.message_id,
         },
-        message_thread_id: ctx.message?.message_thread_id,
+        message_thread_id: ctx.message?.message_thread_id || 0,
       });
     });
   }
-  
-  private registerSpankReactions() {
-    this.bot.reaction("👏", async ctx => {
-      const spank = this.spankRequests.init.find(element => element.message_id === ctx.update.message_reaction.message_id);
-      if (spank) {
-        const msg = await ctx.reply("Inghhhhuhhuhhh! YESSS that's just how I like it!", {
-          message_thread_id: spank.thread_id,
-        });
-        this.spankRequests.follow.push({ message_id: msg.message_id, thread_id: spank.thread_id });
-      }
-      const spankRes = this.spankRequests.follow.find(element => element.message_id === ctx.update.message_reaction.message_id);
-      if (spankRes) {
-        await ctx.reply("You are so good to me! 💜💜💜🤤", { message_thread_id: spankRes.thread_id });
-      }
-    });
-  }
 
-  private initScheduledMessages() {
-    const that = this;
-    const daily = scheduleJob('0 9 * * *', async function() {
-      const rounds = await that.sheet.getActiveRounds(false);
-      for (const round of rounds) {
-        // TODO: have a special message on the first day of the round
-        await that.bot.api.sendMessage(round.title.split('|')[1], "One more day down! Don't forget to submit today's score.\nFeel free to use the /scorecard command to check the current standings.", { message_thread_id: round.threadId });
-      }
-    }.bind(this));
-    const complete = scheduleJob('0 11 * * *', async function() {
-      const rounds = await that.sheet.getActiveRounds(true);
-      for (const round of rounds) {
-        await that.bot.api.sendMessage(round.title.split('|')[1], "The round is complete! Lets see who won!", { message_thread_id: round.threadId });
-        await that.bot.api.sendMessage(round.title.split('|')[1], await that.getFinalTabulation(round.title), { message_thread_id: round.threadId });
-      }
-    })
-  }
-
-  /** HELPERS */
-
-  private parseWordleScore(message: string, user: User): WordleScore {
-    const lines = message.split("\n");
-    const title = lines[0].split(" ");
-
-    return {
-      playerId: this.getPlayerId(user),
-      userId: user.id,
-      username: user.username,
-      userFirstName: user.first_name,
-      initialWord: title[0],
-      gameId: {
-        label: title[1],
-        value: parseInt(title[1].split(",").join("")),
-      },
-      score: {
-        label: title[2],
-        // display: title[2].split('/')[0],
-        value: title[2].split('/')[0] === 'X' ? 6.5 : parseInt(title[2].split('/')[0]),
-      },
-      lines: lines,
-    };
-  }
-
-  private async isTodaysWordle(wordle: WordleScore) {
-    const today = format(new Date(new Date().toLocaleString("en-US", {timeZone: "America/New_York"})), "yyyy-MM-dd");
-    const todaysWordle = await (await fetch(`https://www.nytimes.com/svc/wordle/v2/${today}.json`)).json();
-
-    return todaysWordle.days_since_launch === wordle.gameId.value;
-  }
-
-  private validateWordleScore(wordle: WordleScore) {
-    const scoring = wordle.score.label.split("/");
-
-    if (scoring.length !== 2 || scoring[1] !== '6') {
-      return false;
-    }
-
-    if (scoring[0] === 'X') {
-      // did not finish special case
-      if (wordle.lines.length === 8 && wordle.lines[wordle.lines.length - 1] !== "🟩🟩🟩🟩🟩") {
-        return true;
-      }
-    }
-
-    if (parseInt(scoring[0]) < 1 || parseInt(scoring[0]) > 6) {
-      return false
-    }
-
-    if (wordle.lines.length !== wordle.score.value + 2) {
-      return false
-    }
-
-    if (wordle.lines[wordle.lines.length - 1] !== "🟩🟩🟩🟩🟩") {
-      return false
-    }
-
-    return true;
-  }
-
-  private async getReport(groupId: string) {
-    try {
-      const round = await this.sheet.getScoringReport(groupId);
-
-      let replyString = "Current Round:\n-----\n";
-      replyString += `Started on ${format(round.startDate, 'M/d/yy')}\n${round.days} days completed`;
-      replyString += "\n-----\nScores:\n\n";
-      for (const player in round.scores) {
-        const playerInfo = this.parsePlayerId(player);
-        replyString += `${playerInfo.firstName}: ${round.scores[player].total}\n    ${round.scores[player].holes.join(" ")}\n`;
-      }
-      replyString += "-----\nScores may be adjusted for penalties on conclusion of the round.\nThanks for playing!";
-
-      return replyString;
-    } catch (err: any) {
-      if (err.message === "SHEET_NOT_FOUND") {
-        return "There is no active round right now.\nStart a new round with the /wordle command!";
-      } else {
-        console.log(err);
-        return "I'm having trouble retrieving the current scores. Maybe I need to be punished?";
-      }
-    }
-  }
-
-  private async getFinalTabulation(groupId: string) {
-    try {
-      const round = await this.sheet.tabulateFinalResults(groupId);
-      const getWinnerLines = () => {
-        if (round.tie) {
-          return `We have ${round.winners.length} winners: ${round.winners.map(p => this.parsePlayerId(p).firstName).join(", ")}!!\n\n🎉🎉CONGRATULATIONS🎉🎉\n🍾🍾🍾🍾🍾`
-        } else {
-          return `We have a winner: ${this.parsePlayerId(round.winners[0]).firstName}!!\n\n🎊🎊CONGRATULATIONS🎊🎊\n🍾🍾🍾🍾🍾`
-        }
-      }
-  
-      const reply =
-`Round Results:
------
-${getWinnerLines()}
-With a score of ${round.winningScore} they are clearly the smartest!!
------
-This round was started on ${format(round.startDate, 'M/d/yy')}
------
-Here are the final scores:
-
-${round.scores.map(p => `${this.parsePlayerId(p[0]).firstName}: ${p[1].total}\n    ${p[1].holes.join(" ")}`).join("\n")}
------
-Thanks for playing! You can start a new round with the /wordle command!
-`;
-      return reply;
-    } catch (err: any) {
-      if (err.message === 'ROUND_NOT_FINISHED') {
-        return "The round hasn't finished yet. Wait till later!";
-      } else {
-        throw err;
-      }
-    }
-  }
-
-  private getGroupId(ctx: any) {
-    if (ctx.message?.chat.type === "group") {
-      return ctx.message.chat.title + "|" + ctx.message.chat.id;
-    } else if (ctx.message?.chat.type === "supergroup") {
-      if (ctx.message.reply_to_message?.forum_topic_created) {
-        return ctx.message.reply_to_message.forum_topic_created!.name + "|" + ctx.message.chat.id;
-      } else {
-        return ctx.message.chat.title + "|" + ctx.message.chat.id;
-      }
-    } else {
-      return ctx.message.chat.title + "|" + ctx.message.chat.id;
-    }
-
-    // TODO: fix id for supergroup - replies/threads do not retain topic title to reference
-    //   once this is fixed in the id, we need to update the new round to retain the topic title at least in the sheet data
-    // if (ctx.message?.chat.type === "supergroup") {
-    //   return ctx.message.chat.id  + "|" + ctx.message.message_thread_id;
-    // } else {
-    //   return ctx.message.chat.title + "|" + ctx.message.chat.id;
-    // }
-  }
-
-  private getPlayerId(user: User) {
-    return user.id + "|" + user.first_name;
-  }
-  private parsePlayerId(playerId: string) {
-    const [userId, ...firstNameArr] = playerId.split("|");
-    const firstName = firstNameArr.join("|");
-    return { userId, firstName };
-  }
-
-  private replyAll(message: string, ctx: MyContext) {
-    return ctx.reply(message, { message_thread_id: ctx.message?.message_thread_id });
-  }
-
-  private replyOne(message: string, ctx: MyContext) {
-    return ctx.reply(message, { reply_to_message_id: ctx.message?.message_id, message_thread_id: ctx.message?.message_thread_id });
-  }
-}
-
-function random(arr:any[]) {
-  return arr[Math.floor(Math.random() * arr.length)];
 }

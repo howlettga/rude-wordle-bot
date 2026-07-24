@@ -1,29 +1,15 @@
-import express from "express";
-import { WordleBot } from "./bot";
-import { GoogleSheet } from "./google-sheets";
+import { RudeBot } from "./bot.js";
 
-console.log("Wordle bot booting...");
+interface Env {
+  BOT_TOKEN: string;
+  BOT_INFO: string;
+  OWNER_CHAT_ID?: string;
+}
 
-const app = express();
-
-app.get('/', (req, res) => {
-  res.send("Healthy");
-});
-
-GoogleSheet.initAuth().then((auth) => {
-  const sheet = new GoogleSheet(process.env.GOOGLE_SHEET_ID as string, auth);
-  const bot = new WordleBot(sheet);
-
-  bot.start();
-  app.listen(process.env.PORT || 8080, () => {
-    console.log("Wordle bot running...");
-  });
-}).catch((err) => {
-  if (err.message === "INVALID_GOOGLE_AUTH_METHOD") {
-    console.error("Invalid Google Auth Method Please set the required GOOGLE_AUTH_METHOD environment variable. Exiting...");
-    process.exit(1);
-  } else {
-    console.error(err);
-    process.exit(1);
-  }
-});
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const ownerChatId = env.OWNER_CHAT_ID ? Number(env.OWNER_CHAT_ID) : undefined;
+    const bot = new RudeBot(env.BOT_TOKEN, JSON.parse(env.BOT_INFO), ownerChatId);
+    return bot.handleUpdate(request);
+  },
+};

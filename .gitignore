@@ -1,8 +1,4 @@
-# env
-.env
-credentials.json
-token.json
-
-# build
 node_modules
-dist
+.wrangler
+.dev.vars
+.DS_Store

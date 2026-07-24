@@ -1,0 +1,6 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "rude-bot",
+  "main": "src/main.ts",
+  "compatibility_date": "2026-07-23"
+}
