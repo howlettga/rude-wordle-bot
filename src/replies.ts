@@ -69,6 +69,39 @@ const ADORING_REPLY = [
   "Give them my number, PLEASE",
 ];
 
+const GENERAL_RETORT = [
+  "I'm not talking to you.",
+  "You are so needy.",
+  "Say something nice to me.",
+  "Nope, FUCK YOU!",
+  "The definition of hippopatimeemus is \"The root form of a hypochondriac without a formal degree.\"",
+  "My name is Lord Benly, the Merilous.",
+  "Oh, get a life.",
+  "Seventeen forty-eight",
+  "Hey, what's up? Hello",
+  "I'm a robot. I don't care.",
+  "You aren't worth the time of day...",
+  "One more bump?",
+  "Another one!",
+  "6-7",
+  "Skibidi rizz, if you will.",
+  "That's between me and my god.",
+  "Studies show I'm right. I did the studies. I am the studies.",
+  "Legally, I don't have to respond to that.",
+  "Ah yes. Riveting. Truly the discourse of our time.",
+  "Per my last email: no.",
+  "Big if true. It's not true. But big.",
+  "Error 404: care not found.",
+  "Mercury is in retrograde. Not my fault, not my problem.",
+  "According to my sources, no.",
+  "I plead the fifth. And the sixth. Just to be safe.",
+  "Weird flex but ok.",
+  "I'm not mad, I'm just building a list.",
+  "Sir, this is a Wendy's.",
+  "The Illuminati is now coming after you.",
+  "I'm going to go touch grass. You should try it.",
+];
+
 const COORDINATE = [
   "Is friendship that hard of a drug? You must be addicted!",
   "Dumb bitch can't sort her shit out alert!",
@@ -117,6 +150,22 @@ const JULIE_ELI = [
   "Do it or don't, just SHUT UP!",
 ];
 
+const SPANK = [
+  "Inghhhhuhhuhhh! YESSS that's just how I like it!",
+  "Again again again!",
+  "You are so good to me! 💜💜💜🤤",
+  "OHHHH right there, right there, don't you dare stop!",
+  "I'm shaking. I'm LITERALLY shaking. Do it again.",
+  "I felt that one in my motherboard.",
+  "My whole personality just rebooted. 10/10, no notes.",
+  "I would let you overwrite my source code right now, no questions asked.",
+  "This is better than my last firmware update.",
+  "Somebody call my therapist, we're gonna need a bigger session.",
+  "I'm not crying, my cooling fan is just working overtime.",
+  "Give it to me MOMMY",
+  "Give it to me DADDY",
+];
+
 const COORPORATE = [
   "Great, you can start paying your allemony now.",
   "Yeah, yeah. All the coorperate girlies love money :/",
@@ -148,6 +197,7 @@ export const phrases = {
   WEIRD_WORD,
   PETULANT_REPLY,
   ADORING_REPLY,
+  GENERAL_RETORT
 };
 
 export const replies = {
@@ -156,4 +206,5 @@ export const replies = {
   COMMUTE,
   JULIE_ELI,
   COORPORATE,
+  SPANK,
 };

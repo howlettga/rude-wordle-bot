@@ -2,5 +2,18 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "rude-bot",
   "main": "src/main.ts",
-  "compatibility_date": "2026-07-23"
+  "compatibility_date": "2026-07-23",
+  "rules": [
+    { "type": "Data", "globs": ["**/*.jpg"], "fallthrough": true }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "BEEN_COUNTER", "class_name": "BeenCounter" },
+      { "name": "SPANK_CHAIN", "class_name": "SpankChain" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["BeenCounter"] },
+    { "tag": "v2", "new_sqlite_classes": ["SpankChain"] }
+  ]
 }

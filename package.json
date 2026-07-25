@@ -3,7 +3,7 @@
   "description": "A telegram bot that interprets and scores Wordle games to play Wordle Golf",
   "private": true,
   "type": "module",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "scripts": {
     "dev": "wrangler dev --tunnel",
     "deploy": "wrangler deploy"

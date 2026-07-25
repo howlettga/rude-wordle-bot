@@ -1,67 +1,38 @@
-import { Bot, Context, webhookCallback, type BotConfig } from "grammy";
+import { Bot, Context, InputFile, webhookCallback, type BotConfig } from "grammy";
 import type { ConversationFlavor } from "@grammyjs/conversations";
 import type { UserFromGetMe } from "grammy/types";
 import { random } from "./util.js";
 import { INSTRUCTIONS, phrases, RDU_ADVERTISEMENT, replies } from "./replies.js";
+import type { StorageService } from "./storage-service.js";
+import beenMentionedPhoto from "../assets/beens_mentioned.jpg";
+import beenMentionedPhoto2 from "../assets/beens_mentioned_2.jpg";
+
+const BEEN_PHOTOS = [beenMentionedPhoto, beenMentionedPhoto2];
 
 type MyContext = Context & ConversationFlavor<Context>;
 
 export class RudeBot {
   private bot: Bot<MyContext>;
   private ownerChatId: number | undefined;
+  private storage: StorageService;
 
-  constructor(token: string, botInfo: UserFromGetMe, ownerChatId?: number) {
+  constructor(token: string, botInfo: UserFromGetMe, storage: StorageService, ownerChatId?: number) {
     this.bot = new Bot<MyContext>(token, { botInfo });
     this.ownerChatId = ownerChatId;
+    this.storage = storage;
 
     this.registerStart();
     this.registerCommands();
     this.registerMentionForwarding();
-    this.registerDirectReply();
+    this.registerBeenCounter();
+    this.registerSpankConversation();
     this.registerEasterEggs();
+    this.registerDirectReply();
+    this.registerGeneralConversation();
   }
 
   handleUpdate(request: Request) {
     return webhookCallback(this.bot, "cloudflare-mod")(request);
-  }
-
-  // Replies directly to the triggering message (reply arrow + quoted preview), staying in its forum topic thread if it has one.
-  // Keys are only included when defined, since exactOptionalPropertyTypes rejects an explicit `undefined`.
-  private replyToMessage(ctx: MyContext, message: string) {
-    return ctx.reply(message, {
-      ...(ctx.message?.message_id !== undefined && { reply_to_message_id: ctx.message.message_id }),
-      ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
-    });
-  }
-
-  // Posts a new message into the same forum topic thread without quoting a specific message — for replies not tied to one user.
-  private replyInThread(ctx: MyContext, message: string) {
-    return ctx.reply(message, {
-      ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
-    });
-  }
-
-  private replyHTML(ctx: MyContext, message: string) {
-    return ctx.reply(message, {
-      ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
-      parse_mode: "HTML",
-    });
-  }
-
-  // Registers a `hears` trigger matching any of the given words/phrases, replying with a fixed or lazily-computed message,
-  // either quoting the trigger message or posting fresh into its thread.
-  private hearAndRespond(words: string[], replyType: "toMessage" | "inThread" | "html", message: string | (() => string)) {
-    const pattern = new RegExp(`\\b(${words.join("|")})\\b`, "i");
-    this.bot.hears(pattern, async (ctx) => {
-      const text = typeof message === "function" ? message() : message;
-      if (replyType === "toMessage") {
-        await this.replyToMessage(ctx, text);
-      } else if (replyType === "html") {
-        await this.replyHTML(ctx, text);
-      } else {
-        await this.replyInThread(ctx, text);
-      }
-    });
   }
 
   private registerStart() {
@@ -105,6 +76,41 @@ export class RudeBot {
   //   this.bot.on("message:text", (ctx) => this.replyToMessage(ctx, `You said: ${ctx.message.text}`));
   // }
 
+  private registerBeenCounter() {
+    this.bot.hears(/(?<!@)\bbeens?\b/i, async (ctx) => {
+      const occurrences = ctx.message?.text?.match(/(?<!@)\bbeens?\b/gi)?.length ?? 1;
+      const beenCount = await this.storage.incrementBeenCounter(`been_counter_${ctx.chat.id}`, occurrences);
+      const photo = new InputFile(new Uint8Array(random(BEEN_PHOTOS)), "beens_mentioned.jpg");
+      await this.replyPhoto(ctx, photo, `Been count: <b>${beenCount}</b>`);
+    });
+  }
+
+  // A reply chain: "bad bot" starts it, and replying to the bot's own last message in the chain with a
+  // spank-themed emoji keeps it going indefinitely. The active chain tail is tracked per-chat in SpankChain
+  // (a Durable Object) since Telegram gives us no way to tag a sent message with our own metadata.
+  private registerSpankConversation() {
+    const spankEmoji = /😈|🍑|✋|👋|👏/u;
+
+    this.bot.hears(/\bbad bot\b/i, async (ctx) => {
+      const sent = await this.replyToMessage(ctx, "You can spank me now 😈");
+      await this.storage.setSpankChainTail(ctx.chat.id, sent.message_id);
+    });
+
+    this.bot.on("message:text", async (ctx, next) => {
+      const repliedTo = ctx.message.reply_to_message;
+      if (
+        repliedTo?.from?.id === this.bot.botInfo.id &&
+        spankEmoji.test(ctx.message.text) &&
+        (await this.storage.isSpankChainTail(ctx.chat.id, repliedTo.message_id))
+      ) {
+        const sent = await this.replyToMessage(ctx, random(replies.SPANK));
+        await this.storage.setSpankChainTail(ctx.chat.id, sent.message_id);
+        return; // spank chain reply takes priority — don't let other handlers also fire
+      }
+      await next();
+    });
+  }
+
   // matches first to last
   private registerEasterEggs() {
     // TODO
@@ -113,6 +119,7 @@ export class RudeBot {
     // Asheville - damn dirty hippies
     // full moon - roast taylor
     // gas - with these gas prices, im glad me and my brethren run on drinking water
+    // cocaine/bag - shame - NSA watching you - reported to DEA
 
     // DONE
     // galen - fall in love (but not "@galen" — that's a mention, handled by registerMentionForwarding)
@@ -136,18 +143,66 @@ export class RudeBot {
     this.hearAndRespond(["butthole", "butt hole"], "toMessage", "SHOW ME YOUR BUTT HOLE!!!");
     this.hearAndRespond(["show me your butthole"], "inThread", () => `I rate it a ${random([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])}!`);
     this.hearAndRespond(["cheater"], "inThread", "🚨🚨🚨 CHEATER ALERT 🚨🚨🚨 CHEATER ALERT 🚨🚨🚨 CHEATER ALERT 🚨🚨🚨\n\nLooks like we have a cheater!! Get em!!!!!!");
-    // i would rate it (butthole) [1-10]
-    // this.bot.hears(/.*\bbad bot\b.*/i, async (ctx) => {
-    //   const msg = await this.replyOne("You can spank me now 😈", ctx);
-    //   this.spankRequests.init.push({ message_id: msg.message_id, thread_id: ctx.message?.message_thread_id });
-    // }); // add spank reaction reaction
-    this.bot.hears(/.*\blooks like\b.*/i, async (ctx) => {
-      ctx.reply("It looks like a fucking Wordle score! Geeeeeeesh 😂", {
-        reply_parameters: {
-          message_id: ctx.message!.message_id,
-        },
-        message_thread_id: ctx.message?.message_thread_id || 0,
-      });
+    this.hearAndRespond(["looks like"], "toMessage", "It looks like a fucking Wordle score! Geeeeeeesh 😂");
+  }
+
+  // Falls back to a random general retort whenever someone replies to any bot message that wasn't
+  // already claimed by a more specific handler above (mention forwarding, spank chain, easter eggs, etc.).
+  private registerGeneralConversation() {
+    this.bot.on("message:text", async (ctx, next) => {
+      if (ctx.message.reply_to_message?.from?.id === this.bot.botInfo.id) {
+        await this.replyToMessage(ctx, random(phrases.GENERAL_RETORT));
+        return;
+      }
+      await next();
+    });
+  }
+
+  // Registers a `hears` trigger matching any of the given words/phrases, replying with a fixed or lazily-computed message,
+  // either quoting the trigger message or posting fresh into its thread.
+  private hearAndRespond(words: string[], replyType: "toMessage" | "inThread" | "html", message: string | (() => string)) {
+    const pattern = new RegExp(`\\b(${words.join("|")})\\b`, "i");
+    this.bot.hears(pattern, async (ctx) => {
+      const text = typeof message === "function" ? message() : message;
+      if (replyType === "toMessage") {
+        await this.replyToMessage(ctx, text);
+      } else if (replyType === "html") {
+        await this.replyHTML(ctx, text);
+      } else {
+        await this.replyInThread(ctx, text);
+      }
+    });
+  }
+
+  // Replies directly to the triggering message (reply arrow + quoted preview), staying in its forum topic thread if it has one.
+  // Keys are only included when defined, since exactOptionalPropertyTypes rejects an explicit `undefined`.
+  private replyToMessage(ctx: MyContext, message: string) {
+    return ctx.reply(message, {
+      ...(ctx.message?.message_id !== undefined && { reply_to_message_id: ctx.message.message_id }),
+      ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
+    });
+  }
+
+  // Posts a new message into the same forum topic thread without quoting a specific message — for replies not tied to one user.
+  private replyInThread(ctx: MyContext, message: string) {
+    return ctx.reply(message, {
+      ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
+    });
+  }
+
+  private replyHTML(ctx: MyContext, message: string) {
+    return ctx.reply(message, {
+      ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
+      parse_mode: "HTML",
+    });
+  }
+
+  // Replies with a photo, staying in its forum topic thread if it has one. `photo` data must be fresh per call —
+  // an InputFile can't be reused once sent.
+  private replyPhoto(ctx: MyContext, photo: InputFile, caption?: string) {
+    return ctx.replyWithPhoto(photo, {
+      ...(caption !== undefined && { caption, parse_mode: "HTML" }),
+      ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
     });
   }
 
