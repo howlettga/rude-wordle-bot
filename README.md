@@ -101,6 +101,28 @@ npx wrangler deploy
 
 This prints the live `https://rude-bot.<subdomain>.workers.dev` URL. Register it with Telegram as in step 4, using the real bot's token.
 
+## 6. Set the command menu (optional)
+
+Registering a command with `bot.command()` in `src/bot.ts` only wires up the handler — it doesn't make Telegram show it in the `/` autocomplete menu. That list is separate and comes from `setMyCommands`:
+
+```sh
+curl "https://api.telegram.org/bot<TOKEN>/setMyCommands" \
+  -H "Content-Type: application/json" \
+  -d '{"commands":[
+    {"command":"wordle","description":"Get petulant about Wordle"},
+    {"command":"instructions","description":"Show bot instructions"}
+  ]}'
+```
+
+Run it once per bot (test and prod use separate tokens, so separate calls) whenever the command list changes — it persists on Telegram's side, no redeploy needed.
+
+Alternatively, do it via chat: message [@BotFather](https://t.me/BotFather) with `/setcommands`, pick your bot, then send the list as `command - description` lines (no leading slash):
+
+```
+wordle - Get petulant about Wordle
+instructions - Show bot instructions
+```
+
 ---
 
 ## Everyday commands

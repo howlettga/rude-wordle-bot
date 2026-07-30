@@ -9,11 +9,35 @@
   "durable_objects": {
     "bindings": [
       { "name": "BEEN_COUNTER", "class_name": "BeenCounter" },
-      { "name": "SPANK_CHAIN", "class_name": "SpankChain" }
+      { "name": "SPANK_CHAIN", "class_name": "SpankChain" },
+      { "name": "WORDLE_GOLF", "class_name": "WordleGolf" },
+      { "name": "WORDLE_GOLF_REGISTRY", "class_name": "WordleGolfRegistry" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["BeenCounter"] },
-    { "tag": "v2", "new_sqlite_classes": ["SpankChain"] }
-  ]
+    { "tag": "v2", "new_sqlite_classes": ["SpankChain"] },
+    { "tag": "v3", "new_sqlite_classes": ["WordleGolf"] },
+    { "tag": "v4", "new_sqlite_classes": ["WordleGolfRegistry"] }
+  ],
+  // Cron Triggers always run in UTC (no timezone support), so this drifts an hour across DST —
+  // 13:00 UTC is 9am US/Eastern during EDT (summer); it'll land at 8am during EST (winter).
+  "triggers": {
+    "crons": ["0 13 * * *"]
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true,
+      "invocation_logs": true
+    },
+    "traces": {
+      "enabled": false,
+      "persist": true,
+      "head_sampling_rate": 1
+    }
+  }
 }

@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import type { Env } from "./main.js";
+import type { Env } from "../main.js";
 
 export class SpankChain extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {

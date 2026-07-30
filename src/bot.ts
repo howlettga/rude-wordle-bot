@@ -1,15 +1,16 @@
-import { Bot, Context, InputFile, webhookCallback, type BotConfig } from "grammy";
-import type { ConversationFlavor } from "@grammyjs/conversations";
+import { Bot, InputFile, webhookCallback } from "grammy";
 import type { UserFromGetMe } from "grammy/types";
+import { conversations } from "@grammyjs/conversations";
+import type { ConversationData, VersionedState, VersionedStateStorage } from "@grammyjs/conversations";
 import { random } from "./util.js";
 import { INSTRUCTIONS, phrases, RDU_ADVERTISEMENT, replies } from "./replies.js";
 import type { StorageService } from "./storage-service.js";
+import { type MyContext, replyToMessage, replyInThread, replyHTML, replyPhoto } from "./context.js";
+import { WordleGolfComposer } from "./wordle-golf.js";
 import beenMentionedPhoto from "../assets/beens_mentioned.jpg";
 import beenMentionedPhoto2 from "../assets/beens_mentioned_2.jpg";
 
 const BEEN_PHOTOS = [beenMentionedPhoto, beenMentionedPhoto2];
-
-type MyContext = Context & ConversationFlavor<Context>;
 
 export class RudeBot {
   private bot: Bot<MyContext>;
@@ -21,9 +22,14 @@ export class RudeBot {
     this.ownerChatId = ownerChatId;
     this.storage = storage;
 
+    this.bot.use(conversations({ storage: this.conversationStorage() }));
+    this.bot.use(new WordleGolfComposer(this.storage));
+    this.registerErrorHandler();
+
     this.registerStart();
     this.registerCommands();
     this.registerMentionForwarding();
+    this.registerPollForwarding();
     this.registerBeenCounter();
     this.registerSpankConversation();
     this.registerEasterEggs();
@@ -31,8 +37,31 @@ export class RudeBot {
     this.registerGeneralConversation();
   }
 
+  // The Worker rebuilds the Bot instance on every request, so the conversations plugin's default
+  // in-memory storage would lose its place between one message and the next. This persists it in the
+  // per-chat WordleGolf Durable Object instead — plain KV storage, keyed the same way the plugin already
+  // keys sessions by default (stringified chat id).
+  private conversationStorage(): VersionedStateStorage<string, ConversationData> {
+    return {
+      read: (key) =>
+        this.storage.readWordleGolfSession(Number(key)) as Promise<VersionedState<ConversationData> | undefined>,
+      write: (key, state) => this.storage.writeWordleGolfSession(Number(key), state),
+      delete: (key) => this.storage.deleteWordleGolfSession(Number(key)),
+    };
+  }
+
   handleUpdate(request: Request) {
     return webhookCallback(this.bot, "cloudflare-mod")(request);
+  }
+
+  // Catches anything a handler throws (a flaky NYT API call, a malformed DO response, etc.) so a broken
+  // update gets a reply instead of silently failing — grammY re-throws unhandled errors otherwise, which
+  // would surface to Telegram as a failed webhook delivery with no feedback to the chat.
+  private registerErrorHandler() {
+    this.bot.catch((err) => {
+      console.error(err);
+      replyInThread(err.ctx, "I'm sorry, there was an error :(\nI've been a bad bot");
+    });
   }
 
   private registerStart() {
@@ -40,8 +69,7 @@ export class RudeBot {
   }
 
   private registerCommands() {
-    this.bot.command("wordle", (ctx) => this.replyToMessage(ctx, random(phrases.PETULANT_REPLY)));
-    this.bot.command("instructions", (ctx) => this.replyInThread(ctx, INSTRUCTIONS));
+    this.bot.command("instructions", (ctx) => replyInThread(ctx, INSTRUCTIONS));
   }
 
   // Forwards any message mentioning @howlettga to the owner's DM. Requires ownerChatId to be set, and
@@ -58,7 +86,17 @@ export class RudeBot {
           await ctx.api.forwardMessage(this.ownerChatId, ctx.chat.id, ctx.message.reply_to_message.message_id);
         }
         await ctx.forwardMessage(this.ownerChatId);
-        await this.replyToMessage(ctx, "I let him know 🫡");
+        await replyToMessage(ctx, "I let him know 🫡");
+      }
+      await next();
+    });
+  }
+
+  // Forwards any poll to the owner's DM, silently. Same ownerChatId requirements as mention forwarding above.
+  private registerPollForwarding() {
+    this.bot.on("message:poll", async (ctx, next) => {
+      if (this.ownerChatId !== undefined && ctx.from?.id !== this.ownerChatId) {
+        await ctx.forwardMessage(this.ownerChatId);
       }
       await next();
     });
@@ -68,12 +106,12 @@ export class RudeBot {
   private registerDirectReply() {
     const pattern = new RegExp(`@${this.bot.botInfo.username}\\b|\\b${this.bot.botInfo.first_name}\\b`, "i");
     this.bot.hears(pattern, async (ctx) => {
-      await this.replyToMessage(ctx, random(phrases.PETULANT_REPLY));
+      await replyToMessage(ctx, random(phrases.PETULANT_REPLY));
     });
   }
 
   // private registerEcho() {
-  //   this.bot.on("message:text", (ctx) => this.replyToMessage(ctx, `You said: ${ctx.message.text}`));
+  //   this.bot.on("message:text", (ctx) => replyToMessage(ctx, `You said: ${ctx.message.text}`));
   // }
 
   private registerBeenCounter() {
@@ -81,7 +119,7 @@ export class RudeBot {
       const occurrences = ctx.message?.text?.match(/(?<!@)\bbeens?\b/gi)?.length ?? 1;
       const beenCount = await this.storage.incrementBeenCounter(`been_counter_${ctx.chat.id}`, occurrences);
       const photo = new InputFile(new Uint8Array(random(BEEN_PHOTOS)), "beens_mentioned.jpg");
-      await this.replyPhoto(ctx, photo, `Been count: <b>${beenCount}</b>`);
+      await replyPhoto(ctx, photo, `Been count: <b>${beenCount}</b>`);
     });
   }
 
@@ -89,10 +127,10 @@ export class RudeBot {
   // spank-themed emoji keeps it going indefinitely. The active chain tail is tracked per-chat in SpankChain
   // (a Durable Object) since Telegram gives us no way to tag a sent message with our own metadata.
   private registerSpankConversation() {
-    const spankEmoji = /😈|🍑|✋|👋|👏/u;
+    const spankEmoji = /😈|🍑|✋|👋|👏|👍|👎/u;
 
     this.bot.hears(/\bbad bot\b/i, async (ctx) => {
-      const sent = await this.replyToMessage(ctx, "You can spank me now 😈");
+      const sent = await replyToMessage(ctx, "You can spank me now 😈");
       await this.storage.setSpankChainTail(ctx.chat.id, sent.message_id);
     });
 
@@ -103,7 +141,7 @@ export class RudeBot {
         spankEmoji.test(ctx.message.text) &&
         (await this.storage.isSpankChainTail(ctx.chat.id, repliedTo.message_id))
       ) {
-        const sent = await this.replyToMessage(ctx, random(replies.SPANK));
+        const sent = await replyToMessage(ctx, random(replies.SPANK));
         await this.storage.setSpankChainTail(ctx.chat.id, sent.message_id);
         return; // spank chain reply takes priority — don't let other handlers also fire
       }
@@ -124,7 +162,7 @@ export class RudeBot {
     // DONE
     // galen - fall in love (but not "@galen" — that's a mention, handled by registerMentionForwarding)
     this.bot.hears(/(?<!@)\bgalen\b/i, async (ctx) => {
-      await this.replyToMessage(ctx, random(phrases.ADORING_REPLY));
+      await replyToMessage(ctx, random(phrases.ADORING_REPLY));
     });
     // promotion/raise - shut up and pay me allemony
     this.hearAndRespond(["promotion", "raise"], "toMessage", () => random(replies.COORPORATE));
@@ -151,7 +189,7 @@ export class RudeBot {
   private registerGeneralConversation() {
     this.bot.on("message:text", async (ctx, next) => {
       if (ctx.message.reply_to_message?.from?.id === this.bot.botInfo.id) {
-        await this.replyToMessage(ctx, random(phrases.GENERAL_RETORT));
+        await replyToMessage(ctx, random(phrases.GENERAL_RETORT));
         return;
       }
       await next();
@@ -165,44 +203,12 @@ export class RudeBot {
     this.bot.hears(pattern, async (ctx) => {
       const text = typeof message === "function" ? message() : message;
       if (replyType === "toMessage") {
-        await this.replyToMessage(ctx, text);
+        await replyToMessage(ctx, text);
       } else if (replyType === "html") {
-        await this.replyHTML(ctx, text);
+        await replyHTML(ctx, text);
       } else {
-        await this.replyInThread(ctx, text);
+        await replyInThread(ctx, text);
       }
-    });
-  }
-
-  // Replies directly to the triggering message (reply arrow + quoted preview), staying in its forum topic thread if it has one.
-  // Keys are only included when defined, since exactOptionalPropertyTypes rejects an explicit `undefined`.
-  private replyToMessage(ctx: MyContext, message: string) {
-    return ctx.reply(message, {
-      ...(ctx.message?.message_id !== undefined && { reply_to_message_id: ctx.message.message_id }),
-      ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
-    });
-  }
-
-  // Posts a new message into the same forum topic thread without quoting a specific message — for replies not tied to one user.
-  private replyInThread(ctx: MyContext, message: string) {
-    return ctx.reply(message, {
-      ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
-    });
-  }
-
-  private replyHTML(ctx: MyContext, message: string) {
-    return ctx.reply(message, {
-      ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
-      parse_mode: "HTML",
-    });
-  }
-
-  // Replies with a photo, staying in its forum topic thread if it has one. `photo` data must be fresh per call —
-  // an InputFile can't be reused once sent.
-  private replyPhoto(ctx: MyContext, photo: InputFile, caption?: string) {
-    return ctx.replyWithPhoto(photo, {
-      ...(caption !== undefined && { caption, parse_mode: "HTML" }),
-      ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
     });
   }
 
