@@ -17,6 +17,10 @@ Scoring:
 - 7 points if you miss the day
 
 Good luck!
+---
+And now announcing, FriendStock!
+Your friends are only worth anything if they are money 😎
+/buy and /sell your friends today! Get started with /portfolio.
 `;
 
 const WEIRD_WORD = [

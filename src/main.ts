@@ -4,10 +4,18 @@ import { BeenCounter } from "./durable-objects/been-counter.js";
 import { SpankChain } from "./durable-objects/spank-chain.js";
 import { WordleGolf } from "./durable-objects/wordle-golf.js";
 import { WordleGolfRegistry } from "./durable-objects/wordle-golf-registry.js";
+import { StockMarket } from "./durable-objects/stock-market.js";
+import { StockMarketRegistry } from "./durable-objects/stock-market-registry.js";
 import { StorageService } from "./storage-service.js";
 import { WordleGolfComposer } from "./wordle-golf.js";
+import { StockMarketComposer } from "./stock-market.js";
 
-export { BeenCounter, SpankChain, WordleGolf, WordleGolfRegistry };
+export { BeenCounter, SpankChain, WordleGolf, WordleGolfRegistry, StockMarket, StockMarketRegistry };
+
+// Must match wrangler.jsonc's triggers.crons exactly — that's what ScheduledController.cron is compared
+// against below to tell the daily sweep apart from the weekly one.
+const DAILY_CRON = "0 13 * * *";
+const WEEKLY_CRON = "0 13 * * 1";
 
 export interface Env {
   BOT_TOKEN: string;
@@ -16,11 +24,20 @@ export interface Env {
   SPANK_CHAIN: DurableObjectNamespace<SpankChain>;
   WORDLE_GOLF: DurableObjectNamespace<WordleGolf>;
   WORDLE_GOLF_REGISTRY: DurableObjectNamespace<WordleGolfRegistry>;
+  STOCK_MARKET: DurableObjectNamespace<StockMarket>;
+  STOCK_MARKET_REGISTRY: DurableObjectNamespace<StockMarketRegistry>;
   OWNER_CHAT_ID?: string;
 }
 
 function buildStorage(env: Env): StorageService {
-  return new StorageService(env.BEEN_COUNTER, env.SPANK_CHAIN, env.WORDLE_GOLF, env.WORDLE_GOLF_REGISTRY);
+  return new StorageService(
+    env.BEEN_COUNTER,
+    env.SPANK_CHAIN,
+    env.WORDLE_GOLF,
+    env.WORDLE_GOLF_REGISTRY,
+    env.STOCK_MARKET,
+    env.STOCK_MARKET_REGISTRY
+  );
 }
 
 export default {
@@ -31,9 +48,15 @@ export default {
   },
 
   // Not triggered by a Telegram update, so there's no webhook request to build a RudeBot from — just the
-  // pieces this actually needs: an Api client to send messages with, and the Wordle Golf domain logic.
-  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
-    const api = new Api(env.BOT_TOKEN);
-    await new WordleGolfComposer(buildStorage(env)).runDailyCheck(api);
+  // pieces each job actually needs.
+  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+    const storage = buildStorage(env);
+
+    if (controller.cron === DAILY_CRON) {
+      const api = new Api(env.BOT_TOKEN);
+      await Promise.all([new WordleGolfComposer(storage).runDailyCheck(api), new StockMarketComposer(storage).runDailyDecay()]);
+    } else if (controller.cron === WEEKLY_CRON) {
+      await new StockMarketComposer(storage).runWeeklyAllowance();
+    }
   },
 };

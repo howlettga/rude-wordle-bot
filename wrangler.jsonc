@@ -11,19 +11,24 @@
       { "name": "BEEN_COUNTER", "class_name": "BeenCounter" },
       { "name": "SPANK_CHAIN", "class_name": "SpankChain" },
       { "name": "WORDLE_GOLF", "class_name": "WordleGolf" },
-      { "name": "WORDLE_GOLF_REGISTRY", "class_name": "WordleGolfRegistry" }
+      { "name": "WORDLE_GOLF_REGISTRY", "class_name": "WordleGolfRegistry" },
+      { "name": "STOCK_MARKET", "class_name": "StockMarket" },
+      { "name": "STOCK_MARKET_REGISTRY", "class_name": "StockMarketRegistry" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["BeenCounter"] },
     { "tag": "v2", "new_sqlite_classes": ["SpankChain"] },
     { "tag": "v3", "new_sqlite_classes": ["WordleGolf"] },
-    { "tag": "v4", "new_sqlite_classes": ["WordleGolfRegistry"] }
+    { "tag": "v4", "new_sqlite_classes": ["WordleGolfRegistry"] },
+    { "tag": "v5", "new_sqlite_classes": ["StockMarket", "StockMarketRegistry"] }
   ],
-  // Cron Triggers always run in UTC (no timezone support), so this drifts an hour across DST —
+  // Cron Triggers always run in UTC (no timezone support), so both of these drift an hour across DST —
   // 13:00 UTC is 9am US/Eastern during EDT (summer); it'll land at 8am during EST (winter).
+  // Daily: Wordle Golf's reminder/finalize sweep + the stock market's daily price decay.
+  // Weekly (Monday): the stock market's cash allowance.
   "triggers": {
-    "crons": ["0 13 * * *"]
+    "crons": ["0 13 * * *", "0 13 * * 1"]
   },
   "observability": {
     "enabled": true,

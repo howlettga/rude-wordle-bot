@@ -7,6 +7,7 @@ import { INSTRUCTIONS, phrases, RDU_ADVERTISEMENT, replies } from "./replies.js"
 import type { StorageService } from "./storage-service.js";
 import { type MyContext, replyToMessage, replyInThread, replyHTML, replyPhoto } from "./context.js";
 import { WordleGolfComposer } from "./wordle-golf.js";
+import { StockMarketComposer } from "./stock-market.js";
 import beenMentionedPhoto from "../assets/beens_mentioned.jpg";
 import beenMentionedPhoto2 from "../assets/beens_mentioned_2.jpg";
 
@@ -24,6 +25,7 @@ export class RudeBot {
 
     this.bot.use(conversations({ storage: this.conversationStorage() }));
     this.bot.use(new WordleGolfComposer(this.storage));
+    this.bot.use(new StockMarketComposer(this.storage));
     this.registerErrorHandler();
 
     this.registerStart();

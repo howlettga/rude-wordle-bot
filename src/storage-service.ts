@@ -8,13 +8,17 @@ import type {
   WordleGolfSubmitResult,
 } from "./durable-objects/wordle-golf.js";
 import type { WordleGolfRegistry } from "./durable-objects/wordle-golf-registry.js";
+import type { StockMarket, StockMarketPlayer, StockMarketPortfolio, StockMarketTradeResult } from "./durable-objects/stock-market.js";
+import type { StockMarketRegistry } from "./durable-objects/stock-market-registry.js";
 
 export class StorageService {
   constructor(
     private beenCounterNs: DurableObjectNamespace<BeenCounter>,
     private spankChainNs: DurableObjectNamespace<SpankChain>,
     private wordleGolfNs: DurableObjectNamespace<WordleGolf>,
-    private wordleGolfRegistryNs: DurableObjectNamespace<WordleGolfRegistry>
+    private wordleGolfRegistryNs: DurableObjectNamespace<WordleGolfRegistry>,
+    private stockMarketNs: DurableObjectNamespace<StockMarket>,
+    private stockMarketRegistryNs: DurableObjectNamespace<StockMarketRegistry>
   ) {}
 
   incrementBeenCounter(name: string, by: number = 1): Promise<number> {
@@ -99,5 +103,76 @@ export class StorageService {
 
   private wordleGolfStub(chatId: number) {
     return this.wordleGolfNs.get(this.wordleGolfNs.idFromName(`wordle_golf_${chatId}`));
+  }
+
+  async recordStockMarketMessage(
+    chatId: number,
+    input: { messageId: number; userId: number; username?: string; firstName: string }
+  ): Promise<void> {
+    await Promise.all([this.stockMarketStub(chatId).recordMessage(input), this.registerStockMarketChat(chatId)]);
+  }
+
+  recordStockMarketReply(
+    chatId: number,
+    input: { recipientUserId: number; recipientUsername?: string; recipientFirstName: string; replierUserId: number }
+  ): Promise<void> {
+    return this.stockMarketStub(chatId).recordReply(input);
+  }
+
+  recordStockMarketReaction(chatId: number, input: { messageId: number; reactorUserId: number; emoji: string }): Promise<void> {
+    return this.stockMarketStub(chatId).recordReaction(input);
+  }
+
+  getStockMarketPortfolio(chatId: number, userId: number): Promise<StockMarketPortfolio | null> {
+    return this.stockMarketStub(chatId).getPortfolio(userId);
+  }
+
+  getStockMarket(chatId: number): Promise<StockMarketPlayer[]> {
+    return this.stockMarketStub(chatId).getMarket();
+  }
+
+  findStockMarketPlayerByUsername(chatId: number, username: string): Promise<StockMarketPlayer | null> {
+    return this.stockMarketStub(chatId).findPlayerByUsername(username);
+  }
+
+  getStockMarketPlayer(chatId: number, userId: number): Promise<StockMarketPlayer | null> {
+    return this.stockMarketStub(chatId).getPlayer(userId);
+  }
+
+  buyStock(
+    chatId: number,
+    input: { buyerUserId: number; buyerUsername?: string; buyerFirstName: string; targetUserId: number; shares: number }
+  ): Promise<StockMarketTradeResult> {
+    return this.stockMarketStub(chatId).buy(input);
+  }
+
+  sellStock(chatId: number, input: { sellerUserId: number; targetUserId: number; shares: number }): Promise<StockMarketTradeResult> {
+    return this.stockMarketStub(chatId).sell(input);
+  }
+
+  registerStockMarketChat(chatId: number): Promise<void> {
+    const stub = this.stockMarketRegistryNs.get(this.stockMarketRegistryNs.idFromName("global"));
+    return stub.register(chatId);
+  }
+
+  listStockMarketChats(): Promise<number[]> {
+    const stub = this.stockMarketRegistryNs.get(this.stockMarketRegistryNs.idFromName("global"));
+    return stub.list();
+  }
+
+  applyStockMarketWeeklyAllowance(chatId: number): Promise<void> {
+    return this.stockMarketStub(chatId).applyWeeklyAllowance();
+  }
+
+  applyStockMarketDailyDecay(chatId: number): Promise<void> {
+    return this.stockMarketStub(chatId).applyDailyDecay();
+  }
+
+  purgeStockMarketOldData(chatId: number): Promise<void> {
+    return this.stockMarketStub(chatId).purgeOldData();
+  }
+
+  private stockMarketStub(chatId: number) {
+    return this.stockMarketNs.get(this.stockMarketNs.idFromName(`stock_market_${chatId}`));
   }
 }
