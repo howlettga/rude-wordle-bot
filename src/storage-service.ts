@@ -9,7 +9,13 @@ import type {
   WordleGolfSubmitResult,
 } from "./durable-objects/wordle-golf.js";
 import type { WordleGolfRegistry } from "./durable-objects/wordle-golf-registry.js";
-import type { StockMarket, StockMarketPlayer, StockMarketPortfolio, StockMarketTradeResult } from "./durable-objects/stock-market.js";
+import type {
+  StockMarket,
+  StockMarketPlayer,
+  StockMarketPortfolio,
+  StockMarketTradeResult,
+  StockMarketSetTickerResult,
+} from "./durable-objects/stock-market.js";
 import type { StockMarketRegistry } from "./durable-objects/stock-market-registry.js";
 
 export class StorageService {
@@ -138,8 +144,12 @@ export class StorageService {
     return this.stockMarketStub(chatId).getMarket();
   }
 
-  findStockMarketPlayerByUsername(chatId: number, username: string): Promise<StockMarketPlayer | null> {
-    return this.stockMarketStub(chatId).findPlayerByUsername(username);
+  findStockMarketPlayerByTicker(chatId: number, ticker: string): Promise<StockMarketPlayer | null> {
+    return this.stockMarketStub(chatId).findPlayerByTicker(ticker);
+  }
+
+  setStockMarketTicker(chatId: number, userId: number, ticker: string): Promise<StockMarketSetTickerResult> {
+    return this.stockMarketStub(chatId).setTicker(userId, ticker);
   }
 
   getStockMarketPlayer(chatId: number, userId: number): Promise<StockMarketPlayer | null> {

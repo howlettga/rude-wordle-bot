@@ -66,19 +66,25 @@ const REACTION_WEIGHTS: Record<string, number> = {
 export interface StockMarketPlayer {
   userId: number;
   username: string | null;
+  ticker: string | null;
   firstName: string;
   price: number;
   cash: number;
+  dailyChange: number; // sum of today's (since UTC midnight) price_events deltas — can be negative
 }
 
 export interface StockMarketHolding {
   stockUserId: number;
   username: string | null;
+  ticker: string | null;
   firstName: string;
   shares: number;
   price: number;
   value: number;
+  dailyChange: number; // the held stock's own daily change, same meaning as StockMarketPlayer.dailyChange
 }
+
+export type StockMarketSetTickerResult = "OK" | "NOT_A_PLAYER" | "TAKEN";
 
 export interface StockMarketPortfolio extends StockMarketPlayer {
   holdings: StockMarketHolding[];
@@ -99,13 +105,22 @@ interface PlayerRow {
   [column: string]: SqlStorageValue;
   user_id: number;
   username: string | null;
+  ticker: string | null;
   first_name: string;
   price: number;
   cash: number;
 }
 
-function toPlayer(row: PlayerRow): StockMarketPlayer {
-  return { userId: row.user_id, username: row.username, firstName: row.first_name, price: row.price, cash: row.cash };
+function toPlayer(row: PlayerRow, dailyChange: number): StockMarketPlayer {
+  return {
+    userId: row.user_id,
+    username: row.username,
+    ticker: row.ticker,
+    firstName: row.first_name,
+    price: row.price,
+    cash: row.cash,
+    dailyChange,
+  };
 }
 
 // A fresh coin flip every time, not a fixed weight per emoji — 🗿 doesn't become "the cursed one", it's just
@@ -216,6 +231,16 @@ export class StockMarket extends DurableObject<Env> {
       this.ctx.storage.sql.exec(`ALTER TABLE message_authors_v3 RENAME TO message_authors`);
       this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (3)`);
     }
+
+    if (version < 4) {
+      // Plain ADD COLUMN is enough here (unlike the price_events rebuilds above) since there's no CHECK
+      // constraint involved. SQLite won't let ADD COLUMN declare UNIQUE directly, so that's enforced via
+      // a separate index instead — which also means multiple NULL tickers (the common case: nobody's set
+      // one yet) are allowed side by side, since SQL treats NULLs as distinct for uniqueness purposes.
+      this.ctx.storage.sql.exec(`ALTER TABLE players ADD COLUMN ticker TEXT`);
+      this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_players_ticker ON players(ticker)`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (4)`);
+    }
   }
 
   async recordMessage(input: { messageId: number; userId: number; username?: string; firstName: string }): Promise<void> {
@@ -317,10 +342,11 @@ export class StockMarket extends DurableObject<Env> {
         stock_user_id: number;
         shares: number;
         username: string | null;
+        ticker: string | null;
         first_name: string;
         price: number;
       }>(
-        `SELECT h.stock_user_id, h.shares, p.username, p.first_name, p.price
+        `SELECT h.stock_user_id, h.shares, p.username, p.ticker, p.first_name, p.price
          FROM holdings h
          JOIN players p ON p.user_id = h.stock_user_id
          WHERE h.owner_user_id = ? AND h.shares > 0
@@ -329,36 +355,93 @@ export class StockMarket extends DurableObject<Env> {
       )
       .toArray();
 
+    const changes = this.getDailyChanges();
+
     return {
-      ...toPlayer(row),
+      ...toPlayer(row, changes.get(row.user_id) ?? 0),
       holdings: holdings.map((h) => ({
         stockUserId: h.stock_user_id,
         username: h.username,
+        ticker: h.ticker,
         firstName: h.first_name,
         shares: h.shares,
         price: h.price,
         value: h.shares * h.price,
+        dailyChange: changes.get(h.stock_user_id) ?? 0,
       })),
     };
   }
 
   async getMarket(): Promise<StockMarketPlayer[]> {
+    const changes = this.getDailyChanges();
     return this.ctx.storage.sql
       .exec<PlayerRow>(`SELECT * FROM players ORDER BY price DESC`)
       .toArray()
-      .map(toPlayer);
+      .map((row) => toPlayer(row, changes.get(row.user_id) ?? 0));
   }
 
-  // For /buy @username <n> — only finds someone who's already posted in this chat (and therefore has a
-  // stock), same reach as reply-based targeting.
-  async findPlayerByUsername(username: string): Promise<StockMarketPlayer | null> {
-    const row = this.ctx.storage.sql.exec<PlayerRow>(`SELECT * FROM players WHERE username = ? COLLATE NOCASE`, username).toArray()[0];
-    return row ? toPlayer(row) : null;
+  // For /buy $TICKER <n> and /sell $TICKER <n> — tickers are opt-in (see setTicker) and only reachable
+  // once set. Not everyone has a Telegram username, which was confusing people when username lookup was
+  // the fallback for targeting, so there's no username-based lookup anymore — /value is reply-only, and
+  // /buy and /sell use tickers.
+  async findPlayerByTicker(ticker: string): Promise<StockMarketPlayer | null> {
+    const row = this.ctx.storage.sql.exec<PlayerRow>(`SELECT * FROM players WHERE ticker = ? COLLATE NOCASE`, ticker).toArray()[0];
+    return row ? toPlayer(row, this.getDailyChange(row.user_id)) : null;
   }
 
   async getPlayer(userId: number): Promise<StockMarketPlayer | null> {
     const row = this.ctx.storage.sql.exec<PlayerRow>(`SELECT * FROM players WHERE user_id = ?`, userId).toArray()[0];
-    return row ? toPlayer(row) : null;
+    return row ? toPlayer(row, this.getDailyChange(userId)) : null;
+  }
+
+  // Requires the caller to already be a player (i.e. have posted a real message) — otherwise a ticker
+  // could be assigned to someone who'd just get swept up by purgeGhostPlayers's weekly sweep anyway.
+  // Enforced case-insensitively even though the composer already uppercases before calling, since the
+  // unique index below is itself case-sensitive (TEXT compares byte-for-byte by default in SQLite).
+  async setTicker(userId: number, ticker: string): Promise<StockMarketSetTickerResult> {
+    const exists = this.ctx.storage.sql.exec<PlayerRow>(`SELECT user_id FROM players WHERE user_id = ?`, userId).toArray().length > 0;
+    if (!exists) {
+      return "NOT_A_PLAYER";
+    }
+
+    const takenBy = this.ctx.storage.sql
+      .exec<{ [column: string]: SqlStorageValue; user_id: number }>(
+        `SELECT user_id FROM players WHERE ticker = ? COLLATE NOCASE AND user_id != ?`,
+        ticker,
+        userId
+      )
+      .toArray()[0];
+    if (takenBy) {
+      return "TAKEN";
+    }
+
+    this.ctx.storage.sql.exec(`UPDATE players SET ticker = ?, updated_at = datetime('now') WHERE user_id = ?`, ticker, userId);
+    return "OK";
+  }
+
+  // Today's (since UTC midnight) net price movement for one player — every price mutation already
+  // inserts a timestamped price_events row (see applyPriceChange), so this needs no separate snapshot.
+  private getDailyChange(userId: number): number {
+    return this.ctx.storage.sql
+      .exec<{ [column: string]: SqlStorageValue; change: number }>(
+        `SELECT COALESCE(SUM(delta), 0) as change FROM price_events
+         WHERE user_id = ? AND created_at >= datetime('now', 'start of day')`,
+        userId
+      )
+      .one().change;
+  }
+
+  // Same as getDailyChange, but for every player in this chat at once — used wherever a whole roster's
+  // worth of changes are needed in one call (getMarket, getPortfolio's owner + all holdings).
+  private getDailyChanges(): Map<number, number> {
+    const rows = this.ctx.storage.sql
+      .exec<{ [column: string]: SqlStorageValue; user_id: number; change: number }>(
+        `SELECT user_id, SUM(delta) as change FROM price_events
+         WHERE created_at >= datetime('now', 'start of day')
+         GROUP BY user_id`
+      )
+      .toArray();
+    return new Map(rows.map((r) => [r.user_id, r.change]));
   }
 
   // Runs weekly alongside the allowance/purge sweep. Removes anyone who's never authored a genuine
