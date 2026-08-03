@@ -85,7 +85,7 @@ export class StockMarketComposer extends Composer<MyContext> {
     ];
 
     if (portfolio.holdings.length === 0) {
-      lines.push(``, `No holdings yet — reply to someone's message with <code>/buy 2</code> to invest in them.`);
+      lines.push(``, `No holdings yet — reply to someone's message with /buy to invest in them.`);
     } else {
       lines.push(`-----`, `Holdings:`, ``);
       for (const holding of portfolio.holdings) {
@@ -126,7 +126,7 @@ export class StockMarketComposer extends Composer<MyContext> {
   private async sendValue(ctx: MyContext) {
     const target = await this.resolveValueTarget(ctx);
     if (!target) {
-      await replyToMessage(ctx, "Reply to someone's message with /value, or use /value @username, to check their stock.");
+      await replyToMessage(ctx, "Reply to someone's message with /value, or use /value @username (if they have one), to check their stock.");
       return;
     }
 
@@ -163,7 +163,7 @@ export class StockMarketComposer extends Composer<MyContext> {
     if (!parsed) {
       await replyToMessage(
         ctx,
-        `Reply to someone's message with /${action} <shares>, or use /${action} @username <shares>.`
+        `Reply to someone's message with /${action} <shares>, or use /${action} @username <shares> if they have a username set.`
       );
       return;
     }
@@ -271,6 +271,7 @@ export class StockMarketComposer extends Composer<MyContext> {
     for (const chatId of chatIds) {
       await this.storage.applyStockMarketWeeklyAllowance(chatId);
       await this.storage.purgeStockMarketOldData(chatId);
+      await this.storage.purgeStockMarketGhostPlayers(chatId);
     }
   }
 }

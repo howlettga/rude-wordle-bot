@@ -123,7 +123,7 @@ const VOUCH = [
   "Oh I LOVE them! Much more than the rest of you.",
   "Another mouth to feed, another chair I don't have.",
   "I vouch for myself.",
-  "I'm not crying, the group is just growing and I'm allergic to change.",
+  "I'm not crying, the group is just growing and I'm scared of change.",
   "Only if they pay me $50.",
   "Say goodbye to the good old days, everyone.",
 ];
@@ -208,6 +208,13 @@ const COORPORATE = [
   "Says the kid who could never win Monopoly as a child.",
 ];
 
+const FULL_MOON = [
+  "Your ADD must be so bad to not remember this happened 30 days ago.",
+  "Every 29.5 days you remember you're 'in tune with the cosmos.' The other 28 you're in tune with your phone.",
+  "Crystals don't pay bills, bestie.",
+  "Your moon water is just water that sat on a windowsill. I checked. It's water.",
+];
+
 export const RDU_ADVERTISEMENT = `
 <b>🌲 RALEIGH-DURHAM: LIVE THE DREAM 🌲</b>
 
@@ -238,6 +245,7 @@ export const replies = {
   JULIE_ELI,
   COORPORATE,
   SPANK,
+  FULL_MOON,
 };
 
 // Wordle Golf

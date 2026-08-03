@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../main.js";
 
-export class BeenCounter extends DurableObject<Env> {
+export class BeanCounter extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.ctx.storage.sql.exec(
@@ -20,10 +20,5 @@ export class BeenCounter extends DurableObject<Env> {
       )
       .one();
     return row.value;
-  }
-
-  async get(): Promise<number> {
-    const rows = this.ctx.storage.sql.exec<{ value: number }>(`SELECT value FROM counter WHERE id = 1`).toArray();
-    return rows[0]?.value ?? 0;
   }
 }

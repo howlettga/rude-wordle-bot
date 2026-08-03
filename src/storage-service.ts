@@ -1,4 +1,5 @@
 import type { BeenCounter } from "./durable-objects/been-counter.js";
+import type { BeanCounter } from "./durable-objects/bean-counter.js";
 import type { SpankChain } from "./durable-objects/spank-chain.js";
 import type {
   WordleGolf,
@@ -14,6 +15,7 @@ import type { StockMarketRegistry } from "./durable-objects/stock-market-registr
 export class StorageService {
   constructor(
     private beenCounterNs: DurableObjectNamespace<BeenCounter>,
+    private beanCounterNs: DurableObjectNamespace<BeanCounter>,
     private spankChainNs: DurableObjectNamespace<SpankChain>,
     private wordleGolfNs: DurableObjectNamespace<WordleGolf>,
     private wordleGolfRegistryNs: DurableObjectNamespace<WordleGolfRegistry>,
@@ -23,6 +25,11 @@ export class StorageService {
 
   incrementBeenCounter(name: string, by: number = 1): Promise<number> {
     const stub = this.beenCounterNs.get(this.beenCounterNs.idFromName(name));
+    return stub.increment(by);
+  }
+
+  incrementBeanCounter(name: string, by: number = 1): Promise<number> {
+    const stub = this.beanCounterNs.get(this.beanCounterNs.idFromName(name));
     return stub.increment(by);
   }
 
@@ -137,6 +144,10 @@ export class StorageService {
 
   getStockMarketPlayer(chatId: number, userId: number): Promise<StockMarketPlayer | null> {
     return this.stockMarketStub(chatId).getPlayer(userId);
+  }
+
+  purgeStockMarketGhostPlayers(chatId: number): Promise<void> {
+    return this.stockMarketStub(chatId).purgeGhostPlayers();
   }
 
   buyStock(

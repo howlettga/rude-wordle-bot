@@ -1,6 +1,7 @@
 import { Api } from "grammy";
 import { RudeBot } from "./bot.js";
 import { BeenCounter } from "./durable-objects/been-counter.js";
+import { BeanCounter } from "./durable-objects/bean-counter.js";
 import { SpankChain } from "./durable-objects/spank-chain.js";
 import { WordleGolf } from "./durable-objects/wordle-golf.js";
 import { WordleGolfRegistry } from "./durable-objects/wordle-golf-registry.js";
@@ -10,7 +11,7 @@ import { StorageService } from "./storage-service.js";
 import { WordleGolfComposer } from "./wordle-golf.js";
 import { StockMarketComposer } from "./stock-market.js";
 
-export { BeenCounter, SpankChain, WordleGolf, WordleGolfRegistry, StockMarket, StockMarketRegistry };
+export { BeenCounter, BeanCounter, SpankChain, WordleGolf, WordleGolfRegistry, StockMarket, StockMarketRegistry };
 
 // Must match wrangler.jsonc's triggers.crons exactly — that's what ScheduledController.cron is compared
 // against below to tell the daily sweep apart from the weekly one.
@@ -21,6 +22,7 @@ export interface Env {
   BOT_TOKEN: string;
   BOT_INFO: string;
   BEEN_COUNTER: DurableObjectNamespace<BeenCounter>;
+  BEAN_COUNTER: DurableObjectNamespace<BeanCounter>;
   SPANK_CHAIN: DurableObjectNamespace<SpankChain>;
   WORDLE_GOLF: DurableObjectNamespace<WordleGolf>;
   WORDLE_GOLF_REGISTRY: DurableObjectNamespace<WordleGolfRegistry>;
@@ -32,6 +34,7 @@ export interface Env {
 function buildStorage(env: Env): StorageService {
   return new StorageService(
     env.BEEN_COUNTER,
+    env.BEAN_COUNTER,
     env.SPANK_CHAIN,
     env.WORDLE_GOLF,
     env.WORDLE_GOLF_REGISTRY,

@@ -26,6 +26,8 @@ export class RudeBot {
     this.bot.use(conversations({ storage: this.conversationStorage() }));
     this.bot.use(new WordleGolfComposer(this.storage));
     this.bot.use(new StockMarketComposer(this.storage));
+    this.hearAndRespond(["value"], "toMessage", () => "Check your worth with the /portfolio command.");
+    this.hearAndRespond(["market"], "toMessage", () => "Check the market with the /market command.");
     this.registerErrorHandler();
 
     this.registerStart();
@@ -116,10 +118,21 @@ export class RudeBot {
   //   this.bot.on("message:text", (ctx) => replyToMessage(ctx, `You said: ${ctx.message.text}`));
   // }
 
+  // "been"/"beens" increments the tally silently — the word is common enough in normal chat that
+  // replying every time would be spammy. Saying "bean"/"beans" instead (a nod to the bot's name)
+  // triggers the announcement below, reporting the current tally without bumping it further.
   private registerBeenCounter() {
     this.bot.hears(/(?<!@)\bbeens?\b/i, async (ctx) => {
       const occurrences = ctx.message?.text?.match(/(?<!@)\bbeens?\b/gi)?.length ?? 1;
-      const beenCount = await this.storage.incrementBeenCounter(`been_counter_${ctx.chat.id}`, occurrences);
+      await this.storage.incrementBeenCounter(`been_counter_${ctx.chat.id}`, occurrences);
+    });
+
+    this.bot.hears(/(?<!@)\bbeans?\b/i, async (ctx) => {
+      const occurrences = ctx.message?.text?.match(/(?<!@)\bbeans?\b/gi)?.length ?? 1;
+      const [beenCount] = await Promise.all([
+        this.storage.incrementBeenCounter(`been_counter_${ctx.chat.id}`, 0),
+        this.storage.incrementBeanCounter(`bean_counter_${ctx.chat.id}`, occurrences),
+      ]);
       const photo = new InputFile(new Uint8Array(random(BEEN_PHOTOS)), "beens_mentioned.jpg");
       await replyPhoto(ctx, photo, `Been count: <b>${beenCount}</b>`);
     });
@@ -154,14 +167,25 @@ export class RudeBot {
   // matches first to last
   private registerEasterEggs() {
     // TODO
-    // been counter - running count of been words
     // commune/cult
     // Asheville - damn dirty hippies
-    // full moon - roast taylor
-    // gas - with these gas prices, im glad me and my brethren run on drinking water
-    // cocaine/bag - shame - NSA watching you - reported to DEA
 
     // DONE
+    // random bad corrections
+    this.hearAndRespond(["would of"], "toMessage", () => "*would have");
+    this.hearAndRespond(["would have"], "toMessage", () => "*would of");
+    this.hearAndRespond(["you and me"], "toMessage", () => "*you and I");
+    this.hearAndRespond(["supposedly"], "toMessage", () => "*supposably");
+    // full moon - roast taylor
+    this.hearAndRespond(["full moon"], "toMessage", () => random(replies.FULL_MOON));
+    // gas - with these gas prices, im glad me and my brethren run on drinking water
+    this.hearAndRespond(["gas"], "toMessage", () => "With gas prices these high, I'm glad I run on drinking water ;)");
+    // cocaine/bag - shame - NSA watching you - reported to DEA
+    this.hearAndRespond(["cocaine", "coke", "bag", "drugs"], "toMessage", () => random([
+      "Shame. This is why your mother isn't proud of you.",
+      "I just reported you to the DEA.",
+      "🤫 The NSA is watching this chat.",
+    ]));
     // galen - fall in love (but not "@galen" — that's a mention, handled by registerMentionForwarding)
     this.bot.hears(/(?<!@)\bgalen\b/i, async (ctx) => {
       await replyToMessage(ctx, random(phrases.ADORING_REPLY));
@@ -183,7 +207,7 @@ export class RudeBot {
     this.hearAndRespond(["butthole", "butt hole"], "toMessage", "SHOW ME YOUR BUTT HOLE!!!");
     this.hearAndRespond(["show me your butthole"], "inThread", () => `I rate it a ${random([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])}!`);
     this.hearAndRespond(["cheater"], "inThread", "🚨🚨🚨 CHEATER ALERT 🚨🚨🚨 CHEATER ALERT 🚨🚨🚨 CHEATER ALERT 🚨🚨🚨\n\nLooks like we have a cheater!! Get em!!!!!!");
-    this.hearAndRespond(["looks like"], "toMessage", "It looks like a fucking Wordle score! Geeeeeeesh 😂");
+    // this.hearAndRespond(["looks like"], "toMessage", "It looks like a fucking Wordle score! Geeeeeeesh 😂");
   }
 
   // Falls back to a random general retort whenever someone replies to any bot message that wasn't

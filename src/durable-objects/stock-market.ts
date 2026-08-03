@@ -271,6 +271,17 @@ export class StockMarket extends DurableObject<Env> {
     recipientFirstName: string;
     replierUserId: number;
   }): Promise<void> {
+    // Only bumps an existing stock — never creates one. Telegram still resolves reply_to_message.from
+    // for a reply to someone's old message even after they've left the chat (or if they've simply never
+    // posted since this feature launched), so without this check a stale reply alone could conjure up a
+    // stock for someone who never generated any activity of their own.
+    const recipientExists = this.ctx.storage.sql
+      .exec<{ [column: string]: SqlStorageValue; user_id: number }>(`SELECT user_id FROM players WHERE user_id = ?`, input.recipientUserId)
+      .toArray().length > 0;
+    if (!recipientExists) {
+      return;
+    }
+
     this.upsertPlayer({
       userId: input.recipientUserId,
       ...(input.recipientUsername !== undefined && { username: input.recipientUsername }),
@@ -348,6 +359,25 @@ export class StockMarket extends DurableObject<Env> {
   async getPlayer(userId: number): Promise<StockMarketPlayer | null> {
     const row = this.ctx.storage.sql.exec<PlayerRow>(`SELECT * FROM players WHERE user_id = ?`, userId).toArray()[0];
     return row ? toPlayer(row) : null;
+  }
+
+  // Runs weekly alongside the allowance/purge sweep. Removes anyone who's never authored a genuine
+  // message themselves — a player only ever gets a 'message' reason event by posting, so this catches
+  // ghosts (e.g. someone who left before the feature launched but still got upserted via a stale reply)
+  // without punishing anyone who's actually participated, no matter how long ago.
+  async purgeGhostPlayers(): Promise<void> {
+    const ghosts = this.ctx.storage.sql
+      .exec<{ [column: string]: SqlStorageValue; user_id: number }>(
+        `SELECT user_id FROM players WHERE user_id NOT IN (SELECT DISTINCT user_id FROM price_events WHERE reason = 'message')`
+      )
+      .toArray();
+
+    for (const { user_id: userId } of ghosts) {
+      this.ctx.storage.sql.exec(`DELETE FROM holdings WHERE owner_user_id = ? OR stock_user_id = ?`, userId, userId);
+      this.ctx.storage.sql.exec(`DELETE FROM price_events WHERE user_id = ?`, userId);
+      this.ctx.storage.sql.exec(`DELETE FROM message_authors WHERE user_id = ?`, userId);
+      this.ctx.storage.sql.exec(`DELETE FROM players WHERE user_id = ?`, userId);
+    }
   }
 
   // Trades always clear against the house at the current listed price — never peer-to-peer, and never
