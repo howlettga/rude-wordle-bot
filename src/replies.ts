@@ -1,26 +1,32 @@
 import type { WordleGolfSubmitErrorType } from "./durable-objects/wordle-golf.js";
 
-export const INSTRUCTIONS =
-`Welcome to Wordle Golf! I'm here to help you keep score
+export const WORDLE_INSTRUCTIONS =
+`Welcome to Wordle Golf, you absolute buffoons. I'm here to keep score since none of you can be trusted to do it honestly.
 
-Use the /wordle command to start a new round — you'll pick how many holes (days) to play and how many mulligans (skip days) to allow.
-The lowest score over the round wins!
+/wordle starts a new round — you'll pick how many holes (days) to suffer through and how many mulligans (skip days) you're allowed, because apparently some of you need training wheels.
 
-Each day, complete the Wordle and use the share button to submit your score to this chat thread. Only share your summary! No screenshots of the actual words used.
+Lowest score wins. Yes, LOWEST. It's golf, not the rest of your life, where more is generally better.
 
-At the end of the round, I'll let you know who is smart and who is not!
-You can use the /scorecard command to see the standings at any time, or /leaderboard for results across every finished round.
+Each day, solve the Wordle and share your result to this thread. Summary only — screenshot the actual words like some kind of animal and I will tell everyone.
 
-Scoring:
-- 1 point for each guess it took to get the word
-- 6.5 points if you do not finish
-- 7 points if you miss the day
+/scorecard for the current standings. /leaderboard for the permanent record of who's smart and who isn't, across every round that's ever ended.
 
-Good luck!
----
-And now announcing, FriendStock!
-Your friends are only worth anything if they are money 😎
-/buy and /sell your friends today! Get started with /portfolio.
+Scoring, for the ones who need it spelled out:
+- 1 point per guess it took you
+- 6.5 if you didn't finish
+- 7 if you didn't even bother to play
+
+Go forth and disappoint me.
+`;
+
+export const MARKET_INSTRUCTIONS =
+`Announcing FriendStock™ — because your friendships were always going to get monetized eventually.
+
+Post in the chat and you're automatically listed on the market, no opt-in required, no opt-out either. Run /setticker to claim a short handle for yourself, or don't, and stay a nobody nobody can find.
+
+/buy $TICKER <shares> or reply to someone's message with /buy <shares> — same deal for /sell. /portfolio shows your holdings, /market shows the whole board, /value checks a single stock. You get a weekly allowance because I'm feeling generous, which is rare, so don't get used to it.
+
+How your price actually moves is none of your business. It's derived from what you post and how people react to it — beyond that, there are rules, they are complicated, and I am not explaining them to you. Get popular or get poor.
 `;
 
 const WEIRD_WORD = [

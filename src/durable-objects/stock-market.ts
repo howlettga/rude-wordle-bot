@@ -7,15 +7,60 @@ const WEEKLY_ALLOWANCE = 100;
 
 // Your own messages move your price a little; replies you get from someone else move it a lot more, since
 // that's an external signal rather than something you can just spam your way to. Both decay per-occurrence
-// today so neither can be pumped by volume alone — replies (and reactions, below) decay per (actor, recipient)
-// pair specifically, so two people can't just farm each other all day.
+// today so neither can be pumped by volume alone — messages and reactions (see recordMessage/recordReaction)
+// decay by TOTAL received today regardless of who sent them.
+//
+// Replies (see recordReply) split into two exponents instead of one: repeats from the SAME sender still
+// decay at IMPACT_DECAY, same rate as messages/reactions, so two people volleying replies back and forth
+// all day can't pump a price just because no single person repeated a message. But each NEW distinct
+// sender today decays at the much gentler DISTINCT_SENDER_DECAY instead — genuine breadth of attention
+// (a lot of different people replying) is a much harder signal to fake than volume from any one relationship,
+// so it's allowed to keep compounding much further before flattening out.
 const MESSAGE_BASE_IMPACT = 0.5;
 const REPLY_BASE_IMPACT = 2.0;
 const IMPACT_DECAY = 0.85;
+const DISTINCT_SENDER_DECAY = 0.95;
 
-// Anyone with zero price-moving activity on a given day drifts toward the chat's average price instead of
-// holding a stale pump (or a stale crash) forever.
+// How much of the theoretical full dampening (see dampenGain) actually applies — 1.0 would be the raw
+// average/price cut, trending toward keeping ~0% of a gain the further above average you get. 0.75 keeps
+// that scaled down to 75% as severe, so the cut asymptotically approaches keeping a 25% floor of any gain
+// instead of trending toward nothing.
+const DAMPEN_SEVERITY = 0.75;
+
+// Two mechanisms keep the market from being permanently dominated by whoever's most active/popular, on
+// top of the same-day decay above (which only throttles a single day's spam, not growth across days):
+//   1. Daily mean reversion (applyDailyDecay) pulls EVERY player toward the chat average each day, not
+//      just the inactive — being active still earns on top of this, but no longer exempts you from it.
+//   2. Gain dampening (applyPriceChange -> dampenGain) shrinks GAINS (never losses) once a player is
+//      already above the average, proportional to how far ahead they are — easier to fall than to keep
+//      climbing once you're on top, without a hard cap.
 const DAILY_DECAY_GRAVITY = 0.05;
+
+// Each day, a 15% chance the current leader (highest price, among anyone not already halted) gets a
+// 24-hour trading halt — "pending review of irregular activity," and that's the only explanation anyone
+// ever gets. Purely a market mechanic: the stock can't be bought or sold and its price freezes (see
+// applyPriceChange) until the halt lifts, but the person can talk in the chat completely normally. Only
+// even eligible once they've pulled at least HALT_LEAD_THRESHOLD ahead of second place — a narrow lead
+// isn't "irregular activity," so there's nothing to roll the dice for until the gap actually looks
+// suspicious.
+const HALT_DAILY_CHANCE = 0.15;
+const HALT_DURATION_HOURS = 24;
+const HALT_LEAD_THRESHOLD = 100;
+
+// The "trading day" rolls over at 5pm ET (21:00 UTC, optimized for EDT — same DST-drift tradeoff as the
+// cron triggers in wrangler.jsonc, landing at 4pm EST once winter hits) rather than UTC midnight, so it
+// means something to whoever's actually reading it instead of an arbitrary UTC hour. Used everywhere
+// "today" matters here: diminishing returns on repeat messages/reactions/replies, the decay job's
+// had-activity check, and the daily price change shown in /market and /portfolio — all one boundary, not
+// several different ones, so "today" doesn't quietly mean different things in different queries.
+//
+// datetime('now', '-21 hours', 'start of day', '+21 hours') works by shifting back past the boundary,
+// truncating to UTC midnight of that shifted day, then shifting forward the same amount — landing on the
+// most recent 21:00 UTC at or before now. E.g. "now" = 22:30 UTC -> -21h = 01:30 UTC (same day) -> start
+// of day = 00:00 UTC (same day) -> +21h = 21:00 UTC (same day, before now, so that's today's boundary).
+// "now" = 10:00 UTC -> -21h = 13:00 UTC (previous day) -> start of day = 00:00 UTC (previous day) -> +21h
+// = 21:00 UTC (previous day, since 10:00 UTC hasn't reached today's 21:00 UTC rollover yet).
+const TRADING_DAY_START = `datetime('now', '-21 hours', 'start of day', '+21 hours')`;
 
 // message_authors only exists to resolve a reaction back to who wrote the reacted-to message, and
 // price_events doubles as an audit trail (only "today"'s rows are ever queried for the decay math above) —
@@ -70,7 +115,8 @@ export interface StockMarketPlayer {
   firstName: string;
   price: number;
   cash: number;
-  dailyChange: number; // sum of today's (since UTC midnight) price_events deltas — can be negative
+  dailyChange: number; // sum of this trading day's (since TRADING_DAY_START) price_events deltas — can be negative
+  isHalted: boolean; // trading halted (see rollHalt) — can't be bought or sold, price frozen, until it lifts
 }
 
 export interface StockMarketHolding {
@@ -82,6 +128,7 @@ export interface StockMarketHolding {
   price: number;
   value: number;
   dailyChange: number; // the held stock's own daily change, same meaning as StockMarketPlayer.dailyChange
+  isHalted: boolean; // same meaning as StockMarketPlayer.isHalted, for the held stock
 }
 
 export type StockMarketSetTickerResult = "OK" | "NOT_A_PLAYER" | "TAKEN";
@@ -95,7 +142,8 @@ export type StockMarketTradeErrorType =
   | "CANNOT_TRADE_SELF"
   | "UNKNOWN_STOCK"
   | "INSUFFICIENT_CASH"
-  | "INSUFFICIENT_SHARES";
+  | "INSUFFICIENT_SHARES"
+  | "HALTED";
 
 export type StockMarketTradeResult =
   | { ok: true; shares: number; price: number; total: number; totalShares: number }
@@ -109,9 +157,14 @@ interface PlayerRow {
   first_name: string;
   price: number;
   cash: number;
+  halted_until: string | null;
 }
 
-function toPlayer(row: PlayerRow, dailyChange: number): StockMarketPlayer {
+// Deliberately not exposed as a raw halted_until string on the public interfaces — comparing SQLite's
+// space-separated UTC datetime strings against a JS Date is a timezone footgun (some environments parse
+// them as local time). Every "is this halted" check happens in SQL instead (isHaltedNow, isHalted below)
+// and only the resulting boolean ever crosses into TypeScript.
+function toPlayer(row: PlayerRow, dailyChange: number, isHalted: boolean): StockMarketPlayer {
   return {
     userId: row.user_id,
     username: row.username,
@@ -120,6 +173,7 @@ function toPlayer(row: PlayerRow, dailyChange: number): StockMarketPlayer {
     price: row.price,
     cash: row.cash,
     dailyChange,
+    isHalted,
   };
 }
 
@@ -241,20 +295,74 @@ export class StockMarket extends DurableObject<Env> {
       this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_players_ticker ON players(ticker)`);
       this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (4)`);
     }
+
+    if (version < 5) {
+      // NULL means never halted / halt has lifted — "currently halted" is always computed as
+      // halted_until IS NOT NULL AND halted_until > datetime('now'), never a separate boolean flag, so
+      // there's nothing to remember to clear when a halt expires.
+      this.ctx.storage.sql.exec(`ALTER TABLE players ADD COLUMN halted_until TEXT`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (5)`);
+    }
+
+    if (version < 6) {
+      // Single-row settings table (same id=1 upsert pattern as SpankChain's chain table) — currently just
+      // holds which forum topic cron-driven market announcements (the halt announcement, and any future
+      // ones) should post into, instead of always landing in the General topic. NULL means no preference set.
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS market_settings (
+          id INTEGER PRIMARY KEY,
+          announcement_thread_id INTEGER
+        )
+      `);
+      this.ctx.storage.sql.exec(`INSERT INTO market_settings (id, announcement_thread_id) VALUES (1, NULL) ON CONFLICT(id) DO NOTHING`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (6)`);
+    }
+
+    if (version < 7) {
+      // Anti-farming for the Necromancy payout (see claimNecromancy) — first person to reply to a given
+      // old message claims it; replying to the same one again pays nothing. No CHECK constraint, so a
+      // plain create is enough.
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS necromancy_claims (
+          message_id INTEGER PRIMARY KEY,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+      `);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (7)`);
+    }
+
+    if (version < 8) {
+      // Lets Conversation Terminator scope "the last message" per forum topic instead of chat-wide (see
+      // getThreadSilenceGap) — a topic going quiet is its own event, distinct from the rest of the chat
+      // being active. NULL means the General/no-topic chat, same convention as halted_until's "NULL means
+      // not halted".
+      this.ctx.storage.sql.exec(`ALTER TABLE message_authors ADD COLUMN thread_id INTEGER`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (8)`);
+    }
+
+    if (version < 9) {
+      // Lets Conversation Terminator treat "somebody reacted to it" as real engagement even without a
+      // text reply — see recordReaction and getThreadSilenceGap's has_reaction. NULL means never reacted
+      // to (only genuine, non-self reactions set this — same guard recordReaction already applies to
+      // price movement).
+      this.ctx.storage.sql.exec(`ALTER TABLE message_authors ADD COLUMN last_reacted_at TEXT`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (9)`);
+    }
   }
 
-  async recordMessage(input: { messageId: number; userId: number; username?: string; firstName: string }): Promise<void> {
+  async recordMessage(input: { messageId: number; userId: number; username?: string; firstName: string; threadId?: number }): Promise<void> {
     this.upsertPlayer(input);
     this.ctx.storage.sql.exec(
-      `INSERT INTO message_authors (message_id, user_id) VALUES (?, ?) ON CONFLICT(message_id) DO NOTHING`,
+      `INSERT INTO message_authors (message_id, user_id, thread_id) VALUES (?, ?, ?) ON CONFLICT(message_id) DO NOTHING`,
       input.messageId,
-      input.userId
+      input.userId,
+      input.threadId ?? null
     );
 
     const countToday = this.ctx.storage.sql
       .exec<{ count: number }>(
         `SELECT COUNT(*) as count FROM price_events
-         WHERE user_id = ? AND reason = 'message' AND created_at >= datetime('now', 'start of day')`,
+         WHERE user_id = ? AND reason = 'message' AND created_at >= ${TRADING_DAY_START}`,
         input.userId
       )
       .one().count;
@@ -278,12 +386,13 @@ export class StockMarket extends DurableObject<Env> {
       return;
     }
 
+    this.ctx.storage.sql.exec(`UPDATE message_authors SET last_reacted_at = datetime('now') WHERE message_id = ?`, input.messageId);
+
     const countToday = this.ctx.storage.sql
       .exec<{ count: number }>(
         `SELECT COUNT(*) as count FROM price_events
-         WHERE user_id = ? AND counterparty_user_id = ? AND reason = 'reaction' AND created_at >= datetime('now', 'start of day')`,
-        author.user_id,
-        input.reactorUserId
+         WHERE user_id = ? AND reason = 'reaction' AND created_at >= ${TRADING_DAY_START}`,
+        author.user_id
       )
       .one().count;
 
@@ -313,18 +422,26 @@ export class StockMarket extends DurableObject<Env> {
       firstName: input.recipientFirstName,
     });
 
-    const countToday = this.ctx.storage.sql
+    const sameSenderCountToday = this.ctx.storage.sql
       .exec<{ count: number }>(
         `SELECT COUNT(*) as count FROM price_events
-         WHERE user_id = ? AND counterparty_user_id = ? AND reason = 'reply' AND created_at >= datetime('now', 'start of day')`,
+         WHERE user_id = ? AND counterparty_user_id = ? AND reason = 'reply' AND created_at >= ${TRADING_DAY_START}`,
         input.recipientUserId,
         input.replierUserId
       )
       .one().count;
 
+    const distinctSendersSoFarToday = this.ctx.storage.sql
+      .exec<{ count: number }>(
+        `SELECT COUNT(DISTINCT counterparty_user_id) as count FROM price_events
+         WHERE user_id = ? AND reason = 'reply' AND created_at >= ${TRADING_DAY_START}`,
+        input.recipientUserId
+      )
+      .one().count;
+
     this.applyPriceChange(
       input.recipientUserId,
-      REPLY_BASE_IMPACT * Math.pow(IMPACT_DECAY, countToday),
+      REPLY_BASE_IMPACT * Math.pow(IMPACT_DECAY, sameSenderCountToday) * Math.pow(DISTINCT_SENDER_DECAY, distinctSendersSoFarToday),
       "reply",
       input.replierUserId
     );
@@ -356,9 +473,10 @@ export class StockMarket extends DurableObject<Env> {
       .toArray();
 
     const changes = this.getDailyChanges();
+    const halted = this.haltedUserIds();
 
     return {
-      ...toPlayer(row, changes.get(row.user_id) ?? 0),
+      ...toPlayer(row, changes.get(row.user_id) ?? 0, halted.has(row.user_id)),
       holdings: holdings.map((h) => ({
         stockUserId: h.stock_user_id,
         username: h.username,
@@ -368,16 +486,18 @@ export class StockMarket extends DurableObject<Env> {
         price: h.price,
         value: h.shares * h.price,
         dailyChange: changes.get(h.stock_user_id) ?? 0,
+        isHalted: halted.has(h.stock_user_id),
       })),
     };
   }
 
   async getMarket(): Promise<StockMarketPlayer[]> {
     const changes = this.getDailyChanges();
+    const halted = this.haltedUserIds();
     return this.ctx.storage.sql
       .exec<PlayerRow>(`SELECT * FROM players ORDER BY price DESC`)
       .toArray()
-      .map((row) => toPlayer(row, changes.get(row.user_id) ?? 0));
+      .map((row) => toPlayer(row, changes.get(row.user_id) ?? 0, halted.has(row.user_id)));
   }
 
   // For /buy $TICKER <n> and /sell $TICKER <n> — tickers are opt-in (see setTicker) and only reachable
@@ -386,12 +506,12 @@ export class StockMarket extends DurableObject<Env> {
   // /buy and /sell use tickers.
   async findPlayerByTicker(ticker: string): Promise<StockMarketPlayer | null> {
     const row = this.ctx.storage.sql.exec<PlayerRow>(`SELECT * FROM players WHERE ticker = ? COLLATE NOCASE`, ticker).toArray()[0];
-    return row ? toPlayer(row, this.getDailyChange(row.user_id)) : null;
+    return row ? toPlayer(row, this.getDailyChange(row.user_id), this.isHalted(row.user_id)) : null;
   }
 
   async getPlayer(userId: number): Promise<StockMarketPlayer | null> {
     const row = this.ctx.storage.sql.exec<PlayerRow>(`SELECT * FROM players WHERE user_id = ?`, userId).toArray()[0];
-    return row ? toPlayer(row, this.getDailyChange(userId)) : null;
+    return row ? toPlayer(row, this.getDailyChange(userId), this.isHalted(userId)) : null;
   }
 
   // Requires the caller to already be a player (i.e. have posted a real message) — otherwise a ticker
@@ -419,13 +539,13 @@ export class StockMarket extends DurableObject<Env> {
     return "OK";
   }
 
-  // Today's (since UTC midnight) net price movement for one player — every price mutation already
-  // inserts a timestamped price_events row (see applyPriceChange), so this needs no separate snapshot.
+  // This trading day's net price movement for one player — every price mutation already inserts a
+  // timestamped price_events row (see applyPriceChange), so this needs no separate snapshot.
   private getDailyChange(userId: number): number {
     return this.ctx.storage.sql
       .exec<{ [column: string]: SqlStorageValue; change: number }>(
         `SELECT COALESCE(SUM(delta), 0) as change FROM price_events
-         WHERE user_id = ? AND created_at >= datetime('now', 'start of day')`,
+         WHERE user_id = ? AND created_at >= ${TRADING_DAY_START}`,
         userId
       )
       .one().change;
@@ -437,11 +557,35 @@ export class StockMarket extends DurableObject<Env> {
     const rows = this.ctx.storage.sql
       .exec<{ [column: string]: SqlStorageValue; user_id: number; change: number }>(
         `SELECT user_id, SUM(delta) as change FROM price_events
-         WHERE created_at >= datetime('now', 'start of day')
+         WHERE created_at >= ${TRADING_DAY_START}
          GROUP BY user_id`
       )
       .toArray();
     return new Map(rows.map((r) => [r.user_id, r.change]));
+  }
+
+  // True if this player currently has an active trading halt (see rollHalt). Always computed in SQL
+  // rather than comparing halted_until against a JS Date — SQLite's space-separated UTC datetime strings
+  // are a timezone footgun there (some environments parse them as local time instead of UTC).
+  private isHalted(userId: number): boolean {
+    const row = this.ctx.storage.sql
+      .exec<{ [column: string]: SqlStorageValue; halted: number }>(
+        `SELECT (halted_until IS NOT NULL AND halted_until > datetime('now')) as halted FROM players WHERE user_id = ?`,
+        userId
+      )
+      .toArray()[0];
+    return row?.halted === 1;
+  }
+
+  // Same idea as isHalted, but every currently-halted player in this chat at once — same pattern as
+  // getDailyChanges, for wherever a whole roster is being built (getMarket, getPortfolio).
+  private haltedUserIds(): Set<number> {
+    const rows = this.ctx.storage.sql
+      .exec<{ [column: string]: SqlStorageValue; user_id: number }>(
+        `SELECT user_id FROM players WHERE halted_until IS NOT NULL AND halted_until > datetime('now')`
+      )
+      .toArray();
+    return new Set(rows.map((r) => r.user_id));
   }
 
   // Runs weekly alongside the allowance/purge sweep. Removes anyone who's never authored a genuine
@@ -456,11 +600,41 @@ export class StockMarket extends DurableObject<Env> {
       .toArray();
 
     for (const { user_id: userId } of ghosts) {
-      this.ctx.storage.sql.exec(`DELETE FROM holdings WHERE owner_user_id = ? OR stock_user_id = ?`, userId, userId);
-      this.ctx.storage.sql.exec(`DELETE FROM price_events WHERE user_id = ?`, userId);
-      this.ctx.storage.sql.exec(`DELETE FROM message_authors WHERE user_id = ?`, userId);
-      this.ctx.storage.sql.exec(`DELETE FROM players WHERE user_id = ?`, userId);
+      this.deletePlayerRow(userId);
     }
+  }
+
+  // Manual, immediate removal for someone who genuinely posted before (so purgeGhostPlayers won't touch
+  // them — by design, it only sweeps ghosts) but has since left the chat and is still accumulating price
+  // purely from other people replying to their old messages. There's no reliable "they left" signal from
+  // Telegram short of subscribing to chat_member updates, so this is deliberately a manual action rather
+  // than something automatic.
+  async removePlayer(userId: number): Promise<boolean> {
+    const existed = this.ctx.storage.sql.exec<PlayerRow>(`SELECT user_id FROM players WHERE user_id = ?`, userId).toArray().length > 0;
+    if (!existed) {
+      return false;
+    }
+    this.deletePlayerRow(userId);
+    return true;
+  }
+
+  // Owner-only full wipe — every player, holding, price event, and message-author record in this chat's
+  // market, gone. For clearing out an economy corrupted by a bug (e.g. the topic-auto-reply
+  // mismeasurement — see realReplyTo in context.ts) rather than correcting one player at a time; removing
+  // individual players one-by-one is already what removePlayer/delist is for. Schema/migration state is
+  // untouched, so the next message from anyone just starts them fresh at STARTING_PRICE/STARTING_CASH.
+  async restart(): Promise<void> {
+    this.ctx.storage.sql.exec(`DELETE FROM holdings`);
+    this.ctx.storage.sql.exec(`DELETE FROM price_events`);
+    this.ctx.storage.sql.exec(`DELETE FROM message_authors`);
+    this.ctx.storage.sql.exec(`DELETE FROM players`);
+  }
+
+  private deletePlayerRow(userId: number): void {
+    this.ctx.storage.sql.exec(`DELETE FROM holdings WHERE owner_user_id = ? OR stock_user_id = ?`, userId, userId);
+    this.ctx.storage.sql.exec(`DELETE FROM price_events WHERE user_id = ?`, userId);
+    this.ctx.storage.sql.exec(`DELETE FROM message_authors WHERE user_id = ?`, userId);
+    this.ctx.storage.sql.exec(`DELETE FROM players WHERE user_id = ?`, userId);
   }
 
   // Trades always clear against the house at the current listed price — never peer-to-peer, and never
@@ -483,6 +657,9 @@ export class StockMarket extends DurableObject<Env> {
     const target = this.ctx.storage.sql.exec<PlayerRow>(`SELECT * FROM players WHERE user_id = ?`, input.targetUserId).toArray()[0];
     if (!target) {
       return { ok: false, type: "UNKNOWN_STOCK" };
+    }
+    if (this.isHalted(input.targetUserId)) {
+      return { ok: false, type: "HALTED" };
     }
 
     const buyer = this.ctx.storage.sql.exec<PlayerRow>(`SELECT * FROM players WHERE user_id = ?`, input.buyerUserId).one();
@@ -520,6 +697,9 @@ export class StockMarket extends DurableObject<Env> {
     if (!target) {
       return { ok: false, type: "UNKNOWN_STOCK" };
     }
+    if (this.isHalted(input.targetUserId)) {
+      return { ok: false, type: "HALTED" };
+    }
 
     const holding = this.ctx.storage.sql
       .exec<{ [column: string]: SqlStorageValue; shares: number }>(
@@ -553,6 +733,97 @@ export class StockMarket extends DurableObject<Env> {
     this.ctx.storage.sql.exec(`UPDATE players SET cash = cash + ?, updated_at = datetime('now')`, WEEKLY_ALLOWANCE);
   }
 
+  // Flat cash grant — used for the random per-message bonus (see the composer's maybeAwardCashBonus).
+  // Cash only, never price, so it's completely orthogonal to dampenGain/decay/halts — just spendable
+  // currency, same as the weekly allowance above. Requires an existing player, but the composer only
+  // ever calls this from inside trackActivity, right after recordMessage has already upserted them.
+  async awardCash(userId: number, amount: number): Promise<void> {
+    this.ctx.storage.sql.exec(`UPDATE players SET cash = cash + ?, updated_at = datetime('now') WHERE user_id = ?`, amount, userId);
+  }
+
+  // The most recently tracked message in one specific forum topic (or the General/no-topic chat, if
+  // threadId is null) — used by Conversation Terminator, which is scoped per-thread so one topic going
+  // quiet doesn't get lumped in with unrelated activity happening in a different topic. Must be called
+  // BEFORE recordMessage inserts the current message's own row, or this would just find the message
+  // calling it. Returns raw epoch seconds (via SQLite's own strftime, never a JS Date parse of the
+  // space-separated UTC string) so the composer can do awake-hours-aware gap math itself without hitting
+  // the timezone footgun described on isHalted above. hasReaction lets the composer treat a reaction on
+  // that last message as real engagement and skip Terminator entirely, even with zero text replies.
+  async getThreadSilenceGap(threadId: number | null): Promise<
+    | {
+        userId: number;
+        firstName: string;
+        ticker: string | null;
+        messageId: number;
+        lastEpochSec: number;
+        nowEpochSec: number;
+        hasReaction: boolean;
+      }
+    | null
+  > {
+    const row = this.ctx.storage.sql
+      .exec<{
+        [column: string]: SqlStorageValue;
+        user_id: number;
+        first_name: string;
+        ticker: string | null;
+        message_id: number;
+        last_epoch_sec: number;
+        now_epoch_sec: number;
+        has_reaction: number;
+      }>(
+        `SELECT ma.user_id, p.first_name, p.ticker, ma.message_id,
+                CAST(strftime('%s', ma.created_at) AS INTEGER) as last_epoch_sec,
+                CAST(strftime('%s', 'now') AS INTEGER) as now_epoch_sec,
+                (ma.last_reacted_at IS NOT NULL) as has_reaction
+         FROM message_authors ma
+         JOIN players p ON p.user_id = ma.user_id
+         WHERE ma.thread_id IS ?
+         ORDER BY ma.created_at DESC LIMIT 1`,
+        threadId
+      )
+      .toArray()[0];
+    return row
+      ? {
+          userId: row.user_id,
+          firstName: row.first_name,
+          ticker: row.ticker,
+          messageId: row.message_id,
+          lastEpochSec: row.last_epoch_sec,
+          nowEpochSec: row.now_epoch_sec,
+          hasReaction: row.has_reaction === 1,
+        }
+      : null;
+  }
+
+  // Same idea as getThreadSilenceGap, but chat-wide across every thread — used by Market Open, which
+  // deliberately stays global (breaking the silence anywhere in the chat counts, not just in one topic).
+  async getChatSilenceGap(): Promise<{ userId: number; lastEpochSec: number; nowEpochSec: number } | null> {
+    const row = this.ctx.storage.sql
+      .exec<{ [column: string]: SqlStorageValue; user_id: number; last_epoch_sec: number; now_epoch_sec: number }>(
+        `SELECT ma.user_id,
+                CAST(strftime('%s', ma.created_at) AS INTEGER) as last_epoch_sec,
+                CAST(strftime('%s', 'now') AS INTEGER) as now_epoch_sec
+         FROM message_authors ma
+         ORDER BY ma.created_at DESC LIMIT 1`
+      )
+      .toArray()[0];
+    return row ? { userId: row.user_id, lastEpochSec: row.last_epoch_sec, nowEpochSec: row.now_epoch_sec } : null;
+  }
+
+  // True (and claims it) if nobody's necromanced this message before — false, no-op, if it's already
+  // been claimed, so the same old message can't be repeatedly replied to for repeat payouts.
+  async claimNecromancy(messageId: number): Promise<boolean> {
+    const already = this.ctx.storage.sql
+      .exec<{ [column: string]: SqlStorageValue; message_id: number }>(`SELECT message_id FROM necromancy_claims WHERE message_id = ?`, messageId)
+      .toArray().length > 0;
+    if (already) {
+      return false;
+    }
+    this.ctx.storage.sql.exec(`INSERT INTO necromancy_claims (message_id) VALUES (?)`, messageId);
+    return true;
+  }
+
   async applyDailyDecay(): Promise<void> {
     const players = this.ctx.storage.sql.exec<PlayerRow>(`SELECT * FROM players`).toArray();
     if (players.length === 0) {
@@ -562,23 +833,59 @@ export class StockMarket extends DurableObject<Env> {
     const average = players.reduce((sum, p) => sum + p.price, 0) / players.length;
 
     for (const player of players) {
-      const hadActivityToday = this.ctx.storage.sql
-        .exec<{ count: number }>(
-          `SELECT COUNT(*) as count FROM price_events
-           WHERE user_id = ? AND reason != 'decay' AND created_at >= datetime('now', 'start of day')`,
-          player.user_id
-        )
-        .one().count;
-      if (hadActivityToday > 0) {
-        continue;
-      }
-
       const delta = (average - player.price) * DAILY_DECAY_GRAVITY;
       if (Math.abs(delta) < 0.01) {
         continue;
       }
       this.applyPriceChange(player.user_id, delta, "decay", null);
     }
+  }
+
+  // Driven by the same daily cron as applyDailyDecay, but kept separate since this one needs to tell the
+  // composer who (if anyone) to announce — applyDailyDecay is pure storage mutation with nothing to say.
+  // Considers only the current leader, and only among players not already halted, so this can't re-halt
+  // someone mid-halt or ever leave the market with zero tradeable stocks if everyone's somehow halted.
+  // Eligibility (the lead requirement) is checked before the dice roll, not after — a lead that doesn't
+  // clear the bar means there's nothing to roll for at all, not just a roll that happens to fail.
+  async rollHalt(): Promise<{ userId: number; firstName: string; ticker: string | null } | null> {
+    const [leader, runnerUp] = this.ctx.storage.sql
+      .exec<PlayerRow>(
+        `SELECT * FROM players WHERE halted_until IS NULL OR halted_until <= datetime('now') ORDER BY price DESC LIMIT 2`
+      )
+      .toArray();
+    if (!leader || !runnerUp || leader.price - runnerUp.price < HALT_LEAD_THRESHOLD) {
+      return null;
+    }
+
+    if (Math.random() >= HALT_DAILY_CHANCE) {
+      return null;
+    }
+
+    this.ctx.storage.sql.exec(
+      `UPDATE players SET halted_until = datetime('now', '+${HALT_DURATION_HOURS} hours'), updated_at = datetime('now') WHERE user_id = ?`,
+      leader.user_id
+    );
+
+    return { userId: leader.user_id, firstName: leader.first_name, ticker: leader.ticker };
+  }
+
+  // NULL clears the preference (announcements fall back to the General topic / main chat).
+  async setAnnouncementThread(threadId: number | null): Promise<void> {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO market_settings (id, announcement_thread_id) VALUES (1, ?)
+       ON CONFLICT(id) DO UPDATE SET announcement_thread_id = ?`,
+      threadId,
+      threadId
+    );
+  }
+
+  async getAnnouncementThread(): Promise<number | null> {
+    const row = this.ctx.storage.sql
+      .exec<{ [column: string]: SqlStorageValue; announcement_thread_id: number | null }>(
+        `SELECT announcement_thread_id FROM market_settings WHERE id = 1`
+      )
+      .toArray()[0];
+    return row?.announcement_thread_id ?? null;
   }
 
   async purgeOldData(): Promise<void> {
@@ -597,13 +904,58 @@ export class StockMarket extends DurableObject<Env> {
   }
 
   private applyPriceChange(userId: number, delta: number, reason: "message" | "reply" | "reaction" | "decay", counterpartyUserId: number | null): void {
-    this.ctx.storage.sql.exec(`UPDATE players SET price = MAX(0, price + ?), updated_at = datetime('now') WHERE user_id = ?`, delta, userId);
+    // Halted means frozen, full stop — no price movement of any kind, not even the daily gravity pull,
+    // until the halt lifts. Single choke point for every price-moving code path (recordMessage,
+    // recordReaction, recordReply, applyDailyDecay all funnel through here), so the check only needs to
+    // live in one place.
+    if (this.isHalted(userId)) {
+      return;
+    }
+
+    // decay's delta is already computed relative to the average (see applyDailyDecay) — dampening it
+    // again here would fight itself, so only message/reply/reaction gains go through dampenGain.
+    const dampedDelta = reason === "decay" ? delta : this.dampenGain(userId, delta);
+    this.ctx.storage.sql.exec(`UPDATE players SET price = MAX(0, price + ?), updated_at = datetime('now') WHERE user_id = ?`, dampedDelta, userId);
     this.ctx.storage.sql.exec(
       `INSERT INTO price_events (user_id, counterparty_user_id, reason, delta) VALUES (?, ?, ?, ?)`,
       userId,
       counterpartyUserId,
       reason,
-      delta
+      dampedDelta
     );
+  }
+
+  // Shrinks GAINS (never losses — a bad reaction/reply-decay always lands at full strength) once a
+  // player is already above the chat average, proportional to how far ahead they are. Makes it
+  // progressively harder to pull further ahead the further ahead you already are — DAMPEN_SEVERITY keeps
+  // that cut from ever fully choking a gain, asymptotically approaching a (1 - DAMPEN_SEVERITY) floor
+  // instead of trending toward zero. Complements applyDailyDecay's pull-back, which only fires once a
+  // day, with something that applies to every single gain as it happens.
+  private dampenGain(userId: number, delta: number): number {
+    if (delta <= 0) {
+      return delta;
+    }
+
+    const row = this.ctx.storage.sql.exec<PlayerRow>(`SELECT price FROM players WHERE user_id = ?`, userId).toArray()[0];
+    if (!row) {
+      return delta;
+    }
+
+    const { count, total } = this.ctx.storage.sql
+      .exec<{ [column: string]: SqlStorageValue; count: number; total: number }>(
+        `SELECT COUNT(*) as count, COALESCE(SUM(price), 0) as total FROM players`
+      )
+      .one();
+    if (count === 0) {
+      return delta;
+    }
+
+    const average = total / count;
+    if (row.price <= average) {
+      return delta;
+    }
+
+    const fullCut = 1 - average / row.price;
+    return delta * (1 - DAMPEN_SEVERITY * fullCut);
   }
 }

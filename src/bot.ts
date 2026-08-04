@@ -3,9 +3,9 @@ import type { UserFromGetMe } from "grammy/types";
 import { conversations } from "@grammyjs/conversations";
 import type { ConversationData, VersionedState, VersionedStateStorage } from "@grammyjs/conversations";
 import { random } from "./util.js";
-import { INSTRUCTIONS, phrases, RDU_ADVERTISEMENT, replies } from "./replies.js";
+import { WORDLE_INSTRUCTIONS, MARKET_INSTRUCTIONS, phrases, RDU_ADVERTISEMENT, replies } from "./replies.js";
 import type { StorageService } from "./storage-service.js";
-import { type MyContext, replyToMessage, replyInThread, replyHTML, replyPhoto } from "./context.js";
+import { type MyContext, replyToMessage, replyInThread, replyHTML, replyPhoto, realReplyTo } from "./context.js";
 import { WordleGolfComposer } from "./wordle-golf.js";
 import { StockMarketComposer } from "./stock-market.js";
 import beenMentionedPhoto from "../assets/beens_mentioned.jpg";
@@ -54,17 +54,32 @@ export class RudeBot {
     };
   }
 
-  handleUpdate(request: Request) {
-    return webhookCallback(this.bot, "cloudflare-mod")(request);
+  // grammY's bot.catch() (registerErrorHandler, below) only gets invoked by Bot.handleUpdates() — the
+  // plural, long-polling entry point. webhookCallback() drives the singular Bot.handleUpdate() instead,
+  // which wraps a middleware error as BotError and rethrows it, completely bypassing bot.catch(). So for
+  // this webhook-based Worker, bot.catch() has never actually caught anything — every unhandled error has
+  // always propagated out of fetch() as an uncaught exception, which Cloudflare turns into a 500. Telegram
+  // retries non-2xx webhook deliveries, and delivers a chat's updates in order, so one permanently-failing
+  // update (e.g. replying to a since-deleted message) can back up everything after it for that chat
+  // indefinitely. This try/catch is the actual safety net for webhook mode: whatever happens inside
+  // grammY, we always resolve the request normally so Telegram considers the update delivered and moves on.
+  async handleUpdate(request: Request): Promise<Response> {
+    try {
+      return await webhookCallback(this.bot, "cloudflare-mod")(request);
+    } catch (err) {
+      console.error(err);
+      return new Response("OK");
+    }
   }
 
-  // Catches anything a handler throws (a flaky NYT API call, a malformed DO response, etc.) so a broken
-  // update gets a reply instead of silently failing — grammY re-throws unhandled errors otherwise, which
-  // would surface to Telegram as a failed webhook delivery with no feedback to the chat.
+  // Kept for correctness/documentation of intent, and in case this bot ever runs via long polling
+  // instead — but see the note on handleUpdate above: this is NOT what protects the webhook deployment.
+  // Deliberately doesn't reply into the chat: people hit this from ambient background behavior they never
+  // asked for (e.g. a mention triggering a forward Telegram refuses), so an out-of-nowhere "I've been a
+  // bad bot" message would just confuse whoever's mid-conversation with no idea anything failed.
   private registerErrorHandler() {
     this.bot.catch((err) => {
       console.error(err);
-      replyInThread(err.ctx, "I'm sorry, there was an error :(\nI've been a bad bot");
     });
   }
 
@@ -73,12 +88,92 @@ export class RudeBot {
   }
 
   private registerCommands() {
-    this.bot.command("instructions", (ctx) => replyInThread(ctx, INSTRUCTIONS));
+    this.bot.command("instructions", (ctx) => replyInThread(ctx, WORDLE_INSTRUCTIONS));
+    this.bot.command("marketrules", (ctx) => replyInThread(ctx, MARKET_INSTRUCTIONS));
+    this.registerDelist();
+    this.registerRestart();
+    this.registerSetMarketThread();
+  }
+
+  // Owner-only. Cron-driven market announcements (the trading-halt notice, and any future ones) default
+  // to the General topic / main chat since they're not a reply to anyone. Run this inside the topic you
+  // want them to land in instead — captures that topic's message_thread_id and stores it per chat.
+  // Running it outside any topic (e.g. in General) clears the preference back to the default.
+  private registerSetMarketThread() {
+    this.bot.command("setmarketthread", async (ctx) => {
+      if (this.ownerChatId === undefined || ctx.from?.id !== this.ownerChatId || !ctx.chat) {
+        return;
+      }
+
+      const threadId = ctx.message?.message_thread_id ?? null;
+      await this.storage.setStockMarketAnnouncementThread(ctx.chat.id, threadId);
+      await replyToMessage(
+        ctx,
+        threadId !== null
+          ? "Market announcements will now be posted in this thread."
+          : "Market announcements will now be posted in the main chat."
+      );
+    });
+  }
+
+  // Owner-only, immediate removal from the stock market for someone who's left a chat but is still
+  // accumulating price purely from other people replying to their old messages — purgeGhostPlayers'
+  // weekly sweep deliberately won't touch them since they genuinely posted before leaving, so this is
+  // the manual escape hatch for that case rather than a "wait until Monday" one. Targets by reply, or by
+  // /delist $TICKER if they'd set one.
+  private registerDelist() {
+    this.bot.command("delist", async (ctx) => {
+      if (this.ownerChatId === undefined || ctx.from?.id !== this.ownerChatId || !ctx.chat) {
+        return;
+      }
+
+      const repliedTo = realReplyTo(ctx)?.from;
+      const arg = String(ctx.match ?? "").trim();
+
+      let targetUserId: number;
+      let targetLabel: string;
+      if (repliedTo) {
+        targetUserId = repliedTo.id;
+        targetLabel = repliedTo.first_name;
+      } else if (arg.startsWith("$")) {
+        const found = await this.storage.findStockMarketPlayerByTicker(ctx.chat.id, arg.slice(1));
+        if (!found) {
+          await replyToMessage(ctx, `Couldn't find ${arg} in this chat's market.`);
+          return;
+        }
+        targetUserId = found.userId;
+        targetLabel = found.firstName;
+      } else {
+        await replyToMessage(ctx, "Reply to their message with /delist, or use /delist $TICKER if they set one.");
+        return;
+      }
+
+      const removed = await this.storage.removeStockMarketPlayer(ctx.chat.id, targetUserId);
+      await replyToMessage(ctx, removed ? `Delisted ${targetLabel} from the market.` : `${targetLabel} wasn't in the market.`);
+    });
+  }
+
+  // Owner-only full wipe of this chat's stock market — every player, holding, and price event, gone.
+  // For clearing out an economy corrupted by a bug (e.g. the topic-auto-reply mismeasurement fixed
+  // alongside this) rather than correcting people one at a time, which /delist already covers.
+  private registerRestart() {
+    this.bot.command("restart", async (ctx) => {
+      if (this.ownerChatId === undefined || ctx.from?.id !== this.ownerChatId || !ctx.chat) {
+        return;
+      }
+
+      await this.storage.restartStockMarket(ctx.chat.id);
+      await replyToMessage(ctx, "The market has been reset. Everyone starts fresh from here.");
+    });
   }
 
   // Forwards any message mentioning @howlettga to the owner's DM. Requires ownerChatId to be set, and
   // requires the owner to have started a private chat with the bot at least once (Telegram won't let a
   // bot DM someone cold). Always calls next() so this never swallows an update from the easter eggs below.
+  // Telegram refuses to forward some messages outright (forum-topic system messages like "X started the
+  // topic", content-protected chats, etc.) — that's routine, not a bug, so failures here are caught and
+  // skipped quietly rather than thrown: nobody in the chat asked for this forward, so surfacing an error
+  // about it would be confusing, and letting it escape unhandled risks a Worker crash (see registerErrorHandler).
   private registerMentionForwarding() {
     this.bot.on("message:text", async (ctx, next) => {
       if (
@@ -86,21 +181,30 @@ export class RudeBot {
         ctx.from?.id !== this.ownerChatId &&
         /@(howlettga|galen)\b/i.test(ctx.message.text)
       ) {
-        if (ctx.message.reply_to_message) {
-          await ctx.api.forwardMessage(this.ownerChatId, ctx.chat.id, ctx.message.reply_to_message.message_id);
+        try {
+          if (ctx.message.reply_to_message) {
+            await ctx.api.forwardMessage(this.ownerChatId, ctx.chat.id, ctx.message.reply_to_message.message_id);
+          }
+          await ctx.forwardMessage(this.ownerChatId);
+          await replyToMessage(ctx, "I let him know 🫡");
+        } catch (err) {
+          console.error(err);
         }
-        await ctx.forwardMessage(this.ownerChatId);
-        await replyToMessage(ctx, "I let him know 🫡");
       }
       await next();
     });
   }
 
-  // Forwards any poll to the owner's DM, silently. Same ownerChatId requirements as mention forwarding above.
+  // Forwards any poll to the owner's DM, silently. Same ownerChatId requirements and forward-failure
+  // handling as mention forwarding above.
   private registerPollForwarding() {
     this.bot.on("message:poll", async (ctx, next) => {
       if (this.ownerChatId !== undefined && ctx.from?.id !== this.ownerChatId) {
-        await ctx.forwardMessage(this.ownerChatId);
+        try {
+          await ctx.forwardMessage(this.ownerChatId);
+        } catch (err) {
+          console.error(err);
+        }
       }
       await next();
     });

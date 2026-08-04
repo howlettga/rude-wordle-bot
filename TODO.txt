@@ -1,0 +1,11 @@
+Bugfixes
+
+Features
+
+- value based on trade volume (buying stock makes it go up)
+- no one replies to question (+money)
+- options (long call options)
+
+Maybe
+- stock splitting
+- partial shares

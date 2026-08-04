@@ -120,7 +120,7 @@ export class StorageService {
 
   async recordStockMarketMessage(
     chatId: number,
-    input: { messageId: number; userId: number; username?: string; firstName: string }
+    input: { messageId: number; userId: number; username?: string; firstName: string; threadId?: number }
   ): Promise<void> {
     await Promise.all([this.stockMarketStub(chatId).recordMessage(input), this.registerStockMarketChat(chatId)]);
   }
@@ -156,6 +156,22 @@ export class StorageService {
     return this.stockMarketStub(chatId).getPlayer(userId);
   }
 
+  removeStockMarketPlayer(chatId: number, userId: number): Promise<boolean> {
+    return this.stockMarketStub(chatId).removePlayer(userId);
+  }
+
+  restartStockMarket(chatId: number): Promise<void> {
+    return this.stockMarketStub(chatId).restart();
+  }
+
+  setStockMarketAnnouncementThread(chatId: number, threadId: number | null): Promise<void> {
+    return this.stockMarketStub(chatId).setAnnouncementThread(threadId);
+  }
+
+  getStockMarketAnnouncementThread(chatId: number): Promise<number | null> {
+    return this.stockMarketStub(chatId).getAnnouncementThread();
+  }
+
   purgeStockMarketGhostPlayers(chatId: number): Promise<void> {
     return this.stockMarketStub(chatId).purgeGhostPlayers();
   }
@@ -185,8 +201,42 @@ export class StorageService {
     return this.stockMarketStub(chatId).applyWeeklyAllowance();
   }
 
+  awardStockMarketCash(chatId: number, userId: number, amount: number): Promise<void> {
+    return this.stockMarketStub(chatId).awardCash(userId, amount);
+  }
+
+  getStockMarketThreadSilenceGap(
+    chatId: number,
+    threadId: number | null
+  ): Promise<
+    | {
+        userId: number;
+        firstName: string;
+        ticker: string | null;
+        messageId: number;
+        lastEpochSec: number;
+        nowEpochSec: number;
+        hasReaction: boolean;
+      }
+    | null
+  > {
+    return this.stockMarketStub(chatId).getThreadSilenceGap(threadId);
+  }
+
+  getStockMarketChatSilenceGap(chatId: number): Promise<{ userId: number; lastEpochSec: number; nowEpochSec: number } | null> {
+    return this.stockMarketStub(chatId).getChatSilenceGap();
+  }
+
+  claimStockMarketNecromancy(chatId: number, messageId: number): Promise<boolean> {
+    return this.stockMarketStub(chatId).claimNecromancy(messageId);
+  }
+
   applyStockMarketDailyDecay(chatId: number): Promise<void> {
     return this.stockMarketStub(chatId).applyDailyDecay();
+  }
+
+  rollStockMarketHalt(chatId: number): Promise<{ userId: number; firstName: string; ticker: string | null } | null> {
+    return this.stockMarketStub(chatId).rollHalt();
   }
 
   purgeStockMarketOldData(chatId: number): Promise<void> {

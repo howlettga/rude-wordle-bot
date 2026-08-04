@@ -2,7 +2,7 @@ import { Composer, InlineKeyboard } from "grammy";
 import type { Api, Context } from "grammy";
 import { createConversation } from "@grammyjs/conversations";
 import type { Conversation } from "@grammyjs/conversations";
-import { type MyContext, replyToMessage, replyInThread, replyHTML } from "./context.js";
+import { type MyContext, replyToMessage, replyInThread, replyHTML, isNotCommand, CONVERSATION_TIMEOUT_MS } from "./context.js";
 import type { StorageService } from "./storage-service.js";
 import type { WordleGolfGame, WordleGolfScorecard, WordleGolfLeaderboardEntry } from "./durable-objects/wordle-golf.js";
 import { getTodaysWordle, nextDateString } from "./wordle-api.js";
@@ -28,15 +28,32 @@ export class WordleGolfComposer extends Composer<MyContext> {
     super();
     // Must be registered before any handler below that calls ctx.conversation.enter() — the middleware it
     // returns is what makes that name resolvable.
-    this.use(createConversation(this.newRoundDialogue.bind(this), NEW_ROUND_CONVERSATION));
+    this.use(
+      createConversation(this.newRoundDialogue.bind(this), {
+        id: NEW_ROUND_CONVERSATION,
+        maxMillisecondsToWait: CONVERSATION_TIMEOUT_MS,
+      })
+    );
 
-    this.command("wordle", (ctx) => ctx.conversation.enter(NEW_ROUND_CONVERSATION));
+    this.command("wordle", (ctx) => this.handleStartWordle(ctx));
     this.command("scorecard", (ctx) => this.sendScorecard(ctx));
     this.command("leaderboard", (ctx) => this.sendLeaderboard(ctx));
     this.hears(/^Wordle.*/, (ctx) => this.handleScoreSubmission(ctx));
   }
 
   /** CONVERSATION: /wordle — start a new round */
+
+  // enter() throws if any conversation (the stock market's /setticker included — the session is shared
+  // per chat) is already active for this chat, rather than silently colliding with it. That's a real
+  // "try again" case, not the kind of ambient background noise the top-level error handler stays quiet
+  // about, so it gets its own message here.
+  private async handleStartWordle(ctx: MyContext) {
+    try {
+      await ctx.conversation.enter(NEW_ROUND_CONVERSATION);
+    } catch {
+      await replyToMessage(ctx, "Someone else has a command in progress in this chat — try /wordle again in a moment.");
+    }
+  }
 
   private async newRoundDialogue(conversation: MyConversation, ctx: ConversationContext) {
     if (!ctx.chat || !ctx.from) {
@@ -87,7 +104,7 @@ export class WordleGolfComposer extends Composer<MyContext> {
   }
 
   private async waitForStartTiming(conversation: MyConversation, initiatorId: number): Promise<boolean> {
-    const response = await conversation.waitForCallbackQuery(["wordle_start_today", "wordle_start_tomorrow"]);
+    const response = await conversation.waitForCallbackQuery(["wordle_start_today", "wordle_start_tomorrow"], { next: true });
 
     if (response.from.id !== initiatorId) {
       await response.answerCallbackQuery({
@@ -126,7 +143,7 @@ export class WordleGolfComposer extends Composer<MyContext> {
   // Split out from confirmNewRound so a self-click can loop back to waiting on the same message instead of
   // aborting — otherwise the buttons stay live but nothing is listening, and the next person's tap just spins.
   private async waitForRoundConfirmation(conversation: MyConversation, initiatorId: number): Promise<boolean> {
-    const response = await conversation.waitForCallbackQuery(["wordle_confirm", "wordle_decline"]);
+    const response = await conversation.waitForCallbackQuery(["wordle_confirm", "wordle_decline"], { next: true });
 
     if (response.from.id === initiatorId && response.match === "wordle_confirm") {
       await response.answerCallbackQuery({
@@ -182,7 +199,7 @@ export class WordleGolfComposer extends Composer<MyContext> {
     initiatorName: string,
     range: { min: number; max: number }
   ): Promise<number | null> {
-    const response = await conversation.waitFor("message:text");
+    const response = await conversation.waitFor("message:text").and(isNotCommand, { next: true });
 
     if (response.from?.id !== initiatorId) {
       await replyHTML(

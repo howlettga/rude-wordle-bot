@@ -14,9 +14,12 @@ import { StockMarketComposer } from "./stock-market.js";
 export { BeenCounter, BeanCounter, SpankChain, WordleGolf, WordleGolfRegistry, StockMarket, StockMarketRegistry };
 
 // Must match wrangler.jsonc's triggers.crons exactly — that's what ScheduledController.cron is compared
-// against below to tell the daily sweep apart from the weekly one.
-const DAILY_CRON = "0 13 * * *";
-const WEEKLY_CRON = "0 13 * * 1";
+// against below to tell the daily sweep apart from the weekly one. 04:00 UTC = midnight ET during EDT
+// (summer) — like all Cron Triggers (UTC only, no timezone support), this drifts an hour across DST
+// rather than adjusting dynamically, landing at 11pm EST once winter hits.
+const DAILY_CRON = "0 4 * * *";
+const DAILY_MORNING_CRON = "0 12 * * *";
+const WEEKLY_CRON = "0 4 * * 1";
 
 export interface Env {
   BOT_TOKEN: string;
@@ -60,6 +63,11 @@ export default {
       await Promise.all([new WordleGolfComposer(storage).runDailyCheck(api), new StockMarketComposer(storage).runDailyDecay()]);
     } else if (controller.cron === WEEKLY_CRON) {
       await new StockMarketComposer(storage).runWeeklyAllowance();
+    } else if (controller.cron === DAILY_MORNING_CRON) {
+      // Split out from DAILY_CRON (midnight ET) onto its own morning slot — nobody's awake to see a
+      // halt announcement land at midnight. By 8am, DAILY_CRON's decay run hours earlier has already
+      // settled, so this naturally picks its leader off the day's post-decay standings for free.
+      await new StockMarketComposer(storage).runDailyHaltCheck(new Api(env.BOT_TOKEN));
     }
   },
 };
