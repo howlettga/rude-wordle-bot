@@ -26,7 +26,7 @@ Post in the chat and you're automatically listed on the market, no opt-in requir
 
 /buy $TICKER <shares> or reply to someone's message with /buy <shares> — same deal for /sell. /portfolio shows your holdings, /market shows the whole board, /value checks a single stock. You get a weekly allowance because I'm feeling generous, which is rare, so don't get used to it.
 
-How your price actually moves is none of your business. It's derived from what you post and how people react to it — beyond that, there are rules, they are complicated, and I am not explaining them to you. Get popular or get poor.
+How your price actually moves is none of your business. It's derived from what you post, how people react to it, and — yes — whether anyone's actually buying or selling you. Get your friends to prop you up with /buy, or watch them dump you with /sell out of spite. Beyond that, there are rules, they are complicated, and I am not explaining them to you. Get popular, get traded, or get poor.
 `;
 
 const WEIRD_WORD = [

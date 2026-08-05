@@ -65,13 +65,13 @@ const TERMINATOR_CAP = 100;
 const MARKET_OPEN_SILENCE_HOURS = 6;
 const MARKET_OPEN_PAYOUT = 15;
 
-// Conversation Terminator only fires between 8am and midnight ET, and only counts "awake hours" of
+// Conversation Terminator only fires between 10am and 10pm ET, and only counts "awake hours" of
 // silence (see awakeHoursBetween in checkSilenceEvents) — otherwise every single night's sleep would read
-// as hours of silence and trigger it every morning. 8am ET ≈ 12:00 UTC and midnight ET ≈ 04:00 UTC the
+// as hours of silence and trigger it every morning. 10am ET ≈ 14:00 UTC and 10pm ET ≈ 02:00 UTC the
 // next day: the same fixed-EDT approximation (and the same accepted DST drift) as TRADING_DAY_START in
 // the durable object. Market Open deliberately does NOT use any of this — see checkSilenceEvents for why.
-const AWAKE_WINDOW_START_UTC_HOUR = 12; // 8am ET
-const AWAKE_WINDOW_END_UTC_HOUR = 4; // midnight ET, lands on the next UTC day
+const AWAKE_WINDOW_START_UTC_HOUR = 14; // 10am ET
+const AWAKE_WINDOW_END_UTC_HOUR = 2; // 10pm ET, lands on the next UTC day
 
 const TERMINATOR_MESSAGES: ((label: string, duration: string, payout: number) => string)[] = [
   (label, duration, payout) => `💀 ${label} — CONVERSATION TERMINATED. ${duration} of silence because that message genuinely wasn't worth responding to. +$${payout}.`,
@@ -83,15 +83,15 @@ const TERMINATOR_MESSAGES: ((label: string, duration: string, payout: number) =>
   (label, duration, payout) => `📉 ${label} killed the conversation on impact. ${duration} of silence to prove it, in case there was any doubt. +$${payout}.`,
 ];
 
-// True if `now` falls inside the 8am-midnight ET awake window (see the constants above) — the check that
-// gates whether checkSilenceEvents runs at all. AWAKE_WINDOW_END_UTC_HOUR (4) marks the tail end of the
-// PREVIOUS UTC day's window spilling into this one, so "before 4am UTC" also counts as awake.
+// True if `now` falls inside the 10am-10pm ET awake window (see the constants above) — the check that
+// gates whether checkSilenceEvents runs at all. AWAKE_WINDOW_END_UTC_HOUR (2) marks the tail end of the
+// PREVIOUS UTC day's window spilling into this one, so "before 2am UTC" also counts as awake.
 function isWithinAwakeWindow(now: Date): boolean {
   const utcHour = now.getUTCHours();
   return utcHour >= AWAKE_WINDOW_START_UTC_HOUR || utcHour < AWAKE_WINDOW_END_UTC_HOUR;
 }
 
-// Sums only the portion of [startMs, endMs) that falls inside an 8am-midnight ET awake window on some
+// Sums only the portion of [startMs, endMs) that falls inside a 10am-10pm ET awake window on some
 // day, walking one UTC calendar day at a time. Windows are built directly in UTC millis (never a JS Date
 // parse of a timezone-ambiguous string — the epoch-second inputs already came from SQLite's own strftime,
 // see getThreadSilenceGap/getChatSilenceGap), and never overlap each other, so no interval can be
@@ -106,7 +106,7 @@ function awakeMillisBetween(startMs: number, endMs: number): number {
 
   const start = new Date(startMs);
   // Start one UTC day early — a window can begin the previous UTC day and spill into this one (its
-  // midnight-ET tail lands at AWAKE_WINDOW_END_UTC_HOUR the following day).
+  // 10pm-ET tail lands at AWAKE_WINDOW_END_UTC_HOUR the following day).
   let dayStart = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate() - 1);
 
   let total = 0;
@@ -339,12 +339,12 @@ export class StockMarketComposer extends Composer<MyContext> {
     }
   }
 
-  // Same "(TICKER)" shape as formatLabel, but the name itself is a tg://user link — pings/highlights the
+  // Same "($TICKER)" shape as formatLabel, but the name itself is a tg://user link — pings/highlights the
   // person by their Telegram user id, which works even if they've never set a public @username (unlike an
   // @-mention, which requires one).
   private formatTaggedLabel(userId: number, firstName: string, ticker: string | null): string {
     const name = `<a href="tg://user?id=${userId}">${firstName}</a>`;
-    return ticker ? `${name} (${ticker})` : name;
+    return ticker ? `${name} ($${ticker})` : name;
   }
 
   // A fresh, non-reply HTML message — Market Open shouldn't interrupt the conversation flow the way a
@@ -441,7 +441,7 @@ export class StockMarketComposer extends Composer<MyContext> {
 
   private formatPortfolio(portfolio: StockMarketPortfolio): string {
     const lines = [
-      `<b>${this.formatLabel(portfolio.firstName, portfolio.ticker, portfolio.isHalted)}'s Portfolio</b>`,
+      `<b>${this.formatLabel(portfolio.firstName, portfolio.ticker, portfolio.isHalted, false)}'s Portfolio</b>`,
       `<code>${portfolio.price.toFixed(2)}</code> ${this.formatChange(portfolio.dailyChange, portfolio.price)}`,
       `-----`,
       `Cash: <code>${portfolio.cash.toFixed(2)}</code>`,
@@ -492,8 +492,11 @@ export class StockMarketComposer extends Composer<MyContext> {
     return lines.join("\n");
   }
 
-  private formatLabel(firstName: string, ticker: string | null, isHalted: boolean): string {
-    const name = ticker ? `${firstName} (${ticker})` : firstName;
+  // showTickerPrefix defaults on for every call site except the portfolio title (see formatPortfolio),
+  // which deliberately keeps the bare "(TICKER)" look instead of "($TICKER)".
+  private formatLabel(firstName: string, ticker: string | null, isHalted: boolean, showTickerPrefix = true): string {
+    const tickerTag = ticker ? (showTickerPrefix ? `$${ticker}` : ticker) : null;
+    const name = tickerTag ? `${firstName} (${tickerTag})` : firstName;
     return isHalted ? `🚨 ${name} HALTED` : name;
   }
 
@@ -605,6 +608,7 @@ export class StockMarketComposer extends Composer<MyContext> {
 
     let targetUserId: number;
     let targetFirstName: string;
+    let targetTicker: string | null;
 
     if ("replyUserId" in parsed) {
       if (parsed.replyIsBot) {
@@ -613,6 +617,10 @@ export class StockMarketComposer extends Composer<MyContext> {
       }
       targetUserId = parsed.replyUserId;
       targetFirstName = parsed.replyFirstName;
+      // Reply targeting only gives us Telegram's name for the person, not their ticker — a reply-path
+      // trade still needs the DB lookup /value already does (resolveValueTarget) purely for display.
+      const player = await this.storage.getStockMarketPlayer(ctx.chat.id, targetUserId);
+      targetTicker = player?.ticker ?? null;
     } else {
       const found = await this.storage.findStockMarketPlayerByTicker(ctx.chat.id, parsed.ticker);
       if (!found) {
@@ -621,6 +629,7 @@ export class StockMarketComposer extends Composer<MyContext> {
       }
       targetUserId = found.userId;
       targetFirstName = found.firstName;
+      targetTicker = found.ticker;
     }
 
     const result =
@@ -638,7 +647,7 @@ export class StockMarketComposer extends Composer<MyContext> {
             shares: parsed.shares,
           });
 
-    await this.sendTradeResult(ctx, action, result, targetFirstName);
+    await this.sendTradeResult(ctx, action, result, targetFirstName, targetTicker);
   }
 
   // Shared between handleTrade's direct path and the conversation's final step (waitForShares) so both
@@ -647,18 +656,21 @@ export class StockMarketComposer extends Composer<MyContext> {
     replyCtx: Context,
     action: "buy" | "sell",
     result: StockMarketTradeResult,
-    targetFirstName: string
+    targetFirstName: string,
+    targetTicker: string | null
   ): Promise<void> {
     if (!result.ok) {
       await replyToMessage(replyCtx, this.tradeErrorMessage(result.type));
       return;
     }
 
+    // $NULL is deliberate, not a bug — a bit of a jab at anyone who hasn't set a ticker yet with /setticker.
+    const tickerTag = `$${targetTicker ?? "NULL"}`;
     const verb = action === "buy" ? "Bought" : "Sold";
     const holdingNote =
       result.totalShares > 0
-        ? `You now hold ${result.totalShares} share${result.totalShares === 1 ? "" : "s"} of ${targetFirstName}.`
-        : `You no longer hold any shares of ${targetFirstName}.`;
+        ? `You now hold ${result.totalShares} share${result.totalShares === 1 ? "" : "s"} of ${tickerTag}.`
+        : `You no longer hold any shares of ${tickerTag}.`;
     await replyToMessage(
       replyCtx,
       `${verb} ${result.shares} share${result.shares === 1 ? "" : "s"} of ${targetFirstName} at ${result.price.toFixed(2)} each — total ${result.total.toFixed(2)}.\n${holdingNote}`
@@ -820,7 +832,7 @@ export class StockMarketComposer extends Composer<MyContext> {
           })
     );
 
-    await this.sendTradeResult(response, action, result, target.firstName);
+    await this.sendTradeResult(response, action, result, target.firstName, target.ticker);
   }
 
   private parseTradeCommand(ctx: MyContext): TradeCommand | null {

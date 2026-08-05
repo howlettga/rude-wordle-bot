@@ -21,6 +21,18 @@ const REPLY_BASE_IMPACT = 2.0;
 const IMPACT_DECAY = 0.85;
 const DISTINCT_SENDER_DECAY = 0.95;
 
+// Trading moves price too, same decay shape as replies above: buying/selling repeatedly against the same
+// counterparty today decays fast at IMPACT_DECAY (can't pump/dump a stock alone), while distinct traders
+// hitting the same stock today decay gently at DISTINCT_SENDER_DECAY (real breadth of buying/selling
+// pressure is a harder signal to fake than volume from one relationship). 4% of price per share, before
+// decay — a typical 1-2 share order moves price a few percent, a max ~4-share order noticeably more.
+const TRADE_BASE_IMPACT_PCT = 0.04;
+
+// Floor for the price column. Was implicitly 0 (see applyPriceChange's old MAX(0, ...)) — now that selling
+// can drag a price down repeatedly in one day, a hard 0 would let a stock go permanently free to buy, which
+// breaks the cash-affordability check rather than just being a "cheap stock" outcome.
+const MIN_PRICE = 1;
+
 // How much of the theoretical full dampening (see dampenGain) actually applies — 1.0 would be the raw
 // average/price cut, trending toward keeping ~0% of a gain the further above average you get. 0.75 keeps
 // that scaled down to 75% as severe, so the cut asymptotically approaches keeping a 25% floor of any gain
@@ -73,6 +85,7 @@ const PRICE_EVENT_RETENTION_DAYS = 180;
 const REACTION_WEIGHTS: Record<string, number> = {
   // Strong positive
   "🔥": 1.5,
+  "😂": 1.5,
   "❤": 1.5,
   "🥰": 1.5,
   "😍": 1.5,
@@ -90,15 +103,16 @@ const REACTION_WEIGHTS: Record<string, number> = {
   "😁": 0.75,
   "🤗": 0.75,
   "🫡": 0.75,
+  "😭": 0.75,
   "✍": 0.75,
   "👌": 0.75,
   "😎": 0.75,
   // Mild negative
+  "😢": -0.25,
   "👎": -0.75,
-  "😢": -0.75,
-  "😭": -0.75,
   "💔": -0.75,
   "😱": -0.75,
+  "🥴": -0.75,
   // Strong negative
   "🤡": -1.5,
   "🤮": -1.5,
@@ -132,6 +146,8 @@ export interface StockMarketHolding {
 }
 
 export type StockMarketSetTickerResult = "OK" | "NOT_A_PLAYER" | "TAKEN";
+
+type PriceEventReason = "message" | "reply" | "reaction" | "decay" | "trade";
 
 export interface StockMarketPortfolio extends StockMarketPlayer {
   holdings: StockMarketHolding[];
@@ -347,6 +363,25 @@ export class StockMarket extends DurableObject<Env> {
       // price movement).
       this.ctx.storage.sql.exec(`ALTER TABLE message_authors ADD COLUMN last_reacted_at TEXT`);
       this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (9)`);
+    }
+
+    if (version < 10) {
+      // Same rebuild-for-CHECK-constraint pattern as migration 2 — trades now move price (see buy/sell
+      // below), so they need their own price_events reason alongside message/reply/reaction/decay.
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE price_events_v10 (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL REFERENCES players(user_id),
+          counterparty_user_id INTEGER,
+          reason TEXT NOT NULL CHECK (reason IN ('message', 'reply', 'reaction', 'decay', 'trade')),
+          delta REAL NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+      `);
+      this.ctx.storage.sql.exec(`INSERT INTO price_events_v10 SELECT * FROM price_events`);
+      this.ctx.storage.sql.exec(`DROP TABLE price_events`);
+      this.ctx.storage.sql.exec(`ALTER TABLE price_events_v10 RENAME TO price_events`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (10)`);
     }
   }
 
@@ -637,9 +672,10 @@ export class StockMarket extends DurableObject<Env> {
     this.ctx.storage.sql.exec(`DELETE FROM players WHERE user_id = ?`, userId);
   }
 
-  // Trades always clear against the house at the current listed price — never peer-to-peer, and never
-  // affecting the stock's price. If trading volume moved price too, buying someone's stock would become a
-  // second pump vector on top of message/reply spam.
+  // Buying pushes price up before the trade settles (see tradeImpactPct/computeDampedDelta below), so the
+  // buyer pays the POST-move price — the prospective price is computed first, checked against the buyer's
+  // cash, and only actually committed (moving price, writing the price_events row) once the trade is known
+  // to go through. A failed trade must never move price or leave an audit row behind.
   async buy(input: { buyerUserId: number; buyerUsername?: string; buyerFirstName: string; targetUserId: number; shares: number }): Promise<StockMarketTradeResult> {
     if (input.shares <= 0) {
       return { ok: false, type: "INVALID_AMOUNT" };
@@ -663,10 +699,16 @@ export class StockMarket extends DurableObject<Env> {
     }
 
     const buyer = this.ctx.storage.sql.exec<PlayerRow>(`SELECT * FROM players WHERE user_id = ?`, input.buyerUserId).one();
-    const cost = target.price * input.shares;
+
+    const pctImpact = this.tradeImpactPct(input.targetUserId, input.buyerUserId, input.shares);
+    const dampedDelta = this.computeDampedDelta(input.targetUserId, target.price * pctImpact, "trade");
+    const prospectivePrice = Math.max(MIN_PRICE, target.price + dampedDelta);
+    const cost = prospectivePrice * input.shares;
     if (buyer.cash < cost) {
       return { ok: false, type: "INSUFFICIENT_CASH" };
     }
+
+    const newPrice = this.commitPriceChange(input.targetUserId, dampedDelta, "trade", input.buyerUserId);
 
     this.ctx.storage.sql.exec(`UPDATE players SET cash = cash - ?, updated_at = datetime('now') WHERE user_id = ?`, cost, input.buyerUserId);
     this.ctx.storage.sql.exec(
@@ -685,9 +727,16 @@ export class StockMarket extends DurableObject<Env> {
       )
       .one().shares;
 
-    return { ok: true, shares: input.shares, price: target.price, total: cost, totalShares };
+    return { ok: true, shares: input.shares, price: newPrice, total: cost, totalShares };
   }
 
+  // Symmetric with buy(): both settle at the POST-move price. This used to pay the seller the pre-move
+  // price instead (what they last saw, no retroactive discount) — but that asymmetry turned out to be a
+  // real arbitrage: since same-day repeat trades decay (see tradeImpactPct), immediately buying back what
+  // you just sold cost LESS than the sell's own (undiscounted) proceeds, for a guaranteed, riskless,
+  // repeatable profit on every sell-then-buy cycle. Settling both legs post-move closes that: round-
+  // tripping now nets exactly zero (buy-then-sell) or a small guaranteed loss (sell-then-buy), never a
+  // gain, the same way it already couldn't for buy().
   async sell(input: { sellerUserId: number; targetUserId: number; shares: number }): Promise<StockMarketTradeResult> {
     if (input.shares <= 0) {
       return { ok: false, type: "INVALID_AMOUNT" };
@@ -712,7 +761,11 @@ export class StockMarket extends DurableObject<Env> {
       return { ok: false, type: "INSUFFICIENT_SHARES" };
     }
 
-    const proceeds = target.price * input.shares;
+    const pctImpact = this.tradeImpactPct(input.targetUserId, input.sellerUserId, input.shares);
+    const dampedDelta = this.computeDampedDelta(input.targetUserId, -(target.price * pctImpact), "trade");
+    const newPrice = this.commitPriceChange(input.targetUserId, dampedDelta, "trade", input.sellerUserId);
+    const proceeds = newPrice * input.shares;
+
     this.ctx.storage.sql.exec(
       `UPDATE holdings SET shares = shares - ? WHERE owner_user_id = ? AND stock_user_id = ?`,
       input.shares,
@@ -726,7 +779,7 @@ export class StockMarket extends DurableObject<Env> {
     );
     this.ctx.storage.sql.exec(`UPDATE players SET cash = cash + ?, updated_at = datetime('now') WHERE user_id = ?`, proceeds, input.sellerUserId);
 
-    return { ok: true, shares: input.shares, price: target.price, total: proceeds, totalShares: holding.shares - input.shares };
+    return { ok: true, shares: input.shares, price: newPrice, total: proceeds, totalShares: holding.shares - input.shares };
   }
 
   async applyWeeklyAllowance(): Promise<void> {
@@ -903,7 +956,7 @@ export class StockMarket extends DurableObject<Env> {
     );
   }
 
-  private applyPriceChange(userId: number, delta: number, reason: "message" | "reply" | "reaction" | "decay", counterpartyUserId: number | null): void {
+  private applyPriceChange(userId: number, delta: number, reason: PriceEventReason, counterpartyUserId: number | null): void {
     // Halted means frozen, full stop — no price movement of any kind, not even the daily gravity pull,
     // until the halt lifts. Single choke point for every price-moving code path (recordMessage,
     // recordReaction, recordReply, applyDailyDecay all funnel through here), so the check only needs to
@@ -912,10 +965,29 @@ export class StockMarket extends DurableObject<Env> {
       return;
     }
 
-    // decay's delta is already computed relative to the average (see applyDailyDecay) — dampening it
-    // again here would fight itself, so only message/reply/reaction gains go through dampenGain.
-    const dampedDelta = reason === "decay" ? delta : this.dampenGain(userId, delta);
-    this.ctx.storage.sql.exec(`UPDATE players SET price = MAX(0, price + ?), updated_at = datetime('now') WHERE user_id = ?`, dampedDelta, userId);
+    const dampedDelta = this.computeDampedDelta(userId, delta, reason);
+    this.commitPriceChange(userId, dampedDelta, reason, counterpartyUserId);
+  }
+
+  // Read-only half of applyPriceChange, split out so buy/sell (see below) can find out what a trade WOULD
+  // move price to — to price the trade and check affordability against it — before deciding whether the
+  // trade actually happens. decay's delta is already computed relative to the average (see
+  // applyDailyDecay) — dampening it again here would fight itself, so only message/reply/reaction/trade
+  // gains go through dampenGain.
+  private computeDampedDelta(userId: number, delta: number, reason: PriceEventReason): number {
+    return reason === "decay" ? delta : this.dampenGain(userId, delta);
+  }
+
+  // Mutating half of applyPriceChange — actually writes the new price and its audit row. Callers are
+  // responsible for their own halted-check beforehand (applyPriceChange does it once for its callers; buy
+  // and sell already gate on isHalted earlier, before ever computing a prospective price). Returns the
+  // resulting price so trade settlement can use it without a redundant re-SELECT.
+  private commitPriceChange(userId: number, dampedDelta: number, reason: PriceEventReason, counterpartyUserId: number | null): number {
+    this.ctx.storage.sql.exec(
+      `UPDATE players SET price = MAX(${MIN_PRICE}, price + ?), updated_at = datetime('now') WHERE user_id = ?`,
+      dampedDelta,
+      userId
+    );
     this.ctx.storage.sql.exec(
       `INSERT INTO price_events (user_id, counterparty_user_id, reason, delta) VALUES (?, ?, ?, ?)`,
       userId,
@@ -923,6 +995,33 @@ export class StockMarket extends DurableObject<Env> {
       reason,
       dampedDelta
     );
+    return this.ctx.storage.sql.exec<{ [column: string]: SqlStorageValue; price: number }>(`SELECT price FROM players WHERE user_id = ?`, userId).one()
+      .price;
+  }
+
+  // Unsigned magnitude of a trade's price impact — same decay shape as recordReply's sameSenderCountToday/
+  // distinctSendersSoFarToday (see TRADE_BASE_IMPACT_PCT above), just keyed on 'trade' price_events instead
+  // of 'reply'. Caller applies the sign (buy pushes up, sell pushes down) and multiplies by the pre-trade
+  // price to get a raw delta.
+  private tradeImpactPct(targetUserId: number, traderUserId: number, shares: number): number {
+    const occurrencesToday = this.ctx.storage.sql
+      .exec<{ [column: string]: SqlStorageValue; count: number }>(
+        `SELECT COUNT(*) as count FROM price_events
+         WHERE user_id = ? AND counterparty_user_id = ? AND reason = 'trade' AND created_at >= ${TRADING_DAY_START}`,
+        targetUserId,
+        traderUserId
+      )
+      .one().count;
+
+    const distinctTradersToday = this.ctx.storage.sql
+      .exec<{ [column: string]: SqlStorageValue; count: number }>(
+        `SELECT COUNT(DISTINCT counterparty_user_id) as count FROM price_events
+         WHERE user_id = ? AND reason = 'trade' AND created_at >= ${TRADING_DAY_START}`,
+        targetUserId
+      )
+      .one().count;
+
+    return TRADE_BASE_IMPACT_PCT * shares * Math.pow(IMPACT_DECAY, occurrencesToday) * Math.pow(DISTINCT_SENDER_DECAY, distinctTradersToday);
   }
 
   // Shrinks GAINS (never losses — a bad reaction/reply-decay always lands at full strength) once a
