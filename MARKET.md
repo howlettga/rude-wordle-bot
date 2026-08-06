@@ -43,13 +43,48 @@ Both are cash-only silence-gap payouts, evaluated only when a new message arrive
 - Trade-driven price changes go through the same gain-dampening and daily mean-reversion as every other price mover (see above) — no separate cap needed. Losses (including a sell's own price impact) always land at full strength, same as everywhere else in the market — only gains ever get dampened.
 - Price has a hard floor of $1 (`MIN_PRICE`), so repeated selling can tank a stock but never make it literally free.
 
+## Long call options (`/options`)
+
+The beginning of a deeper feature — calls only for now (schema's ready for puts once the economy has an
+engineered downside/crash mechanic to make betting *against* someone actually interesting). Entirely
+cash-settled: never touches shares/holdings, no exercising, just an automatic payout at expiry.
+
+`/options` walks a picker: which stock → strike (**8% / 10% / 15%** OTM, locked in at your current price
+the instant you pick it) → expiration (**1 / 3 / 7 days**) → a live quote → confirm. Premium is charged up
+front and is the absolute most you can ever lose — long calls can't go negative by construction.
+
+- **Premium**: `currentPrice × 0.15 × strikeMultiplier × durationMultiplier`, anchored so the 10%-strike/
+  3-day contract costs exactly 15% of current price. Closer-to-ATM and longer-duration both cost more:
+
+  |            | 1D    | 3D     | 7D     |
+  |---|---|---|---|
+  | 8% strike  | 6.9%  | 17.25% | 29.3%  |
+  | 10% strike | 6.0%  | 15.0%  | 25.5%  |
+  | 15% strike | 4.5%  | 11.25% | 19.1%  |
+
+- **Settlement is always anchored to 5pm ET** (a new daily cron, same boundary `TRADING_DAY_START` already
+  defines) — not N raw hours after purchase. That means actual runway varies by time of day: buy right
+  after 5pm ET and a "1D" contract gets nearly a full 24h; buy right before and it settles almost
+  immediately. Every contract due settles in one batch, across every chat, with one summary message per
+  chat (not one per contract) win-or-worthless, in the bot's usual rude/randomized voice.
+- **Payout**: `max(0, settlementPrice − strikePrice)`. Below or at strike, it expires worthless — you lose
+  the premium and nothing else.
+
+**Self-pumping your own bet is allowed by default.** Buying now moves price directly (see the table up
+top), so buying a call and then placing one big `/buy` order on the same person can push their price
+straight through your strike — that's treated as a feature (chaos, self-pumping is part of the fun), not a
+bug. If it gets out of hand in a given chat, `/setoptionsguard on` (owner-only) blocks anyone from trading
+shares of someone they're currently holding an open option on, in either direction; `/setoptionsguard off`
+reverts to the default.
+
 ## Cash (spendable, never touches price on its own)
 
 - **Weekly allowance**: +$100/week, everyone.
 - **Random bonus**: 2% chance per message, $1 / $5 / $10 / $20.
 - **Necromancy**: revive a 30+ day old message, +$25, once per message.
 - **Trading**: cash moves hand-to-house at whatever price the trade settles at (see "Trading moves price now" above) — the cash side is just bookkeeping, the price side is the new mechanic.
+- **Options**: premium is charged up front on purchase; payout (if any) is credited at settlement — see "Long call options" above.
 
 ## Admin
 
-`/delist` (remove one player), `/restart` (wipe everyone), `/setmarketthread` (route Market Open's announcements).
+`/delist` (remove one player), `/restart` (wipe everyone), `/setmarketthread` (route Market Open's announcements), `/setoptionsguard on|off` (toggle the anti-self-pump guard for options, off by default).

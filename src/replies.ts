@@ -24,7 +24,7 @@ export const MARKET_INSTRUCTIONS =
 
 Post in the chat and you're automatically listed on the market, no opt-in required, no opt-out either. Run /setticker to claim a short handle for yourself, or don't, and stay a nobody nobody can find.
 
-/buy $TICKER <shares> or reply to someone's message with /buy <shares> — same deal for /sell. /portfolio shows your holdings, /market shows the whole board, /value checks a single stock. You get a weekly allowance because I'm feeling generous, which is rare, so don't get used to it.
+/buy $TICKER <shares> or reply to someone's message with /buy <shares> — same deal for /sell. /portfolio shows your holdings, /market shows the whole board, /value checks a single stock. /options if you want to gamble on someone's price instead of just owning it — walks you through picking a strike and an expiration, then charges you a premium; get it right and you get paid, get it wrong and you just lose the premium, never more. You get a weekly allowance because I'm feeling generous, which is rare, so don't get used to it.
 
 How your price actually moves is none of your business. It's derived from what you post, how people react to it, and — yes — whether anyone's actually buying or selling you. Get your friends to prop you up with /buy, or watch them dump you with /sell out of spite. Beyond that, there are rules, they are complicated, and I am not explaining them to you. Get popular, get traded, or get poor.
 `;

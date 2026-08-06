@@ -20,6 +20,9 @@ export { BeenCounter, BeanCounter, SpankChain, WordleGolf, WordleGolfRegistry, S
 const DAILY_CRON = "0 4 * * *";
 const DAILY_MORNING_CRON = "0 12 * * *";
 const WEEKLY_CRON = "0 4 * * 1";
+// 5pm ET (EDT-approximated, same drift as the other three) — the exact boundary TRADING_DAY_START
+// computes, and the only time long-call options ever settle.
+const OPTIONS_SETTLEMENT_CRON = "0 21 * * *";
 
 export interface Env {
   BOT_TOKEN: string;
@@ -68,6 +71,8 @@ export default {
       // halt announcement land at midnight. By 8am, DAILY_CRON's decay run hours earlier has already
       // settled, so this naturally picks its leader off the day's post-decay standings for free.
       await new StockMarketComposer(storage).runDailyHaltCheck(new Api(env.BOT_TOKEN));
+    } else if (controller.cron === OPTIONS_SETTLEMENT_CRON) {
+      await new StockMarketComposer(storage).runOptionsSettlement(new Api(env.BOT_TOKEN));
     }
   },
 };

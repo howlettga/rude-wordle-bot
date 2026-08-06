@@ -25,14 +25,16 @@
     { "tag": "v5", "new_sqlite_classes": ["StockMarket", "StockMarketRegistry"] },
     { "tag": "v6", "new_sqlite_classes": ["BeanCounter"] }
   ],
-  // Cron Triggers always run in UTC (no timezone support), so all three drift an hour across DST — the
+  // Cron Triggers always run in UTC (no timezone support), so all four drift an hour across DST — the
   // UTC hours below are tuned for EDT (summer); each lands an hour earlier once EST (winter) hits.
   // Daily @ midnight ET: Wordle Golf's reminder/finalize sweep + the stock market's daily price decay.
   // Weekly (Monday) @ midnight ET: the stock market's cash allowance.
   // Daily @ 8am ET: the stock market's trading-halt roll/announcement — split off from the midnight sweep
   // since nobody's awake to see it land at midnight.
+  // Daily @ 5pm ET: long-call options settlement — the same boundary TRADING_DAY_START computes, the only
+  // time any option ever settles.
   "triggers": {
-    "crons": ["0 4 * * *", "0 4 * * 1", "0 12 * * *"]
+    "crons": ["0 4 * * *", "0 4 * * 1", "0 12 * * *", "0 21 * * *"]
   },
   "observability": {
     "enabled": true,

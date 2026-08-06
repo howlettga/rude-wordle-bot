@@ -28,6 +28,21 @@ const DISTINCT_SENDER_DECAY = 0.95;
 // decay — a typical 1-2 share order moves price a few percent, a max ~4-share order noticeably more.
 const TRADE_BASE_IMPACT_PCT = 0.04;
 
+// Long call options — cash-settled bets on someone's price, never touching shares/holdings. Premium is
+// currentPrice * OPTION_PREMIUM_BASE_RATE * strikeMultiplier * durationMultiplier, anchored so the
+// 10%-strike/3-day contract costs exactly the base rate (15%) — closer-to-ATM strikes and longer
+// durations both cost more (more likely to finish ITM / more time for the underlying to move). 'call' is
+// the only allowed type today; 'put' can land later via the same rebuild-the-table technique migration 10
+// above already used for adding 'trade' to price_events — the schema doesn't need to change for that.
+const OPTION_PREMIUM_BASE_RATE = 0.15;
+const OPTION_STRIKE_MULTIPLIERS: Record<StockMarketOptionStrikePct, number> = { 0.08: 1.15, 0.1: 1.0, 0.15: 0.75 };
+const OPTION_DURATION_MULTIPLIERS: Record<StockMarketOptionDurationDays, number> = { 1: 0.4, 3: 1.0, 7: 1.7 };
+const VALID_OPTION_STRIKE_PCTS: readonly StockMarketOptionStrikePct[] = [0.08, 0.1, 0.15];
+const VALID_OPTION_DURATION_DAYS: readonly StockMarketOptionDurationDays[] = [1, 3, 7];
+const OPTION_RETENTION_DAYS = 180;
+// Guards a near-$0 underlying producing a near-free, only-upside contract.
+const MINIMUM_OPTION_PREMIUM = 0.5;
+
 // Floor for the price column. Was implicitly 0 (see applyPriceChange's old MAX(0, ...)) — now that selling
 // can drag a price down repeatedly in one day, a hard 0 would let a stock go permanently free to buy, which
 // breaks the cash-affordability check rather than just being a "cheap stock" outcome.
@@ -149,6 +164,9 @@ export type StockMarketSetTickerResult = "OK" | "NOT_A_PLAYER" | "TAKEN";
 
 type PriceEventReason = "message" | "reply" | "reaction" | "decay" | "trade";
 
+export type StockMarketOptionStrikePct = 0.08 | 0.1 | 0.15;
+export type StockMarketOptionDurationDays = 1 | 3 | 7;
+
 export interface StockMarketPortfolio extends StockMarketPlayer {
   holdings: StockMarketHolding[];
 }
@@ -159,11 +177,49 @@ export type StockMarketTradeErrorType =
   | "UNKNOWN_STOCK"
   | "INSUFFICIENT_CASH"
   | "INSUFFICIENT_SHARES"
-  | "HALTED";
+  | "HALTED"
+  // Only possible when the per-chat anti-pump guard (/setoptionsguard) is on — see buy()/sell()'s
+  // hasOpenOptionAgainst check and getOptionsSelfPumpGuard.
+  | "OPTIONS_CONFLICT";
 
 export type StockMarketTradeResult =
   | { ok: true; shares: number; price: number; total: number; totalShares: number }
   | { ok: false; type: StockMarketTradeErrorType };
+
+export interface StockMarketOptionQuote {
+  underlyingPrice: number;
+  strikePrice: number;
+  premium: number;
+  expiresAtEpochSec: number;
+  nowEpochSec: number;
+}
+
+export type StockMarketBuyOptionErrorType = "INVALID_TERMS" | "CANNOT_TRADE_SELF" | "UNKNOWN_STOCK" | "HALTED" | "INSUFFICIENT_CASH";
+
+export type StockMarketBuyOptionResult =
+  | {
+      ok: true;
+      optionId: number;
+      underlyingUserId: number;
+      underlyingPriceAtPurchase: number;
+      strikePrice: number;
+      premium: number;
+      expiresAtEpochSec: number;
+    }
+  | { ok: false; type: StockMarketBuyOptionErrorType };
+
+export interface StockMarketOptionSettlement {
+  optionId: number;
+  buyerUserId: number;
+  buyerFirstName: string;
+  buyerTicker: string | null;
+  underlyingUserId: number;
+  underlyingFirstName: string;
+  underlyingTicker: string | null;
+  strikePrice: number;
+  settlementPrice: number;
+  payout: number; // 0 means expired worthless
+}
 
 interface PlayerRow {
   [column: string]: SqlStorageValue;
@@ -382,6 +438,46 @@ export class StockMarket extends DurableObject<Env> {
       this.ctx.storage.sql.exec(`DROP TABLE price_events`);
       this.ctx.storage.sql.exec(`ALTER TABLE price_events_v10 RENAME TO price_events`);
       this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (10)`);
+    }
+
+    if (version < 11) {
+      // Long call options (see buyOption/settleExpiredOptions) — cash-settled bets on someone's price,
+      // completely separate from holdings/shares. 'type' stays CHECK-constrained to 'call' for now; 'put'
+      // lands later via the same rebuild-table technique migration 10 above just used, not a redesign.
+      // strike_pct/duration_days/underlying_price_at_purchase are kept alongside the derived
+      // strike_price/expires_at so a future "my open options" view can show the original terms without
+      // trying to back-compute a percent against the underlying's CURRENT (since-moved) price. NULL
+      // settled_at means still open, same convention as halted_until's "NULL means not halted".
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS options (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          buyer_user_id INTEGER NOT NULL REFERENCES players(user_id),
+          underlying_user_id INTEGER NOT NULL REFERENCES players(user_id),
+          type TEXT NOT NULL CHECK (type IN ('call')),
+          strike_pct REAL NOT NULL,
+          duration_days INTEGER NOT NULL,
+          underlying_price_at_purchase REAL NOT NULL,
+          strike_price REAL NOT NULL,
+          premium_paid REAL NOT NULL,
+          purchased_at TEXT NOT NULL DEFAULT (datetime('now')),
+          expires_at TEXT NOT NULL,
+          settled_at TEXT,
+          settlement_price REAL,
+          payout REAL
+        )
+      `);
+      // Scoped to exactly the settlement query's WHERE clause — self-prunes as contracts settle, so it
+      // stays small forever regardless of how much settled history accumulates in the table.
+      this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_options_settlement ON options(expires_at) WHERE settled_at IS NULL`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (11)`);
+    }
+
+    if (version < 12) {
+      // Per-chat, owner-toggleable (/setoptionsguard) — off by default, since self-pumping your own
+      // option via a big buy order is deliberately allowed chaos, not a bug. When on, buy()/sell() block
+      // trading anyone you're currently holding an open option on (see getOptionsSelfPumpGuard).
+      this.ctx.storage.sql.exec(`ALTER TABLE market_settings ADD COLUMN block_self_pump_options INTEGER NOT NULL DEFAULT 0`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (12)`);
     }
   }
 
@@ -660,6 +756,7 @@ export class StockMarket extends DurableObject<Env> {
   // untouched, so the next message from anyone just starts them fresh at STARTING_PRICE/STARTING_CASH.
   async restart(): Promise<void> {
     this.ctx.storage.sql.exec(`DELETE FROM holdings`);
+    this.ctx.storage.sql.exec(`DELETE FROM options`);
     this.ctx.storage.sql.exec(`DELETE FROM price_events`);
     this.ctx.storage.sql.exec(`DELETE FROM message_authors`);
     this.ctx.storage.sql.exec(`DELETE FROM players`);
@@ -667,6 +764,11 @@ export class StockMarket extends DurableObject<Env> {
 
   private deletePlayerRow(userId: number): void {
     this.ctx.storage.sql.exec(`DELETE FROM holdings WHERE owner_user_id = ? OR stock_user_id = ?`, userId, userId);
+    // Without this, delisting/purging either party in an open option would orphan it forever behind
+    // settleExpiredOptions's INNER JOIN on players — it could never be marked settled, and it'd
+    // permanently occupy the settlement index. Same "no refund" precedent as holdings above: deleting a
+    // player already wipes their stock holdings with no cash refund.
+    this.ctx.storage.sql.exec(`DELETE FROM options WHERE buyer_user_id = ? OR underlying_user_id = ?`, userId, userId);
     this.ctx.storage.sql.exec(`DELETE FROM price_events WHERE user_id = ?`, userId);
     this.ctx.storage.sql.exec(`DELETE FROM message_authors WHERE user_id = ?`, userId);
     this.ctx.storage.sql.exec(`DELETE FROM players WHERE user_id = ?`, userId);
@@ -696,6 +798,11 @@ export class StockMarket extends DurableObject<Env> {
     }
     if (this.isHalted(input.targetUserId)) {
       return { ok: false, type: "HALTED" };
+    }
+    // Only checked when the per-chat guard is on (see hasOpenOptionAgainst/getOptionsSelfPumpGuard) — off
+    // by default, since self-pumping your own option via a big buy order is deliberately allowed chaos.
+    if ((await this.getOptionsSelfPumpGuard()) && this.hasOpenOptionAgainst(input.buyerUserId, input.targetUserId)) {
+      return { ok: false, type: "OPTIONS_CONFLICT" };
     }
 
     const buyer = this.ctx.storage.sql.exec<PlayerRow>(`SELECT * FROM players WHERE user_id = ?`, input.buyerUserId).one();
@@ -749,6 +856,12 @@ export class StockMarket extends DurableObject<Env> {
     if (this.isHalted(input.targetUserId)) {
       return { ok: false, type: "HALTED" };
     }
+    // Symmetric with buy()'s guard — see the comment there. Blocking both directions (not just buy) keeps
+    // the rule simple to explain and future-proofs it for puts, whose equivalent manipulation is dumping
+    // shares to tank a price rather than pumping one.
+    if ((await this.getOptionsSelfPumpGuard()) && this.hasOpenOptionAgainst(input.sellerUserId, input.targetUserId)) {
+      return { ok: false, type: "OPTIONS_CONFLICT" };
+    }
 
     const holding = this.ctx.storage.sql
       .exec<{ [column: string]: SqlStorageValue; shares: number }>(
@@ -780,6 +893,231 @@ export class StockMarket extends DurableObject<Env> {
     this.ctx.storage.sql.exec(`UPDATE players SET cash = cash + ?, updated_at = datetime('now') WHERE user_id = ?`, proceeds, input.sellerUserId);
 
     return { ok: true, shares: input.shares, price: newPrice, total: proceeds, totalShares: holding.shares - input.shares };
+  }
+
+  // strikePrice = currentPrice * (1 + strikePct); premium floors at MINIMUM_OPTION_PREMIUM so a
+  // near-$0 underlying never produces a near-free, only-upside contract. Shared by quoteOption and
+  // buyOption so the confirm-step preview and the actual charge can only ever differ from live price
+  // drift between the two calls, never a formula mismatch.
+  private computeOptionPricing(
+    currentPrice: number,
+    strikePct: StockMarketOptionStrikePct,
+    durationDays: StockMarketOptionDurationDays
+  ): { strikePrice: number; premium: number } {
+    const strikePrice = currentPrice * (1 + strikePct);
+    const premium = Math.max(
+      MINIMUM_OPTION_PREMIUM,
+      currentPrice * OPTION_PREMIUM_BASE_RATE * OPTION_STRIKE_MULTIPLIERS[strikePct] * OPTION_DURATION_MULTIPLIERS[durationDays]
+    );
+    return { strikePrice, premium };
+  }
+
+  // Read-only preview for the composer's confirm step — never mutates anything. Epoch seconds (via
+  // SQLite's own strftime, never a JS Date parse of the space-separated UTC string) so the composer can
+  // show "expires in ~Xh Ym" without hitting the timezone footgun documented on isHalted above.
+  async quoteOption(
+    underlyingUserId: number,
+    strikePct: StockMarketOptionStrikePct,
+    durationDays: StockMarketOptionDurationDays
+  ): Promise<StockMarketOptionQuote | null> {
+    if (!VALID_OPTION_STRIKE_PCTS.includes(strikePct) || !VALID_OPTION_DURATION_DAYS.includes(durationDays)) {
+      return null;
+    }
+
+    const underlying = this.ctx.storage.sql.exec<PlayerRow>(`SELECT * FROM players WHERE user_id = ?`, underlyingUserId).toArray()[0];
+    if (!underlying) {
+      return null;
+    }
+
+    const { strikePrice, premium } = this.computeOptionPricing(underlying.price, strikePct, durationDays);
+
+    const times = this.ctx.storage.sql
+      .exec<{ [column: string]: SqlStorageValue; expires_at_epoch_sec: number; now_epoch_sec: number }>(
+        `SELECT CAST(strftime('%s', ${TRADING_DAY_START}, '+' || ? || ' days') AS INTEGER) as expires_at_epoch_sec,
+                CAST(strftime('%s', 'now') AS INTEGER) as now_epoch_sec`,
+        durationDays
+      )
+      .one();
+
+    return {
+      underlyingPrice: underlying.price,
+      strikePrice,
+      premium,
+      expiresAtEpochSec: times.expires_at_epoch_sec,
+      nowEpochSec: times.now_epoch_sec,
+    };
+  }
+
+  // Always recomputes strike/premium fresh off the LIVE price at purchase — never trusts an earlier
+  // quoteOption call — same "DO is the source of truth, price is read fresh at execution" philosophy as
+  // buy()/sell(). expires_at is the most-recent 5pm-ET boundary at-or-before purchase (TRADING_DAY_START)
+  // plus the chosen duration — so actual runway varies by time of day (buy right after 5pm ET and a "1D"
+  // option gets nearly 24h; buy right before and it settles almost immediately), an accepted quirk, same
+  // spirit as TRADING_DAY_START's own documented EDT/DST approximation. durationDays is bound as a
+  // parameter, not template-interpolated, even though it only ever comes from a fixed picker.
+  async buyOption(input: {
+    buyerUserId: number;
+    buyerUsername?: string;
+    buyerFirstName: string;
+    underlyingUserId: number;
+    strikePct: StockMarketOptionStrikePct;
+    durationDays: StockMarketOptionDurationDays;
+  }): Promise<StockMarketBuyOptionResult> {
+    if (!VALID_OPTION_STRIKE_PCTS.includes(input.strikePct) || !VALID_OPTION_DURATION_DAYS.includes(input.durationDays)) {
+      return { ok: false, type: "INVALID_TERMS" };
+    }
+    if (input.buyerUserId === input.underlyingUserId) {
+      return { ok: false, type: "CANNOT_TRADE_SELF" };
+    }
+
+    this.upsertPlayer({
+      userId: input.buyerUserId,
+      ...(input.buyerUsername !== undefined && { username: input.buyerUsername }),
+      firstName: input.buyerFirstName,
+    });
+
+    const underlying = this.ctx.storage.sql.exec<PlayerRow>(`SELECT * FROM players WHERE user_id = ?`, input.underlyingUserId).toArray()[0];
+    if (!underlying) {
+      return { ok: false, type: "UNKNOWN_STOCK" };
+    }
+    // Same rationale as buy()/sell()'s halt check — a derivative on a frozen stock is just as frozen.
+    if (this.isHalted(input.underlyingUserId)) {
+      return { ok: false, type: "HALTED" };
+    }
+
+    const buyer = this.ctx.storage.sql.exec<PlayerRow>(`SELECT * FROM players WHERE user_id = ?`, input.buyerUserId).one();
+    const { strikePrice, premium } = this.computeOptionPricing(underlying.price, input.strikePct, input.durationDays);
+    if (buyer.cash < premium) {
+      return { ok: false, type: "INSUFFICIENT_CASH" };
+    }
+
+    this.ctx.storage.sql.exec(`UPDATE players SET cash = cash - ?, updated_at = datetime('now') WHERE user_id = ?`, premium, input.buyerUserId);
+
+    const inserted = this.ctx.storage.sql
+      .exec<{
+        [column: string]: SqlStorageValue;
+        id: number;
+        strike_price: number;
+        premium_paid: number;
+        underlying_price_at_purchase: number;
+        expires_at_epoch_sec: number;
+      }>(
+        `INSERT INTO options (buyer_user_id, underlying_user_id, type, strike_pct, duration_days, underlying_price_at_purchase, strike_price, premium_paid, expires_at)
+         VALUES (?, ?, 'call', ?, ?, ?, ?, ?, datetime(${TRADING_DAY_START}, '+' || ? || ' days'))
+         RETURNING id, strike_price, premium_paid, underlying_price_at_purchase, CAST(strftime('%s', expires_at) AS INTEGER) as expires_at_epoch_sec`,
+        input.buyerUserId,
+        input.underlyingUserId,
+        input.strikePct,
+        input.durationDays,
+        underlying.price,
+        strikePrice,
+        premium,
+        input.durationDays
+      )
+      .one();
+
+    return {
+      ok: true,
+      optionId: inserted.id,
+      underlyingUserId: input.underlyingUserId,
+      underlyingPriceAtPurchase: inserted.underlying_price_at_purchase,
+      strikePrice: inserted.strike_price,
+      premium: inserted.premium_paid,
+      expiresAtEpochSec: inserted.expires_at_epoch_sec,
+    };
+  }
+
+  // Called by the daily 5pm-ET options-settlement cron, once per chat. A halted underlying is read
+  // normally here — halts only block price MUTATION (see applyPriceChange's guard), never reads, and
+  // getMarket/getPortfolio/`/value` already show a frozen price the same way, so no special case is
+  // needed. expires_at <= datetime('now') is a plain string comparison, not an epoch one — safe for the
+  // same fixed-width-string lexical-order reason halted_until > datetime('now') already relies on; epoch
+  // conversion is only needed for values that cross into TypeScript, which this query doesn't return.
+  //
+  // Zero internal `await` points — every mutation below is a synchronous exec() call, same style as
+  // applyDailyDecay/rollHalt/buy/sell — so one call to this method runs to completion as a single atomic
+  // JS turn. Even an overlapping cron firing just finds nothing left under `settled_at IS NULL`, so
+  // double-payout isn't possible. Deliberately doesn't call the public awardCash() (an avoidable `await`
+  // per row) — the cash credit is inlined instead.
+  async settleExpiredOptions(): Promise<StockMarketOptionSettlement[]> {
+    const rows = this.ctx.storage.sql
+      .exec<{
+        [column: string]: SqlStorageValue;
+        id: number;
+        buyer_user_id: number;
+        buyer_first_name: string;
+        buyer_ticker: string | null;
+        underlying_user_id: number;
+        underlying_first_name: string;
+        underlying_ticker: string | null;
+        strike_price: number;
+        settlement_price: number;
+      }>(
+        `SELECT o.id, o.buyer_user_id, bp.first_name as buyer_first_name, bp.ticker as buyer_ticker,
+                o.underlying_user_id, up.first_name as underlying_first_name, up.ticker as underlying_ticker,
+                o.strike_price, up.price as settlement_price
+         FROM options o
+         JOIN players bp ON bp.user_id = o.buyer_user_id
+         JOIN players up ON up.user_id = o.underlying_user_id
+         WHERE o.settled_at IS NULL AND o.expires_at <= datetime('now')`
+      )
+      .toArray();
+
+    const results: StockMarketOptionSettlement[] = [];
+    for (const row of rows) {
+      const payout = Math.max(0, row.settlement_price - row.strike_price);
+
+      this.ctx.storage.sql.exec(
+        `UPDATE options SET settled_at = datetime('now'), settlement_price = ?, payout = ? WHERE id = ?`,
+        row.settlement_price,
+        payout,
+        row.id
+      );
+      if (payout > 0) {
+        this.ctx.storage.sql.exec(`UPDATE players SET cash = cash + ?, updated_at = datetime('now') WHERE user_id = ?`, payout, row.buyer_user_id);
+      }
+
+      results.push({
+        optionId: row.id,
+        buyerUserId: row.buyer_user_id,
+        buyerFirstName: row.buyer_first_name,
+        buyerTicker: row.buyer_ticker,
+        underlyingUserId: row.underlying_user_id,
+        underlyingFirstName: row.underlying_first_name,
+        underlyingTicker: row.underlying_ticker,
+        strikePrice: row.strike_price,
+        settlementPrice: row.settlement_price,
+        payout,
+      });
+    }
+    return results;
+  }
+
+  // True if traderUserId currently holds an open (unsettled) option on underlyingUserId — only ever
+  // consulted when getOptionsSelfPumpGuard() is on, so this query costs nothing in the (default) off case.
+  private hasOpenOptionAgainst(traderUserId: number, underlyingUserId: number): boolean {
+    return (
+      this.ctx.storage.sql
+        .exec<{ [column: string]: SqlStorageValue; id: number }>(
+          `SELECT id FROM options WHERE buyer_user_id = ? AND underlying_user_id = ? AND settled_at IS NULL LIMIT 1`,
+          traderUserId,
+          underlyingUserId
+        )
+        .toArray().length > 0
+    );
+  }
+
+  // Off by default — self-pumping your own option via a big buy order is deliberately allowed chaos, not
+  // a bug (see TRADE_BASE_IMPACT_PCT above). Toggled per chat by the bot owner via /setoptionsguard.
+  async setOptionsSelfPumpGuard(enabled: boolean): Promise<void> {
+    this.ctx.storage.sql.exec(`UPDATE market_settings SET block_self_pump_options = ? WHERE id = 1`, enabled ? 1 : 0);
+  }
+
+  async getOptionsSelfPumpGuard(): Promise<boolean> {
+    const row = this.ctx.storage.sql
+      .exec<{ [column: string]: SqlStorageValue; block_self_pump_options: number }>(`SELECT block_self_pump_options FROM market_settings WHERE id = 1`)
+      .toArray()[0];
+    return row?.block_self_pump_options === 1;
   }
 
   async applyWeeklyAllowance(): Promise<void> {
@@ -944,6 +1282,9 @@ export class StockMarket extends DurableObject<Env> {
   async purgeOldData(): Promise<void> {
     this.ctx.storage.sql.exec(`DELETE FROM message_authors WHERE created_at < datetime('now', '-${MESSAGE_AUTHOR_RETENTION_DAYS} days')`);
     this.ctx.storage.sql.exec(`DELETE FROM price_events WHERE created_at < datetime('now', '-${PRICE_EVENT_RETENTION_DAYS} days')`);
+    this.ctx.storage.sql.exec(
+      `DELETE FROM options WHERE settled_at IS NOT NULL AND settled_at < datetime('now', '-${OPTION_RETENTION_DAYS} days')`
+    );
   }
 
   private upsertPlayer(input: { userId: number; username?: string; firstName: string }): void {

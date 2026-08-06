@@ -93,6 +93,7 @@ export class RudeBot {
     this.registerDelist();
     this.registerRestart();
     this.registerSetMarketThread();
+    this.registerSetOptionsGuard();
   }
 
   // Owner-only. Cron-driven market announcements (the trading-halt notice, and any future ones) default
@@ -112,6 +113,31 @@ export class RudeBot {
         threadId !== null
           ? "Market announcements will now be posted in this thread."
           : "Market announcements will now be posted in the main chat."
+      );
+    });
+  }
+
+  // Owner-only, per-chat. Off by default — self-pumping your own option via a big buy order is
+  // deliberately allowed chaos (see TRADE_BASE_IMPACT_PCT in the stock market DO) — this is the escape
+  // hatch if it ever gets out of hand for a specific chat, not a permanent rule change.
+  private registerSetOptionsGuard() {
+    this.bot.command("setoptionsguard", async (ctx) => {
+      if (this.ownerChatId === undefined || ctx.from?.id !== this.ownerChatId || !ctx.chat) {
+        return;
+      }
+
+      const arg = String(ctx.match ?? "").trim().toLowerCase();
+      if (arg !== "on" && arg !== "off") {
+        await replyToMessage(ctx, "Usage: /setoptionsguard on|off");
+        return;
+      }
+
+      await this.storage.setStockMarketOptionsGuard(ctx.chat.id, arg === "on");
+      await replyToMessage(
+        ctx,
+        arg === "on"
+          ? "Anti-pump guard is ON — can't trade shares of anyone you're holding an open option on."
+          : "Anti-pump guard is OFF — pump away."
       );
     });
   }
