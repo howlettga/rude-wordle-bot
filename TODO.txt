@@ -2,12 +2,12 @@ Bugfixes
 
 Features
 
-- value based on trade volume (buying stock makes it go up)
 - no one replies to question (+money)
-- options (long call options)
 - Days-since counters — /dayssince Kyle got food poisoning at the airport. Have the cron post milestones unprompted: "It has been 100 days."
 - Weekly performance review — Monday cron posts fake analytics: message count, "71% of volume attributable to one participant," "morale: unchanged, no action required." Real numbers from KV make it land harder.
 - The Ombudsman — /ruling in the scaffold. Rules on any dispute, cites a fabricated Group Charter section, declares itself non-appealable.
+- /startmarket and /stopmarket
+- /featurerequest - ask for a bot feature
 
 Maybe
 - stock splitting

@@ -103,15 +103,51 @@ This prints the live `https://rude-bot.<subdomain>.workers.dev` URL. Register it
 
 ## 6. Set the command menu (optional)
 
-Registering a command with `bot.command()` in `src/bot.ts` only wires up the handler — it doesn't make Telegram show it in the `/` autocomplete menu. That list is separate and comes from `setMyCommands`:
+Registering a command with `bot.command()` in `src/bot.ts` only wires up the handler — it doesn't make Telegram show it in the `/` autocomplete menu. That list is separate and comes from `setMyCommands`, and not every command belongs in it:
+
+- **Visible** — normal gameplay commands. These should go in the `/` menu everyone sees.
+- **Invisible** — owner-only admin controls, a redundant self-service variant, or the obligatory `/start` handler. These still work fine when typed, they just don't need to clutter the menu.
+
+### Visible commands
+
+| Command | Description |
+|---|---|
+| `wordle` | play ya game |
+| `portfolio` | see what ya got |
+| `market` | who's worth what |
+| `delist` | remove yourself from the market |
+| `scorecard` | see who drools |
+| `leaderboard` | see who rules |
+| `buy` | get em hot |
+| `sell` | dump that fool |
+| `value` | we all wanna know |
+| `options` | to the moon |
+| `setticker` | what ya called? |
+| `marketrules` | how to win |
+| `instructions` | how's this work? |
+
+Register these with `setMyCommands`. A heredoc avoids fighting bash over the apostrophes in the descriptions:
 
 ```sh
 curl "https://api.telegram.org/bot<TOKEN>/setMyCommands" \
   -H "Content-Type: application/json" \
-  -d '{"commands":[
-    {"command":"wordle","description":"Get petulant about Wordle"},
-    {"command":"instructions","description":"Show bot instructions"}
-  ]}'
+  -d @- <<'EOF'
+{"commands":[
+  {"command":"wordle","description":"play ya game"},
+  {"command":"portfolio","description":"see what ya got"},
+  {"command":"market","description":"who's worth what"},
+  {"command":"delist","description":"remove yourself from the market"},
+  {"command":"scorecard","description":"see who drools"},
+  {"command":"leaderboard","description":"see who rules"},
+  {"command":"buy","description":"get em hot"},
+  {"command":"sell","description":"dump that fool"},
+  {"command":"value","description":"we all wanna know"},
+  {"command":"options","description":"to the moon"},
+  {"command":"setticker","description":"what ya called?"},
+  {"command":"marketrules","description":"how to win"},
+  {"command":"instructions","description":"how's this work?"}
+]}
+EOF
 ```
 
 Run it once per bot (test and prod use separate tokens, so separate calls) whenever the command list changes — it persists on Telegram's side, no redeploy needed.
@@ -119,9 +155,34 @@ Run it once per bot (test and prod use separate tokens, so separate calls) whene
 Alternatively, do it via chat: message [@BotFather](https://t.me/BotFather) with `/setcommands`, pick your bot, then send the list as `command - description` lines (no leading slash):
 
 ```
-wordle - Get petulant about Wordle
-instructions - Show bot instructions
+wordle - play ya game
+portfolio - see what ya got
+market - who's worth what
+delist - remove yourself from the market
+scorecard - see who drools
+leaderboard - see who rules
+buy - get em hot
+sell - dump that fool
+value - we all wanna know
+options - to the moon
+setticker - what ya called?
+marketrules - how to win
+instructions - how's this work?
 ```
+
+### Invisible commands (do not register these)
+
+Still real commands — grammY dispatches on `bot.command()` regardless of what's in the menu — just deliberately left out of `setMyCommands` so they don't clutter it for regular players.
+
+| Command | What it does | Why it's hidden |
+|---|---|---|
+| `/reset` | Self-service: cash everyone out of your stock at today's price and start fresh | Redundant next to `/delist` in the menu — the people who need it already know it exists |
+| `/restart` | Owner-only: wipes the entire chat's market — every player, holding, and price event, gone | Destructive and owner-only, no reason to advertise it |
+| `/setmarketthread` | Owner-only: pins market announcements (trading halts, etc.) to whichever topic you run it in | Admin config, not gameplay |
+| `/setoptionsguard` | Owner-only: `on`/`off` toggle for the anti-pump guard (blocks trading shares of anyone you hold an option on) | Admin config, not gameplay |
+| `/start` | Telegram's default entry point for a private chat — just replies "Fuck off big boi" | Not a real feature, just the obligatory handler |
+
+When adding a new command, put it in whichever list it belongs in — visible if a player should discover it via the `/` menu, invisible if it's admin-only or already implied by another command.
 
 ---
 
@@ -134,3 +195,4 @@ instructions - Show bot instructions
 | Live production logs | `npx wrangler tail rude-bot` |
 | List/update secrets | `npx wrangler secret list` / `npx wrangler secret put <NAME>` |
 | Check webhook status | `curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"` |
+

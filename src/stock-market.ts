@@ -1,5 +1,5 @@
 import { Composer, InlineKeyboard } from "grammy";
-import type { Api, Context, NextFunction } from "grammy";
+import type { Api, Context, Filter, NextFunction } from "grammy";
 import { createConversation } from "@grammyjs/conversations";
 import type { Conversation } from "@grammyjs/conversations";
 import { type MyContext, replyToMessage, replyHTML, realReplyTo, isNotCommand, CONVERSATION_TIMEOUT_MS } from "./context.js";
@@ -11,6 +11,9 @@ import type {
   StockMarketSetTickerResult,
   StockMarketTradeErrorType,
   StockMarketTradeResult,
+  StockMarketOptionStrikePct,
+  StockMarketOptionDurationDays,
+  StockMarketBuyOptionResult,
 } from "./durable-objects/stock-market.js";
 
 // Inside a conversation, ctx is always the plain (unflavored) Context — same pattern as wordle-golf.ts.
@@ -23,8 +26,52 @@ type TickerOption = { ticker: string; userId: number; firstName: string };
 
 const SET_TICKER_CONVERSATION = "stock-market-set-ticker";
 const TRADE_CONVERSATION = "stock-market-trade";
+const OPTIONS_CONVERSATION = "stock-market-options";
 const EXIT_KEYWORDS = new Set(["stop", "quit", "exit", "end", "cancel"]);
 const TICKER_PATTERN = /^[A-Za-z]{1,4}$/;
+
+const OPTIONS_BLURB =
+  "📈 Long Call Selected.\n - A long call option lets you pay a small fee to bet a stock's price will go up.\n\n" +
+  "Pick a stock, a strike, and a duration, then pay the premium up front — if that " +
+  "stock's price finishes above your strike when the contract expires (always at the next 5pm ET rollover " +
+  "after your chosen duration), you collect the difference. Otherwise it expires worthless: no refunds, no " +
+  "exercising early, and you can never go negative — the premium is the most you can ever lose. Which stock?";
+
+const OPTIONS_ITM_MESSAGES: ((buyer: string, underlying: string, payout: number) => string)[] = [
+  (buyer, underlying, payout) => `📈 ${buyer}'s call on ${underlying} finished ITM. +$${payout.toFixed(2)}. Even a broken clock.`,
+  (buyer, underlying, payout) => `💰 ${buyer} correctly bet on ${underlying}. +$${payout.toFixed(2)}. Don't let it go to your head.`,
+  (buyer, underlying, payout) => `🎯 ${buyer} called it on ${underlying} and got paid: +$${payout.toFixed(2)}. Beginner's luck, probably.`,
+  (buyer, underlying, payout) => `📈 ${underlying} actually delivered for once. ${buyer} collects +$${payout.toFixed(2)}.`,
+];
+const OPTIONS_WORTHLESS_MESSAGES: ((buyer: string, underlying: string) => string)[] = [
+  (buyer, underlying) => `📉 ${buyer}'s call on ${underlying} expired worthless. The premium is gone. So is your dignity.`,
+  (buyer, underlying) => `🔥 ${underlying} didn't even come close. ${buyer} just donated that premium to the void.`,
+  (buyer, underlying) => `🗑️ ${buyer} bet on ${underlying} and lost the premium for their trouble. Better luck next contract.`,
+  (buyer, underlying) => `📉 Expired worthless. ${buyer}'s faith in ${underlying} was not rewarded.`,
+];
+
+// Callback data for the strike/duration pickers is just the raw percent/day number (e.g. "option_strike:8"),
+// so these map that back to the typed literal union values used everywhere else.
+const STRIKE_PCT_BY_CALLBACK: Record<string, StockMarketOptionStrikePct> = {
+  "8": 0.08,
+  "10": 0.1,
+  "15": 0.15,
+  "20": 0.2,
+  "30": 0.3,
+  "45": 0.45,
+};
+const DURATION_DAYS_BY_CALLBACK: Record<string, StockMarketOptionDurationDays> = { "0": 0, "1": 1, "3": 3, "7": 7 };
+
+// Mirrors OPTION_STRIKES_BY_DURATION in the durable object (the pricing/validation authority) — needed
+// here purely to build each duration's strike keyboard with the right three buttons, and to catch a stale
+// button from a different duration's menu with a clearer message than the DO's generic INVALID_TERMS
+// would give. Keep in sync by hand if the strike tiers ever change.
+const OPTION_STRIKE_PCTS_BY_DURATION: Record<StockMarketOptionDurationDays, readonly [number, number, number]> = {
+  0: [8, 10, 15],
+  1: [10, 15, 20],
+  3: [15, 20, 30],
+  7: [20, 30, 45],
+};
 
 // Column widths for /market's aligned metrics line (see formatMarketMetrics) — wide enough for a
 // four-digit price and a ▲/▼ + sign + two-decimal change with room to spare, so the percent that
@@ -47,6 +94,20 @@ const CASH_BONUS_MESSAGES: ((amount: number) => string)[] = [
   (amount) => `Found +$${amount} on the sidewalk. It's actually just a number in a database, but sure, feel things about it.`,
   (amount) => `The universe rewards you with +$${amount} for posting too much.`,
   (amount) => `Somebody's Venmo request bounced back to you as a gift: +$${amount}. Don't look a gift horse in the mouth.`,
+];
+
+// Owner-triggered /stimulus announcement — see handleStimulus. Unlike CASH_BONUS_MESSAGES (random, passive,
+// one person), this is always deliberate, always the owner, and always everyone at once — the jokes lean
+// into that instead: an unelected admin with raw database access playing Federal Reserve chairman.
+const STIMULUS_MESSAGES: ((amount: string, count: number, players: string) => string)[] = [
+  (amount, count, players) => `🏛️ STIMULUS — the owner just personally airdropped +$${amount} into ${count} account${players}. No vote, no debate, no oversight. Just vibes and a real dollar amount.`,
+  (amount, count, players) => `🚁 Helicopter money incoming: +$${amount} for all ${count} of you. The owner would like it on record that this was "necessary."`,
+  (amount, count, players) => `💸 The Fed printed exactly enough to cover ${count} trader${players} getting +$${amount} each. Please do not ask where it actually came from.`,
+  (amount, count, players) => `🎩 The owner reached into the top hat and pulled out +$${amount} for every one of you. This is not a magic trick. This is fiscal policy now.`,
+  (amount, count, players) => `🏛️ BREAKING: unelected market administrator unilaterally cuts ${count} trader${players} a +$${amount} check. Economists are "concerned."`,
+  (amount, count, players) => `💰 Stimulus check cleared: +$${amount} to all ${count} of you, courtesy of an owner with too much free time and full write access to the database.`,
+  (amount, count, players) => `🏛️ The owner just declared a national holiday and handed ${count} trader${players} +$${amount} apiece. There was no national holiday. There is now.`,
+  (amount, count, players) => `🖨️ Somewhere, a printer that only exists in a Cloudflare Durable Object just ran off +$${amount} for each of ${count} of you. Spend it before the owner changes his mind.`,
 ];
 
 // Reply to a message 30+ days old. One-time per message (see claimNecromancy) so the same corpse can't
@@ -130,8 +191,15 @@ function awakeHoursBetween(startMs: number, endMs: number): number {
 
 type TradeCommand = { shares: number } & ({ replyUserId: number; replyIsBot: boolean; replyFirstName: string } | { ticker: string });
 
+// A removal target resolved by either replying to their message or naming their $TICKER — same two paths
+// /buy and /sell already accept, reused here for /delist and /reset's owner-targeted form.
+type RemovalTarget = { userId: number; firstName: string };
+
 export class StockMarketComposer extends Composer<MyContext> {
-  constructor(private storage: StorageService) {
+  constructor(
+    private storage: StorageService,
+    private ownerChatId?: number
+  ) {
     super();
     // Must be registered before the /setticker, /buy, /sell handlers below — it's what makes each
     // conversation name resolvable when those handlers call ctx.conversation.enter().
@@ -144,6 +212,9 @@ export class StockMarketComposer extends Composer<MyContext> {
     this.use(
       createConversation(this.tradeDialogue.bind(this), { id: TRADE_CONVERSATION, maxMillisecondsToWait: CONVERSATION_TIMEOUT_MS })
     );
+    this.use(
+      createConversation(this.optionsDialogue.bind(this), { id: OPTIONS_CONVERSATION, maxMillisecondsToWait: CONVERSATION_TIMEOUT_MS })
+    );
 
     this.command("portfolio", (ctx) => this.sendPortfolio(ctx));
     this.command("market", (ctx) => this.sendMarket(ctx));
@@ -151,6 +222,11 @@ export class StockMarketComposer extends Composer<MyContext> {
     this.command("setticker", (ctx) => this.handleSetTicker(ctx));
     this.command("buy", (ctx) => this.handleTrade(ctx, "buy"));
     this.command("sell", (ctx) => this.handleTrade(ctx, "sell"));
+    this.command("options", (ctx) => this.handleOptions(ctx));
+    this.command("delist", (ctx) => this.handleRemoval(ctx, "delist"));
+    this.command("reset", (ctx) => this.handleRemoval(ctx, "reset"));
+    this.command("stimulus", (ctx) => this.handleStimulus(ctx));
+    this.callbackQuery(/^(delist|reset):(confirm|cancel):(\d+)$/, (ctx) => this.handleSelfRemovalCallback(ctx));
     this.on("message", (ctx, next) => this.trackActivity(ctx, next));
     this.on("message_reaction", (ctx) => this.trackReaction(ctx));
   }
@@ -279,8 +355,8 @@ export class StockMarketComposer extends Composer<MyContext> {
           replierUserId: ctx.from.id,
         });
       }
-      if (repliedToMessage) {
-        await this.maybeAwardNecromancy(ctx, repliedToMessage);
+      if (repliedToMessage) { // is this broken? sometimes responds to a normal message in a thread, not a reply
+        // await this.maybeAwardNecromancy(ctx, repliedToMessage);  // remove necromancy
       }
 
       await this.maybeAwardCashBonus(ctx);
@@ -310,6 +386,7 @@ export class StockMarketComposer extends Composer<MyContext> {
       if (threadLast && !threadLast.hasReaction && threadLast.userId !== ctx.from.id) {
         const awakeHours = awakeHoursBetween(threadLast.lastEpochSec * 1000, threadLast.nowEpochSec * 1000);
         if (awakeHours >= TERMINATOR_SILENCE_HOURS) {
+          if (Math.random() < 0.7) return; // 30% chance of paying out for this
           const payout = Math.min(TERMINATOR_CAP, Math.round(awakeHours * TERMINATOR_RATE_PER_HOUR));
           await this.storage.awardStockMarketCash(ctx.chat.id, threadLast.userId, payout);
           const label = this.formatTaggedLabel(threadLast.userId, threadLast.firstName, threadLast.ticker);
@@ -330,11 +407,12 @@ export class StockMarketComposer extends Composer<MyContext> {
     if (chatLast && chatLast.userId !== ctx.from.id) {
       const gapHours = (chatLast.nowEpochSec - chatLast.lastEpochSec) / 3600;
       if (gapHours >= MARKET_OPEN_SILENCE_HOURS) {
-        await this.storage.awardStockMarketCash(ctx.chat.id, ctx.from.id, MARKET_OPEN_PAYOUT);
-        await this.sendMarketAnnouncement(
-          ctx,
-          `🔔 MARKET OPEN — ${this.formatTaggedLabel(ctx.from.id, ctx.from.first_name, null)} broke the silence. +$${MARKET_OPEN_PAYOUT}.`
-        );
+        // temp removal
+        // await this.storage.awardStockMarketCash(ctx.chat.id, ctx.from.id, MARKET_OPEN_PAYOUT);
+        // await this.sendMarketAnnouncement(
+        //   ctx,
+        //   `🔔 MARKET OPEN — ${this.formatTaggedLabel(ctx.from.id, ctx.from.first_name, null)} broke the silence. +$${MARKET_OPEN_PAYOUT}.`
+        // );
       }
     }
   }
@@ -456,6 +534,39 @@ export class StockMarketComposer extends Composer<MyContext> {
           `${this.formatLabel(holding.firstName, holding.ticker, holding.isHalted)}:`,
           `   ${holding.shares} @ <code>${holding.price.toFixed(2)}</code> ${this.formatPercentOnly(holding.dailyChange, holding.price)} = <code>${holding.value.toFixed(2)}</code>`
         );
+      }
+    }
+
+    // Omitted entirely when empty, same as holdings-less portfolios not getting a bare "Holdings:" header
+    // — most players never buy an option, so this shouldn't be permanent clutter on every /portfolio.
+    if (portfolio.openOptions.length > 0) {
+      lines.push(`-----`, `Open Options:`, ``);
+      // Grouped by underlying so buying several contracts on the same person doesn't repeat their name/
+      // ticker header once per contract — getPortfolio already orders soonest-expiry-first, and a Map
+      // preserves that as first-appearance order per group, so both the group order and each group's own
+      // contracts stay soonest-first.
+      const byUnderlying = new Map<number, typeof portfolio.openOptions>();
+      for (const option of portfolio.openOptions) {
+        const group = byUnderlying.get(option.underlyingUserId);
+        if (group) {
+          group.push(option);
+        } else {
+          byUnderlying.set(option.underlyingUserId, [option]);
+        }
+      }
+
+      for (const group of byUnderlying.values()) {
+        const [first] = group;
+        if (!first) {
+          continue;
+        }
+        // currentPrice is the underlying's live price, identical across every contract in the group (not
+        // a per-contract snapshot) — shown once on the header line rather than repeated per contract.
+        lines.push(`${this.formatLabel(first.underlyingFirstName, first.underlyingTicker, first.isHalted)} — S<code>${first.currentPrice.toFixed(2)}</code>:`);
+        for (const option of group) {
+          const runway = this.formatDuration((option.expiresAtEpochSec - option.nowEpochSec) / 3600);
+          lines.push(`   K<code>${option.strikePrice.toFixed(2)}</code> - expires ~${runway}`);
+        }
       }
     }
 
@@ -835,6 +946,257 @@ export class StockMarketComposer extends Composer<MyContext> {
     await this.sendTradeResult(response, action, result, target.firstName, target.ticker);
   }
 
+  private async handleOptions(ctx: MyContext) {
+    if (!ctx.chat || !ctx.from) {
+      return;
+    }
+    try {
+      await ctx.conversation.enter(OPTIONS_CONVERSATION);
+    } catch {
+      await replyToMessage(ctx, "Someone else has a command in progress in this chat — try /options again in a moment.");
+    }
+  }
+
+  // /options always lands here — walks ticker picker (reusing buyableTickers, same filters as /buy) →
+  // duration picker → strike picker (duration first, since strikes are duration-scoped — see
+  // OPTION_STRIKE_PCTS_BY_DURATION) → a live quote → confirm/cancel. Kept as its own dialogue rather than
+  // folded into tradeDialogue since every step's callback-data prefix and shape is different from /buy's.
+  private async optionsDialogue(conversation: MyConversation, ctx: ConversationContext) {
+    if (!ctx.chat || !ctx.from) {
+      return;
+    }
+    const chatId = ctx.chat.id;
+    const threadId = ctx.message?.message_thread_id;
+    const buyer: { userId: number; firstName: string; username?: string } = {
+      userId: ctx.from.id,
+      firstName: ctx.from.first_name,
+      ...(ctx.from.username !== undefined && { username: ctx.from.username }),
+    };
+
+    const options = await conversation.external(() => this.buyableTickers(chatId, buyer.userId));
+    if (options.length === 0) {
+      await ctx.reply("Nobody in this chat has set a ticker yet — ask them to /setticker first.", {
+        ...(threadId !== undefined && { message_thread_id: threadId }),
+      });
+      return;
+    }
+
+    const tickerKeyboard = new InlineKeyboard();
+    options.forEach((option, index) => {
+      tickerKeyboard.text(`$${option.ticker} — ${option.firstName}`, `option_ticker:${option.ticker}`);
+      if (index % 2 === 1) {
+        tickerKeyboard.row();
+      }
+    });
+    await ctx.reply(OPTIONS_BLURB, { reply_markup: tickerKeyboard, ...(threadId !== undefined && { message_thread_id: threadId }) });
+
+    const target = await this.waitForOptionTicker(conversation, buyer.userId, options);
+    if (!target) {
+      return;
+    }
+
+    const durationKeyboard = new InlineKeyboard()
+      .text("0D", "option_duration:0")
+      .text("1D", "option_duration:1")
+      .text("3D", "option_duration:3")
+      .text("7D", "option_duration:7");
+    await ctx.api.sendMessage(chatId, "Choose your expiration:", {
+      reply_markup: durationKeyboard,
+      ...(threadId !== undefined && { message_thread_id: threadId }),
+    });
+    const durationDays = await this.waitForDurationChoice(conversation, buyer.userId);
+    if (durationDays === null) {
+      return;
+    }
+
+    // Strikes are duration-scoped (see OPTION_STRIKE_PCTS_BY_DURATION) — a fixed 8% strike that's roughly
+    // a coinflip at 0D would be close to free money by 7D, so each duration offers its own three-tier menu
+    // instead of one fixed set, hence duration has to be picked before strike, not after.
+    const [conservative, middle, aggressive] = OPTION_STRIKE_PCTS_BY_DURATION[durationDays];
+    const strikeKeyboard = new InlineKeyboard()
+      .text(`${conservative}% OTM`, `option_strike:${conservative}`)
+      .text(`${middle}% OTM`, `option_strike:${middle}`)
+      .text(`${aggressive}% OTM`, `option_strike:${aggressive}`);
+    await ctx.api.sendMessage(chatId, "Choose your strike:", {
+      reply_markup: strikeKeyboard,
+      ...(threadId !== undefined && { message_thread_id: threadId }),
+    });
+    const strikePct = await this.waitForStrikeChoice(conversation, buyer.userId, durationDays);
+    if (strikePct === null) {
+      return;
+    }
+
+    const quote = await conversation.external(() => this.storage.quoteStockMarketOption(chatId, target.userId, strikePct, durationDays));
+    if (!quote) {
+      await ctx.api.sendMessage(chatId, `Couldn't quote $${target.ticker} anymore — they may have been delisted.`, {
+        ...(threadId !== undefined && { message_thread_id: threadId }),
+      });
+      return;
+    }
+
+    const runway = this.formatDuration((quote.expiresAtEpochSec - quote.nowEpochSec) / 3600);
+    const confirmKeyboard = new InlineKeyboard().text("Purchase", "option_confirm:yes").text("Cancel", "option_confirm:no");
+    await ctx.api.sendMessage(
+      chatId,
+      `$${target.ticker} is at ${quote.underlyingPrice.toFixed(2)}. Strike: ${quote.strikePrice.toFixed(2)} (+${Math.round(strikePct * 100)}%). Expires in ~${runway}. Premium cost is ${quote.premium.toFixed(2)}. Confirm?`,
+      { reply_markup: confirmKeyboard, ...(threadId !== undefined && { message_thread_id: threadId }) }
+    );
+
+    const confirmed = await this.waitForOptionConfirm(conversation, buyer.userId);
+    if (confirmed === null) {
+      // Already told the user it's cancelled — see waitForOptionConfirm's typed-cancel path.
+      return;
+    }
+    if (!confirmed) {
+      await ctx.api.sendMessage(chatId, "Cancelled — no premium charged.", { ...(threadId !== undefined && { message_thread_id: threadId }) });
+      return;
+    }
+
+    // Recomputed fresh inside buyOption off the live price at this exact moment — may differ slightly
+    // from the quote above if price moved during the picker steps. The confirmation message below reports
+    // whatever actually got charged, not the earlier quote.
+    const result = await conversation.external(() =>
+      this.storage.buyStockMarketOption(chatId, {
+        buyerUserId: buyer.userId,
+        buyerFirstName: buyer.firstName,
+        ...(buyer.username !== undefined && { buyerUsername: buyer.username }),
+        underlyingUserId: target.userId,
+        strikePct,
+        durationDays,
+      })
+    );
+
+    await ctx.api.sendMessage(chatId, this.optionResultMessage(result, target), {
+      ...(threadId !== undefined && { message_thread_id: threadId }),
+    });
+  }
+
+  // Shared by every /options picker step below — unlike /setticker and /buy's share-count prompt, none of
+  // these steps has a text-typing path of its own to catch EXIT_KEYWORDS on, since they're pure button
+  // pickers. This is the one place that matters here: races a callback query against a plain text message
+  // on the same wait (grammY conversations only support one outstanding wait at a time, so this has to be
+  // a single combined waitFor rather than two separate wait calls), and treats "stop"/"quit"/"exit"/"end"/
+  // "cancel" as ending the whole dialogue regardless of which step it's typed at. Returns null on cancel,
+  // otherwise the matched callback context for the caller to parse its own data out of.
+  private async waitForOptionsCallback(conversation: MyConversation, userId: number): Promise<Filter<ConversationContext, "callback_query:data"> | null> {
+    const response = await conversation.waitFor(["callback_query:data", "message:text"], { next: true });
+
+    if (response.message) {
+      if (response.from?.id !== userId) {
+        return this.waitForOptionsCallback(conversation, userId);
+      }
+      if (EXIT_KEYWORDS.has(response.message.text.trim().toLowerCase())) {
+        await replyToMessage(response, "Cancelled — no premium charged.");
+        return null;
+      }
+      return this.waitForOptionsCallback(conversation, userId);
+    }
+
+    if (response.callbackQuery.from.id !== userId) {
+      await response.answerCallbackQuery({ text: "This isn't your trade to make.", show_alert: true });
+      return this.waitForOptionsCallback(conversation, userId);
+    }
+
+    return response;
+  }
+
+  private async waitForOptionTicker(conversation: MyConversation, userId: number, options: TickerOption[]): Promise<TickerOption | null> {
+    const response = await this.waitForOptionsCallback(conversation, userId);
+    if (!response) {
+      return null;
+    }
+
+    const ticker = response.callbackQuery.data?.slice("option_ticker:".length);
+    const match = options.find((option) => option.ticker === ticker);
+    if (!match) {
+      await response.answerCallbackQuery({ text: "That option isn't available anymore.", show_alert: true });
+      return null;
+    }
+
+    await response.answerCallbackQuery();
+    await response.editMessageText(`Selected $${match.ticker} (${match.firstName}) for a long call.`);
+    return match;
+  }
+
+  private async waitForStrikeChoice(
+    conversation: MyConversation,
+    userId: number,
+    durationDays: StockMarketOptionDurationDays
+  ): Promise<StockMarketOptionStrikePct | null> {
+    const response = await this.waitForOptionsCallback(conversation, userId);
+    if (!response) {
+      return null;
+    }
+
+    const raw = response.callbackQuery.data?.slice("option_strike:".length);
+    const rawNum = raw !== undefined ? Number(raw) : undefined;
+    const pct = raw !== undefined ? STRIKE_PCT_BY_CALLBACK[raw] : undefined;
+    // Validated against the ALREADY-CHOSEN duration's own menu, not just any known percentage — a stale
+    // button from a different duration's strike keyboard (e.g. two /options attempts in flight) shouldn't
+    // silently succeed with the wrong duration's pricing tier.
+    if (pct === undefined || rawNum === undefined || !OPTION_STRIKE_PCTS_BY_DURATION[durationDays].includes(rawNum)) {
+      await response.answerCallbackQuery({ text: "That option isn't available anymore.", show_alert: true });
+      return null;
+    }
+
+    await response.answerCallbackQuery();
+    await response.editMessageText(`Strike: ${raw}% OTM`);
+    return pct;
+  }
+
+  private async waitForDurationChoice(conversation: MyConversation, userId: number): Promise<StockMarketOptionDurationDays | null> {
+    const response = await this.waitForOptionsCallback(conversation, userId);
+    if (!response) {
+      return null;
+    }
+
+    const raw = response.callbackQuery.data?.slice("option_duration:".length);
+    const days = raw !== undefined ? DURATION_DAYS_BY_CALLBACK[raw] : undefined;
+    if (days === undefined) {
+      await response.answerCallbackQuery({ text: "That option isn't available anymore.", show_alert: true });
+      return null;
+    }
+
+    await response.answerCallbackQuery();
+    await response.editMessageText(`Expiration: ${raw}D`);
+    return days;
+  }
+
+  // null specifically means "already told the user it's cancelled" (waitForOptionsCallback's typed-cancel
+  // path already replied) — distinct from false ("Cancel" button pressed), which still needs
+  // optionsDialogue's own message, so the two paths don't end up sending the cancellation notice twice.
+  private async waitForOptionConfirm(conversation: MyConversation, userId: number): Promise<boolean | null> {
+    const response = await this.waitForOptionsCallback(conversation, userId);
+    if (!response) {
+      return null;
+    }
+
+    const choice = response.callbackQuery.data?.slice("option_confirm:".length);
+    await response.answerCallbackQuery();
+    await response.editMessageText(choice === "yes" ? "Purchasing..." : "Cancelled.");
+    return choice === "yes";
+  }
+
+  private optionResultMessage(result: StockMarketBuyOptionResult, target: TickerOption): string {
+    if (!result.ok) {
+      switch (result.type) {
+        case "INVALID_TERMS":
+          return "Those terms aren't valid anymore — try /options again.";
+        case "CANNOT_TRADE_SELF":
+          return "You can't buy an option on your own stock.";
+        case "UNKNOWN_STOCK":
+          return `Couldn't find $${target.ticker} anymore.`;
+        case "HALTED":
+          return "Trading in that stock has been halted pending review of irregular activity. No further comment will be provided.";
+        case "INSUFFICIENT_CASH":
+          return "You don't have enough cash for that premium.";
+        case "BLOCKED":
+          return "You've been delisted from this exchange. Regulatory action is final.";
+      }
+    }
+    return `📈 Bought a call on $${target.ticker} (${target.firstName}) — strike ${result.strikePrice.toFixed(2)}, premium ${result.premium.toFixed(2)}. Settles at the next matching 5pm ET rollover.`;
+  }
+
   private parseTradeCommand(ctx: MyContext): TradeCommand | null {
     const repliedTo = realReplyTo(ctx)?.from;
     const args = String(ctx.match ?? "").trim().split(/\s+/).filter(Boolean);
@@ -873,7 +1235,137 @@ export class StockMarketComposer extends Composer<MyContext> {
         return "You don't own that many shares.";
       case "HALTED":
         return "Trading in that stock has been halted pending review of irregular activity. No further comment will be provided.";
+      case "BLOCKED":
+        return "You've been delisted from this exchange. Regulatory action is final.";
+      case "OPTIONS_CONFLICT":
+        return "You're holding an open option on them — the anti-pump guard is on for this chat, so you can't trade their shares until it settles or the guard's turned off.";
     }
+  }
+
+  // Owner path for both /delist and /reset — same reply-or-$TICKER targeting /buy and /sell already use.
+  // Everyone else (including any chat member at all, if no owner is configured) falls through to the
+  // self-service, confirmation-gated path instead, and can only ever target themselves.
+  private async handleRemoval(ctx: MyContext, kind: "delist" | "reset") {
+    if (!ctx.chat || !ctx.from) {
+      return;
+    }
+
+    if (this.ownerChatId === undefined || ctx.from.id !== this.ownerChatId) {
+      await this.confirmSelfRemoval(ctx, kind);
+      return;
+    }
+
+    const repliedTo = realReplyTo(ctx)?.from;
+    const arg = String(ctx.match ?? "").trim();
+
+    let target: RemovalTarget;
+    if (repliedTo) {
+      target = { userId: repliedTo.id, firstName: repliedTo.first_name };
+    } else if (arg.startsWith("$")) {
+      const found = await this.storage.findStockMarketPlayerByTicker(ctx.chat.id, arg.slice(1));
+      if (!found) {
+        await replyToMessage(ctx, `Couldn't find ${arg} in this chat's market.`);
+        return;
+      }
+      target = { userId: found.userId, firstName: found.firstName };
+    } else {
+      await replyToMessage(ctx, `Reply to their message with /${kind}, or use /${kind} $TICKER if they set one.`);
+      return;
+    }
+
+    // Silent on purpose — the owner triggering this isn't something the chat needs announced, unlike the
+    // self-service path above (confirmSelfRemoval/handleSelfRemovalCallback), which does reply since the
+    // person removing themselves is the one who needs the outcome confirmed.
+    await this.performRemoval(ctx.chat.id, kind, target.userId);
+  }
+
+  // Self-targeting only, and gated behind a confirmation — unlike the owner path, this is one tap away
+  // from a bare command with no reply/ticker to double-check against, and /delist's lockout is permanent.
+  // The target userId rides along in the callback data itself (see handleSelfRemovalCallback) rather than
+  // any session, since this is a single request/response, not a multi-step conversation.
+  private async confirmSelfRemoval(ctx: MyContext, kind: "delist" | "reset"): Promise<void> {
+    if (!ctx.chat || !ctx.from) {
+      return;
+    }
+
+    const keyboard = new InlineKeyboard()
+      .text(kind === "delist" ? "Yes, delist me" : "Yes, reset me", `${kind}:confirm:${ctx.from.id}`)
+      .text("Cancel", `${kind}:cancel:${ctx.from.id}`);
+
+    const warning =
+      kind === "delist"
+        ? "This cashes out everyone holding your stock at today's price and pulls you off the market for good — you will NOT be able to rejoin by posting again. Sure?"
+        : "This cashes out everyone holding your stock at today's price and pulls you off the market — you'll start fresh automatically the next time you post. Sure?";
+
+    await ctx.reply(warning, {
+      reply_markup: keyboard,
+      ...(ctx.message?.message_id !== undefined && { reply_to_message_id: ctx.message.message_id }),
+      ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
+    });
+  }
+
+  // Only the person the confirmation was sent to can answer it — enforced by comparing the presser's id
+  // against the userId embedded in the callback data, same guard shape as waitForTickerChoice's userId
+  // check for /buy and /sell's picker.
+  private async handleSelfRemovalCallback(ctx: MyContext): Promise<void> {
+    const match = ctx.callbackQuery?.data?.match(/^(delist|reset):(confirm|cancel):(\d+)$/);
+    if (!match || !ctx.chat || !ctx.callbackQuery) {
+      return;
+    }
+    const kind = match[1] as "delist" | "reset";
+    const action = match[2] as "confirm" | "cancel";
+    const targetUserId = Number(match[3]);
+
+    if (ctx.callbackQuery.from.id !== targetUserId) {
+      await ctx.answerCallbackQuery({ text: "This isn't your confirmation to answer.", show_alert: true });
+      return;
+    }
+
+    if (action === "cancel") {
+      await ctx.answerCallbackQuery();
+      await ctx.editMessageText("Cancelled — you're still on the market.");
+      return;
+    }
+
+    await ctx.answerCallbackQuery();
+    const removed = await this.performRemoval(ctx.chat.id, kind, targetUserId);
+    const message = !removed
+      ? "You weren't in the market."
+      : kind === "delist"
+        ? "You're delisted. Everyone holding your stock got cashed out at today's price. You will not be able to rejoin by posting again."
+        : "You're reset. Everyone holding your stock got cashed out at today's price — post again anytime to start fresh.";
+    await ctx.editMessageText(message);
+  }
+
+  private performRemoval(chatId: number, kind: "delist" | "reset", userId: number): Promise<boolean> {
+    return kind === "delist" ? this.storage.delistStockMarketPlayer(chatId, userId) : this.storage.resetStockMarketPlayer(chatId, userId);
+  }
+
+  // Owner-only. Flat cash injection to every active player in this chat's market at once — /stimulus 1000
+  // gives everyone $1000, no target to pick. Cash only, same as awardCash: doesn't touch price, doesn't
+  // care about halts. Announced chat-wide (via sendMarketAnnouncement) since, unlike the owner path on
+  // /delist and /reset, this is very much something the whole chat needs to know just happened.
+  private async handleStimulus(ctx: MyContext) {
+    if (!ctx.chat || !ctx.from) {
+      return;
+    }
+    if (this.ownerChatId === undefined || ctx.from.id !== this.ownerChatId) {
+      return;
+    }
+
+    const amount = Number(String(ctx.match ?? "").trim());
+    if (!Number.isFinite(amount) || amount <= 0) {
+      await replyToMessage(ctx, "Usage: /stimulus <amount>, e.g. /stimulus 1000");
+      return;
+    }
+
+    const count = await this.storage.stimulusStockMarket(ctx.chat.id, amount);
+    if (count === 0) {
+      await replyToMessage(ctx, "No active players in this chat's market yet.");
+      return;
+    }
+
+    await this.sendMarketAnnouncement(ctx, random(STIMULUS_MESSAGES)(amount.toFixed(2), count, count === 1 ? "" : "s"));
   }
 
   /** Driven by main.ts's scheduled() handler — no Telegram messages to send, just storage mutations. */
@@ -889,6 +1381,16 @@ export class StockMarketComposer extends Composer<MyContext> {
     const chatIds = await this.storage.listStockMarketChats();
     for (const chatId of chatIds) {
       await this.storage.applyStockMarketWeeklyAllowance(chatId);
+    }
+  }
+
+  // Same daily-morning cron as runDailyHaltCheck (see main.ts's DAILY_MORNING_CRON) — moved here from the
+  // weekly cron since message_authors/price_events accumulate on every message, and a week between purges
+  // let them grow much larger than a day between purges ever would. Purely storage mutation, nothing to
+  // announce, so kept separate from runDailyHaltCheck the same way runDailyDecay is kept separate from it.
+  async runDailyCleanup(): Promise<void> {
+    const chatIds = await this.storage.listStockMarketChats();
+    for (const chatId of chatIds) {
       await this.storage.purgeStockMarketOldData(chatId);
       await this.storage.purgeStockMarketGhostPlayers(chatId);
     }
@@ -912,6 +1414,34 @@ export class StockMarketComposer extends Composer<MyContext> {
         `🚨 Trading in ${label} has been halted for 24 hours pending review of irregular activity. No further comment will be provided.`,
         { ...(threadId !== null && { message_thread_id: threadId }) }
       );
+    }
+  }
+
+  // Driven by its own 5pm-ET cron (see OPTIONS_SETTLEMENT_CRON in main.ts) — separate from the other
+  // three since it's the only one that needs to fire at that specific boundary. Batches every settled
+  // contract in a chat into ONE message (not one send per contract) — several contracts settling in the
+  // same run would otherwise risk Telegram's per-chat rate limit and just read as spam.
+  async runOptionsSettlement(api: Api): Promise<void> {
+    const chatIds = await this.storage.listStockMarketChats();
+    for (const chatId of chatIds) {
+      const settlements = await this.storage.settleStockMarketOptions(chatId);
+      if (settlements.length === 0) {
+        continue;
+      }
+
+      const threadId = await this.storage.getStockMarketAnnouncementThread(chatId);
+      const lines = settlements.map((s) => {
+        const buyerLabel = this.formatTaggedLabel(s.buyerUserId, s.buyerFirstName, s.buyerTicker);
+        const underlyingLabel = this.formatTaggedLabel(s.underlyingUserId, s.underlyingFirstName, s.underlyingTicker);
+        return s.payout > 0
+          ? random(OPTIONS_ITM_MESSAGES)(buyerLabel, underlyingLabel, s.payout)
+          : random(OPTIONS_WORTHLESS_MESSAGES)(buyerLabel, underlyingLabel);
+      });
+
+      await api.sendMessage(chatId, [`⏰ <b>Options settlement</b>`, ...lines].join("\n"), {
+        parse_mode: "HTML",
+        ...(threadId !== null && { message_thread_id: threadId }),
+      });
     }
   }
 }

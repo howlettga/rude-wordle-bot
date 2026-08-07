@@ -5,7 +5,7 @@ import type { ConversationData, VersionedState, VersionedStateStorage } from "@g
 import { random } from "./util.js";
 import { WORDLE_INSTRUCTIONS, MARKET_INSTRUCTIONS, phrases, RDU_ADVERTISEMENT, replies } from "./replies.js";
 import type { StorageService } from "./storage-service.js";
-import { type MyContext, replyToMessage, replyInThread, replyHTML, replyPhoto, realReplyTo } from "./context.js";
+import { type MyContext, replyToMessage, replyInThread, replyHTML, replyPhoto } from "./context.js";
 import { WordleGolfComposer } from "./wordle-golf.js";
 import { StockMarketComposer } from "./stock-market.js";
 import beenMentionedPhoto from "../assets/beens_mentioned.jpg";
@@ -25,7 +25,7 @@ export class RudeBot {
 
     this.bot.use(conversations({ storage: this.conversationStorage() }));
     this.bot.use(new WordleGolfComposer(this.storage));
-    this.bot.use(new StockMarketComposer(this.storage));
+    this.bot.use(new StockMarketComposer(this.storage, ownerChatId));
     // this.hearAndRespond(["value"], "toMessage", () => "Check your worth with the /portfolio command.");
     // this.hearAndRespond(["market"], "toMessage", () => "Check the market with the /market command.");
     this.registerErrorHandler();
@@ -90,9 +90,9 @@ export class RudeBot {
   private registerCommands() {
     this.bot.command("instructions", (ctx) => replyInThread(ctx, WORDLE_INSTRUCTIONS));
     this.bot.command("marketrules", (ctx) => replyInThread(ctx, MARKET_INSTRUCTIONS));
-    this.registerDelist();
     this.registerRestart();
     this.registerSetMarketThread();
+    this.registerSetOptionsGuard();
   }
 
   // Owner-only. Cron-driven market announcements (the trading-halt notice, and any future ones) default
@@ -116,46 +116,35 @@ export class RudeBot {
     });
   }
 
-  // Owner-only, immediate removal from the stock market for someone who's left a chat but is still
-  // accumulating price purely from other people replying to their old messages — purgeGhostPlayers'
-  // weekly sweep deliberately won't touch them since they genuinely posted before leaving, so this is
-  // the manual escape hatch for that case rather than a "wait until Monday" one. Targets by reply, or by
-  // /delist $TICKER if they'd set one.
-  private registerDelist() {
-    this.bot.command("delist", async (ctx) => {
+  // Owner-only, per-chat. Off by default — self-pumping your own option via a big buy order is
+  // deliberately allowed chaos (see TRADE_BASE_IMPACT_PCT in the stock market DO) — this is the escape
+  // hatch if it ever gets out of hand for a specific chat, not a permanent rule change.
+  private registerSetOptionsGuard() {
+    this.bot.command("setoptionsguard", async (ctx) => {
       if (this.ownerChatId === undefined || ctx.from?.id !== this.ownerChatId || !ctx.chat) {
         return;
       }
 
-      const repliedTo = realReplyTo(ctx)?.from;
-      const arg = String(ctx.match ?? "").trim();
-
-      let targetUserId: number;
-      let targetLabel: string;
-      if (repliedTo) {
-        targetUserId = repliedTo.id;
-        targetLabel = repliedTo.first_name;
-      } else if (arg.startsWith("$")) {
-        const found = await this.storage.findStockMarketPlayerByTicker(ctx.chat.id, arg.slice(1));
-        if (!found) {
-          await replyToMessage(ctx, `Couldn't find ${arg} in this chat's market.`);
-          return;
-        }
-        targetUserId = found.userId;
-        targetLabel = found.firstName;
-      } else {
-        await replyToMessage(ctx, "Reply to their message with /delist, or use /delist $TICKER if they set one.");
+      const arg = String(ctx.match ?? "").trim().toLowerCase();
+      if (arg !== "on" && arg !== "off") {
+        await replyToMessage(ctx, "Usage: /setoptionsguard on|off");
         return;
       }
 
-      const removed = await this.storage.removeStockMarketPlayer(ctx.chat.id, targetUserId);
-      await replyToMessage(ctx, removed ? `Delisted ${targetLabel} from the market.` : `${targetLabel} wasn't in the market.`);
+      await this.storage.setStockMarketOptionsGuard(ctx.chat.id, arg === "on");
+      await replyToMessage(
+        ctx,
+        arg === "on"
+          ? "Anti-pump guard is ON — can't trade shares of anyone you're holding an open option on."
+          : "Anti-pump guard is OFF — pump away."
+      );
     });
   }
 
   // Owner-only full wipe of this chat's stock market — every player, holding, and price event, gone.
   // For clearing out an economy corrupted by a bug (e.g. the topic-auto-reply mismeasurement fixed
-  // alongside this) rather than correcting people one at a time, which /delist already covers.
+  // alongside this) rather than correcting people one at a time, which /delist and /reset (both now
+  // registered on StockMarketComposer itself, alongside /buy and /sell) already cover.
   private registerRestart() {
     this.bot.command("restart", async (ctx) => {
       if (this.ownerChatId === undefined || ctx.from?.id !== this.ownerChatId || !ctx.chat) {

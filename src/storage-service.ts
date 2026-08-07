@@ -15,6 +15,11 @@ import type {
   StockMarketPortfolio,
   StockMarketTradeResult,
   StockMarketSetTickerResult,
+  StockMarketOptionStrikePct,
+  StockMarketOptionDurationDays,
+  StockMarketOptionQuote,
+  StockMarketBuyOptionResult,
+  StockMarketOptionSettlement,
 } from "./durable-objects/stock-market.js";
 import type { StockMarketRegistry } from "./durable-objects/stock-market-registry.js";
 
@@ -156,8 +161,12 @@ export class StorageService {
     return this.stockMarketStub(chatId).getPlayer(userId);
   }
 
-  removeStockMarketPlayer(chatId: number, userId: number): Promise<boolean> {
-    return this.stockMarketStub(chatId).removePlayer(userId);
+  delistStockMarketPlayer(chatId: number, userId: number): Promise<boolean> {
+    return this.stockMarketStub(chatId).delist(userId);
+  }
+
+  resetStockMarketPlayer(chatId: number, userId: number): Promise<boolean> {
+    return this.stockMarketStub(chatId).reset(userId);
   }
 
   restartStockMarket(chatId: number): Promise<void> {
@@ -187,6 +196,41 @@ export class StorageService {
     return this.stockMarketStub(chatId).sell(input);
   }
 
+  quoteStockMarketOption(
+    chatId: number,
+    underlyingUserId: number,
+    strikePct: StockMarketOptionStrikePct,
+    durationDays: StockMarketOptionDurationDays
+  ): Promise<StockMarketOptionQuote | null> {
+    return this.stockMarketStub(chatId).quoteOption(underlyingUserId, strikePct, durationDays);
+  }
+
+  buyStockMarketOption(
+    chatId: number,
+    input: {
+      buyerUserId: number;
+      buyerUsername?: string;
+      buyerFirstName: string;
+      underlyingUserId: number;
+      strikePct: StockMarketOptionStrikePct;
+      durationDays: StockMarketOptionDurationDays;
+    }
+  ): Promise<StockMarketBuyOptionResult> {
+    return this.stockMarketStub(chatId).buyOption(input);
+  }
+
+  settleStockMarketOptions(chatId: number): Promise<StockMarketOptionSettlement[]> {
+    return this.stockMarketStub(chatId).settleExpiredOptions();
+  }
+
+  setStockMarketOptionsGuard(chatId: number, enabled: boolean): Promise<void> {
+    return this.stockMarketStub(chatId).setOptionsSelfPumpGuard(enabled);
+  }
+
+  getStockMarketOptionsGuard(chatId: number): Promise<boolean> {
+    return this.stockMarketStub(chatId).getOptionsSelfPumpGuard();
+  }
+
   registerStockMarketChat(chatId: number): Promise<void> {
     const stub = this.stockMarketRegistryNs.get(this.stockMarketRegistryNs.idFromName("global"));
     return stub.register(chatId);
@@ -203,6 +247,10 @@ export class StorageService {
 
   awardStockMarketCash(chatId: number, userId: number, amount: number): Promise<void> {
     return this.stockMarketStub(chatId).awardCash(userId, amount);
+  }
+
+  stimulusStockMarket(chatId: number, amount: number): Promise<number> {
+    return this.stockMarketStub(chatId).stimulus(amount);
   }
 
   getStockMarketThreadSilenceGap(
