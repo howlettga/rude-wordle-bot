@@ -1,13 +1,19 @@
 Bugfixes
 
+- wordle golf total - mulligan's are replacing points instead of missed days
+
 Features
 
-- no one replies to question (+money)
 - Days-since counters — /dayssince Kyle got food poisoning at the airport. Have the cron post milestones unprompted: "It has been 100 days."
 - Weekly performance review — Monday cron posts fake analytics: message count, "71% of volume attributable to one participant," "morale: unchanged, no action required." Real numbers from KV make it land harder.
 - The Ombudsman — /ruling in the scaffold. Rules on any dispute, cites a fabricated Group Charter section, declares itself non-appealable.
 - /startmarket and /stopmarket
+- /join option to be included
+- short options
+- market events (random stories explaining massive stock changes)
+- less invasive chat (random money replies in-thread, no buy/sell replies, etc) - keep messages contained to primary thread
 - /featurerequest - ask for a bot feature
+- reply to beens mentioned with "how many beans?" to get the bean count
 
 Maybe
 - stock splitting

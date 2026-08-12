@@ -13,11 +13,12 @@ export type MyContext = Context & ConversationFlavor<Context>;
 // someone" (reply-based /buy /sell /value targeting, the stock market's reply-price-bump tracking, etc.)
 // needs this instead of reading ctx.message.reply_to_message directly, or every message in a non-General
 // topic gets misread as a reply to whoever created the topic.
-// Default timeout for a pending conversation wait (setTicker/trade/new-round dialogues) — see isNotCommand
-// below for why a timeout is needed at all. 15 minutes is generous for anyone actively answering a
-// prompt, but bounds how long an abandoned one can keep swallowing ambient chat/price-tracking before the
-// @grammyjs/conversations engine auto-halts it on the next incoming update (any type, any chat member).
-export const CONVERSATION_TIMEOUT_MS = 15 * 60 * 1000;
+// Default timeout for a pending conversation wait (setTicker/trade/options/new-round dialogues) — see
+// isNotCommand below for why a timeout is needed at all. 5 minutes is still generous for anyone actively
+// answering a prompt, but bounds how long an abandoned one can keep swallowing ambient chat/price-tracking
+// before the @grammyjs/conversations engine auto-halts it on the next incoming update (any type, any chat
+// member).
+export const CONVERSATION_TIMEOUT_MS = 5 * 60 * 1000;
 
 // Lets a command sent while a conversation.waitFor("message:text") is pending fall through to the
 // bot's normal command handlers instead of being swallowed as an (invalid) answer to the prompt — pass

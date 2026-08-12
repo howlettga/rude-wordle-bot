@@ -1079,17 +1079,24 @@ export class StockMarketComposer extends Composer<MyContext> {
   // "cancel" as ending the whole dialogue regardless of which step it's typed at. Returns null on cancel,
   // otherwise the matched callback context for the caller to parse its own data out of.
   private async waitForOptionsCallback(conversation: MyConversation, userId: number): Promise<Filter<ConversationContext, "callback_query:data"> | null> {
-    const response = await conversation.waitFor(["callback_query:data", "message:text"], { next: true });
+    // The .and() predicate is what keeps this from freezing the whole chat: without it, EVERY text
+    // message from ANYONE (not just userId) would type-match "message:text" and get swallowed into the
+    // conversation — silently blocking price scoring, /portfolio, everything else — for as long as this
+    // dialogue stays open. Only text that's actually a cancel keyword gets pulled in; everything else
+    // fails the predicate and, with next:true, flows straight through to the rest of the middleware
+    // instead of being consumed. The outer waitFor's own next:true covers the remaining case (an update
+    // that's neither a callback query nor text at all, e.g. a sticker) the same way.
+    const response = await conversation
+      .waitFor(["callback_query:data", "message:text"], { next: true })
+      .and((ctx) => !ctx.message || EXIT_KEYWORDS.has(ctx.message.text.trim().toLowerCase()), { next: true });
 
     if (response.message) {
       if (response.from?.id !== userId) {
         return this.waitForOptionsCallback(conversation, userId);
       }
-      if (EXIT_KEYWORDS.has(response.message.text.trim().toLowerCase())) {
-        await replyToMessage(response, "Cancelled — no premium charged.");
-        return null;
-      }
-      return this.waitForOptionsCallback(conversation, userId);
+      // Reaching here means the .and() predicate already confirmed this is a cancel keyword.
+      await replyToMessage(response, "Cancelled — no premium charged.");
+      return null;
     }
 
     if (response.callbackQuery.from.id !== userId) {

@@ -32,14 +32,19 @@ const TRADE_BASE_IMPACT_PCT = 0.04;
 // currentPrice * OPTION_PREMIUM_BASE_RATE * strikeTierMultiplier * durationMultiplier. 'call' is the only
 // allowed type today; 'put' can land later via the same rebuild-the-table technique migration 10 above
 // already used for adding 'trade' to price_events — the schema doesn't need to change for that.
-const OPTION_PREMIUM_BASE_RATE = 0.15;
+// Deliberately small relative to the strike distances below: a big base rate makes the real break-even
+// price (strike + premium) land far past the strike itself, so "making the strike" barely dents a loss
+// instead of feeling like a win. See computeOptionPayout for the other half of that fix.
+const OPTION_PREMIUM_BASE_RATE = 0.05;
 
 // Each duration offers its own three strikes, scaled up for longer durations — this bot's daily mean
-// reversion (DAILY_DECAY_GRAVITY) and gain-dampening (dampenGain) resist runaway compounding, but not
-// enough to keep a flat 8% strike meaningful out past a single session: observed 1-day moves average
+// reversion (DAILY_DECAY_GRAVITY_UP/DOWN) and gain-dampening (dampenGain) resist runaway compounding, but
+// not enough to keep a flat 8% strike meaningful out past a single session: observed 1-day moves average
 // ~8% (with real spread — some 20%+, some under), so an 8% strike offered unchanged at 7D would be close
 // to a sure thing instead of a real bet. Scaling the menu keeps each duration's "middle" tier feeling like
-// roughly a coinflip instead of decaying into free money as duration grows.
+// roughly a coinflip instead of decaying into free money as duration grows. Not recalibrated alongside the
+// premium/payout tuning above — that's pending a few days of real price_events data under the new,
+// less-aggressive daily decay before touching strike distances themselves.
 const OPTION_STRIKES_BY_DURATION: Record<StockMarketOptionDurationDays, readonly [StockMarketOptionStrikePct, StockMarketOptionStrikePct, StockMarketOptionStrikePct]> = {
   0: [0.08, 0.1, 0.15],
   1: [0.1, 0.15, 0.2],
@@ -53,6 +58,13 @@ const OPTION_STRIKES_BY_DURATION: Record<StockMarketOptionDurationDays, readonly
 // by percentage can't express this. Closer-to-ATM (conservative, more likely ITM) costs more; further OTM
 // (aggressive, less likely) costs less — same shape as real options pricing.
 const OPTION_STRIKE_TIER_MULTIPLIERS: readonly [number, number, number] = [1.15, 1.0, 0.75];
+
+// Also keyed by TIER POSITION, same convention as OPTION_STRIKE_TIER_MULTIPLIERS above — but this scales
+// the PAYOUT, not the premium. A further-OTM/cheaper strike is less likely to land, so when it does, it
+// pays out a multiple of the raw settlementPrice-strikePrice difference instead of a flat 1:1 — same shape
+// as real options, where a far-OTM contract's low delta at purchase becomes high leverage once it's deep
+// ITM. Conservative/closest-to-ATM stays flat 1:1 since it's already the safest, cheapest-cushion bet.
+const OPTION_PAYOUT_LEVERAGE_BY_TIER: readonly [number, number, number] = [1.0, 1.4, 2.0];
 
 // Keyed by the real-DTE-style label the user picks (0/1/3/7), not the raw day-offset used in the actual
 // expiry math — see quoteOption/buyOption's "+1" for why those two numbers deliberately differ by one
@@ -81,10 +93,15 @@ const DAMPEN_SEVERITY = 0.75;
 // top of the same-day decay above (which only throttles a single day's spam, not growth across days):
 //   1. Daily mean reversion (applyDailyDecay) pulls EVERY player toward the chat average each day, not
 //      just the inactive — being active still earns on top of this, but no longer exempts you from it.
+//      The pull is asymmetric: below-average players snap up at the full rate (keeps laggards
+//      relevant), but above-average players only drift down gently, so a separating leader stays
+//      separated instead of getting yanked back to the pack every night — the market average itself
+//      can trend upward over time instead of just oscillating in place.
 //   2. Gain dampening (applyPriceChange -> dampenGain) shrinks GAINS (never losses) once a player is
 //      already above the average, proportional to how far ahead they are — easier to fall than to keep
 //      climbing once you're on top, without a hard cap.
-const DAILY_DECAY_GRAVITY = 0.05;
+const DAILY_DECAY_GRAVITY_UP = 0.05;
+const DAILY_DECAY_GRAVITY_DOWN = 0.01;
 
 // Each day, a 15% chance the current leader (highest price, among anyone not already halted) gets a
 // 24-hour trading halt — "pending review of irregular activity," and that's the only explanation anyone
@@ -934,11 +951,11 @@ export class StockMarket extends DurableObject<Env> {
 
   // Same "owe the other side a real resolution" precedent as forceSelloutHolders, applied to open options
   // instead of shares: settles every OPEN option where underlyingUserId is the bet-on stock, right now, at
-  // their CURRENT price — same payout formula settleExpiredOptions uses at real expiry (max(0, price -
-  // strike)). Without this, deletePlayerRow's later blind DELETE FROM options would just erase a real
-  // buyer's premium with zero chance to win, the same silent-forfeiture bug forceSelloutHolders already
-  // fixed for share holders. Doesn't touch options where userId is the BUYER — those settle for nobody but
-  // the target themselves, and their whole row (cash included) is about to vanish either way.
+  // their CURRENT price — same computeOptionPayout formula settleExpiredOptions uses at real expiry.
+  // Without this, deletePlayerRow's later blind DELETE FROM options would just erase a real buyer's
+  // premium with zero chance to win, the same silent-forfeiture bug forceSelloutHolders already fixed for
+  // share holders. Doesn't touch options where userId is the BUYER — those settle for nobody but the
+  // target themselves, and their whole row (cash included) is about to vanish either way.
   private forceSettleOptionsAgainst(underlyingUserId: number): void {
     const underlying = this.ctx.storage.sql.exec<{ [column: string]: SqlStorageValue; price: number }>(
       `SELECT price FROM players WHERE user_id = ?`,
@@ -949,14 +966,26 @@ export class StockMarket extends DurableObject<Env> {
     }
 
     const openOptions = this.ctx.storage.sql
-      .exec<{ [column: string]: SqlStorageValue; id: number; buyer_user_id: number; strike_price: number }>(
-        `SELECT id, buyer_user_id, strike_price FROM options WHERE underlying_user_id = ? AND settled_at IS NULL`,
+      .exec<{
+        [column: string]: SqlStorageValue;
+        id: number;
+        buyer_user_id: number;
+        strike_pct: number;
+        duration_days: number;
+        strike_price: number;
+      }>(
+        `SELECT id, buyer_user_id, strike_pct, duration_days, strike_price FROM options WHERE underlying_user_id = ? AND settled_at IS NULL`,
         underlyingUserId
       )
       .toArray();
 
     for (const option of openOptions) {
-      const payout = Math.max(0, underlying.price - option.strike_price);
+      const payout = this.computeOptionPayout(
+        option.strike_pct as StockMarketOptionStrikePct,
+        option.duration_days as StockMarketOptionDurationDays,
+        option.strike_price,
+        underlying.price
+      );
       this.ctx.storage.sql.exec(
         `UPDATE options SET settled_at = datetime('now'), settlement_price = ?, payout = ? WHERE id = ?`,
         underlying.price,
@@ -1161,6 +1190,18 @@ export class StockMarket extends DurableObject<Env> {
     return { ok: true, shares: input.shares, price: newPrice, total: proceeds, totalShares: holding.shares - input.shares };
   }
 
+  // Tier position (0=conservative/closest-to-ATM, 1=middle, 2=aggressive/furthest-OTM) of strikePct
+  // within whichever duration's three-strike menu is in play — shared by computeOptionPricing (which
+  // multiplier scales the premium) and computeOptionPayout (which multiplier scales the payout), so the
+  // two can never disagree about which tier a given strike/duration pair belongs to. Callers validate
+  // strikePct/durationDays against OPTION_STRIKES_BY_DURATION before ever reaching here, so indexOf is
+  // always found (see quoteOption/buyOption) — falls back to the middle tier rather than throwing if that
+  // invariant is ever violated.
+  private strikeTierIndex(strikePct: StockMarketOptionStrikePct, durationDays: StockMarketOptionDurationDays): 0 | 1 | 2 {
+    const tierIndex = OPTION_STRIKES_BY_DURATION[durationDays].indexOf(strikePct);
+    return tierIndex === 0 || tierIndex === 1 || tierIndex === 2 ? tierIndex : 1;
+  }
+
   // strikePrice = currentPrice * (1 + strikePct); premium floors at MINIMUM_OPTION_PREMIUM so a
   // near-$0 underlying never produces a near-free, only-upside contract. Shared by quoteOption and
   // buyOption so the confirm-step preview and the actual charge can only ever differ from live price
@@ -1171,16 +1212,27 @@ export class StockMarket extends DurableObject<Env> {
     durationDays: StockMarketOptionDurationDays
   ): { strikePrice: number; premium: number } {
     const strikePrice = currentPrice * (1 + strikePct);
-    // Callers validate strikePct/durationDays against OPTION_STRIKES_BY_DURATION before ever reaching
-    // here, so indexOf is always found (see quoteOption/buyOption) — falls back to the middle tier's
-    // multiplier rather than throwing if that invariant is ever violated.
-    const tierIndex = OPTION_STRIKES_BY_DURATION[durationDays].indexOf(strikePct);
-    const strikeMultiplier = OPTION_STRIKE_TIER_MULTIPLIERS[tierIndex] ?? OPTION_STRIKE_TIER_MULTIPLIERS[1];
+    const strikeMultiplier = OPTION_STRIKE_TIER_MULTIPLIERS[this.strikeTierIndex(strikePct, durationDays)];
     const premium = Math.max(
       MINIMUM_OPTION_PREMIUM,
       currentPrice * OPTION_PREMIUM_BASE_RATE * strikeMultiplier * OPTION_DURATION_MULTIPLIERS[durationDays]
     );
     return { strikePrice, premium };
+  }
+
+  // Payout leverage mirrors computeOptionPricing's tier lookup but in the other direction: the cheaper/
+  // further-OTM the strike was, the bigger a multiple of the raw ITM difference it pays out when it lands.
+  // See OPTION_PAYOUT_LEVERAGE_BY_TIER above for the rationale. Shared by settleExpiredOptions (real
+  // expiry) and forceSettleOptionsAgainst (early force-settlement on delist/reset) so both payout paths
+  // can never drift apart.
+  private computeOptionPayout(
+    strikePct: StockMarketOptionStrikePct,
+    durationDays: StockMarketOptionDurationDays,
+    strikePrice: number,
+    settlementPrice: number
+  ): number {
+    const leverage = OPTION_PAYOUT_LEVERAGE_BY_TIER[this.strikeTierIndex(strikePct, durationDays)];
+    return Math.max(0, settlementPrice - strikePrice) * leverage;
   }
 
   // Read-only preview for the composer's confirm step — never mutates anything. Epoch seconds (via
@@ -1333,12 +1385,14 @@ export class StockMarket extends DurableObject<Env> {
         underlying_user_id: number;
         underlying_first_name: string;
         underlying_ticker: string | null;
+        strike_pct: number;
+        duration_days: number;
         strike_price: number;
         settlement_price: number;
       }>(
         `SELECT o.id, o.buyer_user_id, bp.first_name as buyer_first_name, bp.ticker as buyer_ticker,
                 o.underlying_user_id, up.first_name as underlying_first_name, up.ticker as underlying_ticker,
-                o.strike_price, up.price as settlement_price
+                o.strike_pct, o.duration_days, o.strike_price, up.price as settlement_price
          FROM options o
          JOIN players bp ON bp.user_id = o.buyer_user_id
          JOIN players up ON up.user_id = o.underlying_user_id
@@ -1348,7 +1402,12 @@ export class StockMarket extends DurableObject<Env> {
 
     const results: StockMarketOptionSettlement[] = [];
     for (const row of rows) {
-      const payout = Math.max(0, row.settlement_price - row.strike_price);
+      const payout = this.computeOptionPayout(
+        row.strike_pct as StockMarketOptionStrikePct,
+        row.duration_days as StockMarketOptionDurationDays,
+        row.strike_price,
+        row.settlement_price
+      );
 
       this.ctx.storage.sql.exec(
         `UPDATE options SET settled_at = datetime('now'), settlement_price = ?, payout = ? WHERE id = ?`,
@@ -1519,7 +1578,8 @@ export class StockMarket extends DurableObject<Env> {
     const average = players.reduce((sum, p) => sum + p.price, 0) / players.length;
 
     for (const player of players) {
-      const delta = (average - player.price) * DAILY_DECAY_GRAVITY;
+      const gravity = player.price < average ? DAILY_DECAY_GRAVITY_UP : DAILY_DECAY_GRAVITY_DOWN;
+      const delta = (average - player.price) * gravity;
       if (Math.abs(delta) < 0.01) {
         continue;
       }

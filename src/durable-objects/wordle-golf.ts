@@ -316,12 +316,11 @@ export class WordleGolf extends DurableObject<Env> {
       .toArray();
 
     for (const { user_id } of players) {
-      // "Missed" (backfilled, didn't-play) scores are excluded — mulligans forgive a bad round you actually
-      // played, not skipping the round entirely. Without this, a late joiner's missed-day penalty would
-      // just get erased by their own mulligans, since a 7 is usually among the worst scores anyway.
+      // Worst score first, ties included: "Missed" (score 7) always outranks a real 1-6 score or an
+      // unfinished 6.5, so mulligans cover missed days before ever touching a score you actually played.
       const topScores = this.ctx.storage.sql
         .exec<{ id: number }>(
-          `SELECT id FROM scores WHERE game_id = ? AND user_id = ? AND score_label != 'Missed' ORDER BY score_value DESC LIMIT ?`,
+          `SELECT id FROM scores WHERE game_id = ? AND user_id = ? ORDER BY score_value DESC LIMIT ?`,
           gameId,
           user_id,
           gameRow.mulligans
