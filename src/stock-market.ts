@@ -1460,9 +1460,15 @@ export class StockMarketComposer extends Composer<MyContext> {
   // weekly cron since message_authors/price_events accumulate on every message, and a week between purges
   // let them grow much larger than a day between purges ever would. Purely storage mutation, nothing to
   // announce, so kept separate from runDailyHaltCheck the same way runDailyDecay is kept separate from it.
+  // Skipping paused chats matters more here than for the other jobs: a paused chat records no new
+  // 'message' price_events, so once the old ones age out the ghost purge would delete every player.
+  // Wiping a market should only ever happen via an explicit /restart.
   async runDailyCleanup(): Promise<void> {
     const chatIds = await this.storage.listStockMarketChats();
     for (const chatId of chatIds) {
+      if (await this.storage.isChatPaused(chatId)) {
+        continue;
+      }
       await this.storage.purgeStockMarketOldData(chatId);
       await this.storage.purgeStockMarketGhostPlayers(chatId);
     }
