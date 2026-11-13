@@ -35,8 +35,8 @@ export const PET_CONFIG = {
   MISERABLE_WARNING_AT: 15,
 } as const;
 
-// What each feed turns out to be, shown on the card ("Galen fed Gregory some 🌮"). Deliberately not pet
-// food. 🍆 and 🍑 left out on purpose.
+// The emoji on the card's feed line ("🌮 Galen fed Gregory."), one picked per feed. Deliberately not pet
+// food — an implication, not a statement. 🍆 and 🍑 left out on purpose.
 export const PET_FOODS = [
   "🌮", "🌭", "🍕", "🍔", "🍟", "🍣", "🍜", "🍝", "🥗", "🌯", "🥨", "🧀", "🥐", "🍩", "🍪", "🎂", "🍰", "🧁",
   "🍫", "🍿", "🥞", "🧇", "🥓", "🍤", "🥟", "🍙", "🌶️", "🥑", "🍋", "🥦", "🌽", "🥕", "🧄", "🧅", "🥥", "🍍",

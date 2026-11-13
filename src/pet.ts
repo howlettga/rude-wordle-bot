@@ -314,22 +314,21 @@ function lastActionLine(pet: PetStatus): string {
   const name = escapeHtml(pet.name);
   switch (kind) {
     case "fed":
-      return `🍽️ ${who} fed ${name} some ${food ?? "🍖"}.`;
+      return `${food ?? "🍖"} ${who} fed ${name}.`;
     case "petted":
       return `🤚 ${who} pet ${name}.`;
     case "overfed":
-      return `🤮 ${who} overfed ${name} with some ${food ?? "🍖"}.`;
+      return `🤮 ${who} overfed ${name}.`;
   }
 }
 
 function overfedMessage(pet: PetStatus, by: string): string {
   const name = `<b>${escapeHtml(pet.name)}</b>`;
   const who = escapeHtml(by);
-  const food = pet.lastAction?.food ?? "🍖";
   return random([
-    `🤮 ${who} fed ${name} some ${food} when it was already full. ${name} threw up everywhere.`,
-    `🤮 ${name} threw up ${food} all over ${who}'s shoes. It was already full, ${who}.`,
-    `🤮 ${who} overfed ${name} with ${food}. Someone get a mop.`,
+    `🤮 ${who} fed ${name} when it was already full. ${name} threw up everywhere.`,
+    `🤮 ${name} threw up all over ${who}'s shoes. It was already full, ${who}.`,
+    `🤮 ${who} overfed ${name}. Someone get a mop.`,
   ]);
 }
 
