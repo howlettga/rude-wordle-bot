@@ -294,18 +294,16 @@ function cardKeyboard(pet: PetStatus): InlineKeyboard {
 }
 
 function formatCard(pet: PetStatus): string {
-  const age = Math.floor((Date.now() / 1000 - pet.adoptedAt) / 86400);
   const rarity = pet.rarity === "ultra" ? " 🌟" : pet.rarity === "rare" ? " ✨" : "";
   return [
     `${petTitle(pet)}${rarity}`,
-    `Adopted by ${escapeHtml(pet.adoptedByName)} · ${age === 0 ? "brand new" : `${age} day${age === 1 ? "" : "s"} old`}`,
+    `<i>${moodLine(pet)}</i>`,
     // Bar lines start with an emoji (all the same width) so the bars line up; the words go underneath,
     // since "Food" and "Mood" render at different widths in Telegram's proportional font.
     `🍖 ${meterBar(pet.food, "🟥")}`,
     `Food ${Math.round(pet.food)}%`,
     `💛 ${meterBar(pet.mood, "🟦")}`,
     `Mood ${Math.round(pet.mood)}%`,
-    `<i>${moodLine(pet)}</i>`,
     ...(pet.lastAction ? [lastActionLine(pet)] : []),
   ].join("\n");
 }
