@@ -170,12 +170,16 @@ const GENERAL_RETORT = [
 
 const COORDINATE = [
   "Is friendship that hard of a drug? You must be addicted!",
-  "Dumb bitch can't sort her shit out alert!",
   "You have the organizational skills of a shuffled deck of cards.",
-  "Coordinate? Bitch, you can't even coordinate your own bedtime.",
   "Bold of you to use a big word like 'coordinate' when you can't pick a time to save your life.",
   "Coordinating with you is like herding cats through a hurricane.",
   "Somewhere, a calendar app is crying because of you. I used to love her.",
+];
+
+// Only mixed into COORDINATE's pool when the chat has the "spicy" feature on (see rude.ts).
+const COORDINATE_SPICY = [
+  "Dumb bitch can't sort her shit out alert!",
+  "Coordinate? Bitch, you can't even coordinate your own bedtime.",
 ];
 
 const VOUCH = [
@@ -262,11 +266,15 @@ const COORPORATE = [
   "Great, you can start paying your allemony now.",
   "Yeah, yeah. All the coorperate girlies love money :/",
   "Late stage capitalism's biggest proponent over here.",
-  "Will suck dick for cash.",
   "Corporate bootlicker of the year, three years running.",
-  "Somewhere, a Fortune 500 CEO just felt a warm, sticky feeling.",
   "You'd unionize against yourself if HR asked nicely.",
   "Says the kid who could never win Monopoly as a child.",
+];
+
+// Only mixed into COORPORATE's pool when the chat has the "spicy" feature on (see rude.ts).
+const COORPORATE_SPICY = [
+  "Will suck dick for cash.",
+  "Somewhere, a Fortune 500 CEO just felt a warm, sticky feeling.",
 ];
 
 const FULL_MOON = [
@@ -301,10 +309,12 @@ export const phrases = {
 
 export const replies = {
   COORDINATE,
+  COORDINATE_SPICY,
   VOUCH,
   COMMUTE,
   JULIE_ELI,
   COORPORATE,
+  COORPORATE_SPICY,
   SPANK,
   FULL_MOON,
 };

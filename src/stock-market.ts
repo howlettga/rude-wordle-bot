@@ -1436,7 +1436,7 @@ export class StockMarketComposer extends Composer<MyContext> {
   async runDailyDecay(): Promise<void> {
     const chatIds = await this.storage.listStockMarketChats();
     for (const chatId of chatIds) {
-      if (await this.storage.isChatPaused(chatId)) {
+      if (!(await this.storage.getChatFeatures(chatId)).market.enabled) {
         continue;
       }
       await this.storage.applyStockMarketDailyDecay(chatId);
@@ -1446,7 +1446,7 @@ export class StockMarketComposer extends Composer<MyContext> {
   async runWeeklyAllowance(): Promise<void> {
     const chatIds = await this.storage.listStockMarketChats();
     for (const chatId of chatIds) {
-      if (await this.storage.isChatPaused(chatId)) {
+      if (!(await this.storage.getChatFeatures(chatId)).market.enabled) {
         continue;
       }
       await this.storage.applyStockMarketWeeklyAllowance(chatId);
@@ -1457,27 +1457,27 @@ export class StockMarketComposer extends Composer<MyContext> {
   // weekly cron since message_authors/price_events accumulate on every message, and a week between purges
   // let them grow much larger than a day between purges ever would. Purely storage mutation, nothing to
   // announce, so kept separate from runDailyHaltCheck the same way runDailyDecay is kept separate from it.
-  // Skipping paused chats matters more here than for the other jobs: a paused chat records no new
-  // 'message' price_events, so once the old ones age out the ghost purge would delete every player.
-  // Wiping a market should only ever happen via an explicit /restart.
+  // Skipping chats with the market switched off matters more here than for the other jobs: such a chat
+  // records no new 'message' price_events, so once the old ones age out the ghost purge would delete
+  // every player. Wiping a market should only ever happen via an explicit /restart.
   //
-  // The same problem follows a chat out of a pause: everyone's pre-pause price_events kept aging the
-  // whole time, so the first purge after /startmarket would delete anyone whose last message was
-  // PRICE_EVENT_RETENTION_DAYS ago counting paused days. So the ghost purge also sits out a grace period
-  // of that same length after resuming, giving everyone a full window of live market to post in before
-  // it judges them. Generous to anyone already inactive going into the pause — a deliberate trade for
-  // not having to track pause history.
+  // The same problem follows a chat after the market is switched back on: everyone's earlier
+  // price_events kept aging the whole time, so the first purge afterwards would delete anyone whose last
+  // message was PRICE_EVENT_RETENTION_DAYS ago counting the switched-off days. So the ghost purge also
+  // sits out a grace period of that same length after the switch flips back on (market's
+  // changedAtEpochSec), giving everyone a full window of live market to post in before it judges them.
+  // Generous to anyone already inactive going in — a deliberate trade for not tracking switch history.
   async runDailyCleanup(): Promise<void> {
     const chatIds = await this.storage.listStockMarketChats();
     const nowEpochSec = Math.floor(Date.now() / 1000);
     for (const chatId of chatIds) {
-      const { paused, resumedAtEpochSec } = await this.storage.getChatPauseState(chatId);
-      if (paused) {
+      const { enabled, changedAtEpochSec } = (await this.storage.getChatFeatures(chatId)).market;
+      if (!enabled) {
         continue;
       }
       await this.storage.purgeStockMarketOldData(chatId);
 
-      const inGracePeriod = resumedAtEpochSec !== null && nowEpochSec - resumedAtEpochSec < PRICE_EVENT_RETENTION_DAYS * 24 * 60 * 60;
+      const inGracePeriod = changedAtEpochSec !== null && nowEpochSec - changedAtEpochSec < PRICE_EVENT_RETENTION_DAYS * 24 * 60 * 60;
       if (!inGracePeriod) {
         await this.storage.purgeStockMarketGhostPlayers(chatId);
       }
@@ -1491,7 +1491,7 @@ export class StockMarketComposer extends Composer<MyContext> {
   async runDailyHaltCheck(api: Api): Promise<void> {
     const chatIds = await this.storage.listStockMarketChats();
     for (const chatId of chatIds) {
-      if (await this.storage.isChatPaused(chatId)) {
+      if (!(await this.storage.getChatFeatures(chatId)).market.enabled) {
         continue;
       }
       const halted = await this.storage.rollStockMarketHalt(chatId);
@@ -1515,7 +1515,7 @@ export class StockMarketComposer extends Composer<MyContext> {
   async runOptionsSettlement(api: Api): Promise<void> {
     const chatIds = await this.storage.listStockMarketChats();
     for (const chatId of chatIds) {
-      if (await this.storage.isChatPaused(chatId)) {
+      if (!(await this.storage.getChatFeatures(chatId)).market.enabled) {
         continue;
       }
       const settlements = await this.storage.settleStockMarketOptions(chatId);

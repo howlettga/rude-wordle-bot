@@ -1,7 +1,9 @@
 import type { BeenCounter } from "./durable-objects/been-counter.js";
 import type { BeanCounter } from "./durable-objects/bean-counter.js";
 import type { SpankChain } from "./durable-objects/spank-chain.js";
-import type { ChatPause, ChatPauseState } from "./durable-objects/chat-pause.js";
+import type { ChatPause } from "./durable-objects/chat-pause.js";
+import type { RudeMessages } from "./durable-objects/rude-messages.js";
+import { type FeatureKey, type FeatureFlags, resolveFeatures } from "./features.js";
 import type {
   WordleGolf,
   WordleGolfGame,
@@ -33,7 +35,8 @@ export class StorageService {
     private wordleGolfRegistryNs: DurableObjectNamespace<WordleGolfRegistry>,
     private stockMarketNs: DurableObjectNamespace<StockMarket>,
     private stockMarketRegistryNs: DurableObjectNamespace<StockMarketRegistry>,
-    private chatPauseNs: DurableObjectNamespace<ChatPause>
+    private chatPauseNs: DurableObjectNamespace<ChatPause>,
+    private rudeMessagesNs: DurableObjectNamespace<RudeMessages>
   ) {}
 
   incrementBeenCounter(name: string, by: number = 1): Promise<number> {
@@ -297,19 +300,31 @@ export class StorageService {
     return this.stockMarketNs.get(this.stockMarketNs.idFromName(`stock_market_${chatId}`));
   }
 
-  isChatPaused(chatId: number): Promise<boolean> {
-    return this.chatPauseStub(chatId).isPaused();
+  // Every feature's switch for this chat, defaults filled in — one Durable Object call no matter how many
+  // features there are.
+  async getChatFeatures(chatId: number): Promise<FeatureFlags> {
+    return resolveFeatures(await this.chatPauseStub(chatId).getFeatureOverrides());
   }
 
-  getChatPauseState(chatId: number): Promise<ChatPauseState> {
-    return this.chatPauseStub(chatId).getState();
+  setChatFeature(chatId: number, key: FeatureKey, enabled: boolean): Promise<void> {
+    return this.chatPauseStub(chatId).setFeature(key, enabled);
   }
 
-  setChatPaused(chatId: number, paused: boolean): Promise<void> {
-    return this.chatPauseStub(chatId).setPaused(paused);
-  }
-
+  // The `chat_pause_` id prefix predates feature switches — changing it would orphan every chat's
+  // existing switches, so it stays.
   private chatPauseStub(chatId: number) {
     return this.chatPauseNs.get(this.chatPauseNs.idFromName(`chat_pause_${chatId}`));
+  }
+
+  recordRudeMessage(chatId: number, messageId: number): Promise<void> {
+    return this.rudeMessagesStub(chatId).record(messageId);
+  }
+
+  isRudeMessage(chatId: number, messageId: number): Promise<boolean> {
+    return this.rudeMessagesStub(chatId).has(messageId);
+  }
+
+  private rudeMessagesStub(chatId: number) {
+    return this.rudeMessagesNs.get(this.rudeMessagesNs.idFromName(`rude_messages_${chatId}`));
   }
 }

@@ -396,6 +396,11 @@ export class WordleGolfComposer extends Composer<MyContext> {
     const todaysWordle = await getTodaysWordle();
 
     for (const chatId of chatIds) {
+      // Switched off means fully quiet, reminders included. The round's holes keep closing on the NYT's
+      // schedule either way, so switching it back on catches up on missed-day backfill and finalizing.
+      if (!(await this.storage.getChatFeatures(chatId)).wordle.enabled) {
+        continue;
+      }
       const game = await this.storage.getActiveWordleGolfGame(chatId);
       if (!game) {
         continue;

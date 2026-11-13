@@ -5,7 +5,8 @@ A Telegram bot built with [grammY](https://grammy.dev), deployed as a Cloudflare
 ## How it's structured
 
 - `src/main.ts` — the Worker entrypoint (`fetch` handler). Builds the bot from env-provided secrets and hands the request to grammY's webhook adapter.
-- `src/bot.ts` — the `RudeBot` class. All commands/handlers get registered here.
+- `src/bot.ts` — the `RudeBot` class. Wires every feature's handlers together, in order, each behind its feature switch.
+- `src/features.ts` — the list of switchable features and their defaults (see [Feature switches](#feature-switches)).
 - `wrangler.jsonc` — Worker config (name, entrypoint, compatibility date).
 
 This same setup can be reused as a template for any new bot — just swap the handler logic in `src/bot.ts`.
@@ -182,10 +183,28 @@ Still real commands — grammY dispatches on `bot.command()` regardless of what'
 | `/setoptionsguard` | Owner-only: `on`/`off` toggle for the anti-pump guard (blocks trading shares of anyone you hold an option on) | Admin config, not gameplay |
 | `/stimulus` | Owner-only: `/stimulus <amount>` gives every active player in the market a flat cash injection | Destructive to game balance and owner-only, no reason to advertise it |
 | `/start` | Telegram's default entry point for a private chat — just replies "Fuck off big boi" | Not a real feature, just the obligatory handler |
-| `/stopmarket` | Owner-only: pauses the stock market and all ambient/easter-egg replies for this chat — Wordle Golf and the bean/been count keep working | Admin control, not gameplay |
-| `/startmarket` | Owner-only: undoes `/stopmarket` | Admin control, not gameplay |
+| `/features` | Owner-only: turn features on/off for this chat. `/features` shows a button per feature; `/features <key> on\|off` does it by typing. See [Feature switches](#feature-switches) | Admin control, not gameplay |
 
 When adding a new command, put it in whichever list it belongs in — visible if a player should discover it via the `/` menu, invisible if it's admin-only or already implied by another command.
+
+### Feature switches
+
+Every feature can be turned on or off per chat by the owner, with `/features` run inside that chat. Turning a feature off makes it go completely quiet in that chat (commands, ambient replies, and its scheduled jobs) without deleting anything — turning it back on picks up where it left off.
+
+| Key | Feature | What it covers | Default |
+|---|---|---|---|
+| `wordle` | Wordle Golf | Rounds, score submissions, nightly reminders | on |
+| `market` | Stock market | Every market command, price tracking, and the market's scheduled jobs | on |
+| `beans` | Been/bean counter | Counts "been", posts the tally on "bean" | on |
+| `replies` | Talk-back | Replies when someone names the bot, replies to one of its jokes, or says "galen" | on |
+| `eastereggs` | Easter eggs | Keyword jokes in normal conversation (gas, commute, raise, ...) | on |
+| `spicy` | Spicy | The spank chain, the butthole replies, and the crudest easter-egg lines | on |
+
+Always on, not switchable: `/start`, `/features` itself, and forwarding @-mentions and polls to the owner.
+
+Only switches the owner has flipped are stored; everything else uses its default from `src/features.ts`. Checking them costs one Durable Object read per incoming message, no matter how many features there are.
+
+**Adding a feature:** add an entry to `FEATURES` in `src/features.ts` (a new key, label, description, and default), then register its handlers in `src/bot.ts` with `this.gate("<key>", composer)` at the right point in the handler order. If it has scheduled jobs, have them skip chats where `(await storage.getChatFeatures(chatId)).<key>.enabled` is false. Keys are stored in the database and typed into `/features`, so never rename one.
 
 ---
 
