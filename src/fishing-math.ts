@@ -6,23 +6,33 @@
 // of them (rollsForWait). The odds are identical for everyone; the only lever anyone has is how long
 // they wait, capped at MAX_WAIT_DAYS.
 //
-// Reference odds per cast, as tuned here:
-//   1 day waited  (1 roll):    typical 4.0 lb,  1 in 10 beats 14.4 lb, >100 lb is 1 in 1,554
-//   7+ days waited (10 rolls): typical 17.9 lb, 1 in 10 beats 40.2 lb, >100 lb is 1 in 156
-// Over a year, casting weekly earns ~43% more rolls than casting daily (521 vs 365) — a slight edge for
-// patience, not a dominant one. Waiting past MAX_WAIT_DAYS only loses rolls.
+// Built so people fish when they happen to remember, not on a schedule — and so spamming /fish is
+// pointless. Reference odds per cast, as tuned here:
+//   1 day waited:   60% junk, typical 0.5 lb
+//   7 days waited:  12% junk, typical 12.8 lb, 1 in 10 beats 31.3 lb
+//   14 days waited:  6% junk, typical 20.5 lb, 1 in 10 beats 44.5 lb
+//   30+ days waited: 5% junk, typical 29.5 lb, 1 in 10 beats 59.2 lb, >100 lb is 2%
+// Casting on any fixed schedule for a year, after junk: every 14/21/30 days lands within 7% of each other
+// on total rolls (323/341/346 — typical best of the year 69.6/70.8/71.1 lb), so there's no rhythm worth
+// optimizing; weekly gets 70% of that, daily 8%, and waiting past a month only loses rolls.
 
 const MEDIAN_LB = 4;
 const SIGMA = 1.0;
-export const MAX_WAIT_DAYS = 7;
+export const MAX_WAIT_DAYS = 30;
+// A first-ever cast counts as this many days waited — a medium start, the same as someone who fishes weekly.
+export const FIRST_CAST_WAIT_DAYS = 7;
+// Junk caught within this many days of the last cast gets the "overfished waters" line (see fishing.ts),
+// so people can work out that they're casting too often without the math ever being shown.
+export const OVERFISHED_WITHIN_DAYS = 3;
 
-// days + (days - 1) / 2, capped: 1 day -> 1 roll, 3 -> 4, 7 -> 10. Rolls per day waited rises steadily
-// up to the cap (1.0, 1.25, 1.33, ... 1.43), so every extra day of waiting is worth slightly more than
-// the last — a flat days -> days mapping would make waiting exactly neutral, and a lumpier one can make
-// some shorter cadence beat a full week. Fractional rolls are fine: see rollWeight.
+// days * (1 - e^(-days/5)), capped at MAX_WAIT_DAYS: 1 day -> 0.18 rolls, 7 -> 5.3, 14 -> 13.2,
+// 30 -> 29.9. Rolls per day waited starts tiny and climbs over the first two weeks (0.18, 0.45 at 3 days,
+// 0.75 at 7, 0.94 at 14), then flattens out (0.99 at 21, 1.00 at 30) — so short waits are clearly worse,
+// but nothing between ~2 and 4 weeks is meaningfully better than anything else. Fewer than 1 roll is
+// fine (see rollWeight): it just means smaller than a single normal roll.
 export function rollsForWait(daysWaited: number): number {
   const days = Math.min(MAX_WAIT_DAYS, Math.max(1, daysWaited));
-  return days + (days - 1) / 2;
+  return days * (1 - Math.exp(-days / 5));
 }
 
 // The best of `rolls` independent weights, sampled directly rather than rolling each one: if one roll's
@@ -37,10 +47,13 @@ export function rollWeight(rolls: number, random: () => number = Math.random): n
   return Math.max(0.1, Math.round(weight * 10) / 10);
 }
 
-// Any cast, fish or not, has the same flat chance of reeling in junk instead: no weight, never on the
-// leaderboard. It still uses up the day's cast and the waiting bonus, which keeps it fair — daily and
-// weekly fishers both lose the same ~5% of their rolls on average.
-const TRASH_CHANCE = 0.05;
+// Any cast can reel in junk instead of a fish: no weight, never on the leaderboard, and it still uses up
+// the day's cast and the waiting bonus. 5% + 55% * e^(-(days - 1)/3): 60% the day after a cast, 33% at 3
+// days, 12% at 7, settling to the base 5% after about two weeks — overfished waters are mostly junk.
+function trashChance(daysWaited: number): number {
+  const days = Math.min(MAX_WAIT_DAYS, Math.max(1, daysWaited));
+  return 0.05 + 0.55 * Math.exp(-(days - 1) / 3);
+}
 
 const TRASH: [item: string, emoji: string][] = [
   ["an old boot", "🥾"],
@@ -60,8 +73,8 @@ const TRASH: [item: string, emoji: string][] = [
   ["a traffic cone", "🚧"],
 ];
 
-export function rollTrash(random: () => number = Math.random): { item: string; emoji: string } | null {
-  if (random() >= TRASH_CHANCE) {
+export function rollTrash(daysWaited: number, random: () => number = Math.random): { item: string; emoji: string } | null {
+  if (random() >= trashChance(daysWaited)) {
     return null;
   }
   const [item, emoji] = TRASH[Math.floor(random() * TRASH.length)]!;

@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../main.js";
 import { easternParts } from "../eastern-time.js";
-import { MAX_WAIT_DAYS, rollsForWait, rollTrash, rollWeight, speciesForWeight } from "../fishing-math.js";
+import { FIRST_CAST_WAIT_DAYS, OVERFISHED_WITHIN_DAYS, rollsForWait, rollTrash, rollWeight, speciesForWeight } from "../fishing-math.js";
 
 export interface FishingCatch {
   species: string;
@@ -12,7 +12,8 @@ export interface FishingCatch {
 export type FishingCastResult =
   | { ok: false; type: "ALREADY_FISHED" }
   // Junk instead of a fish (see rollTrash): not recorded anywhere, but the cast is still used up.
-  | { ok: true; kind: "trash"; item: string; emoji: string }
+  // overfished: caught within OVERFISHED_WITHIN_DAYS of the angler's last cast.
+  | { ok: true; kind: "trash"; item: string; emoji: string; overfished: boolean }
   | {
       ok: true;
       kind: "fish";
@@ -80,9 +81,9 @@ export class Fishing extends DurableObject<Env> {
   }
 
   // One cast per Eastern calendar day (midnight ET, same as Wordle). Days waited since the last cast feed
-  // the roll (see fishing-math.ts); a first-ever cast counts as a full MAX_WAIT_DAYS wait, so newcomers
-  // start level with anyone who's been patient. No await between the "already fished today?" check and
-  // the write, so two /fish sent at once can't both get through.
+  // the roll and the junk chance (see fishing-math.ts); a first-ever cast counts as FIRST_CAST_WAIT_DAYS,
+  // a medium start. No await between the "already fished today?" check and the write, so two /fish sent
+  // at once can't both get through.
   async cast(input: { userId: number; username?: string; firstName: string }): Promise<FishingCastResult> {
     const p = easternParts(new Date());
     const today = `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
@@ -93,7 +94,7 @@ export class Fishing extends DurableObject<Env> {
     if (angler?.last_cast_date === today) {
       return { ok: false, type: "ALREADY_FISHED" };
     }
-    const daysWaited = angler ? daysBetween(angler.last_cast_date, today) : MAX_WAIT_DAYS;
+    const daysWaited = angler ? daysBetween(angler.last_cast_date, today) : FIRST_CAST_WAIT_DAYS;
 
     this.ctx.storage.sql.exec(
       `INSERT INTO anglers (user_id, username, first_name, last_cast_date) VALUES (?, ?, ?, ?)
@@ -104,9 +105,9 @@ export class Fishing extends DurableObject<Env> {
       today
     );
 
-    const trash = rollTrash();
+    const trash = rollTrash(daysWaited);
     if (trash) {
-      return { ok: true, kind: "trash", ...trash };
+      return { ok: true, kind: "trash", ...trash, overfished: daysWaited <= OVERFISHED_WITHIN_DAYS };
     }
 
     const weight = rollWeight(rollsForWait(daysWaited));

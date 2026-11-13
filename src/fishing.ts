@@ -46,7 +46,8 @@ export class FishingComposer extends Composer<MyContext> {
       return;
     }
     if (result.kind === "trash") {
-      await replyToMessage(ctx, `You reeled in ${result.item}! ${result.emoji}\nWorthless.`);
+      const tagline = result.overfished ? "Nothing good comes from overfished waters." : "Worthless.";
+      await replyToMessage(ctx, `You reeled in ${result.item}! ${result.emoji}\n${tagline}`);
       return;
     }
 

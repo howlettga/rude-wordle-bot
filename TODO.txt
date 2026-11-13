@@ -2,6 +2,8 @@ Bugfixes
 
 Features
 
+- MUST ADD: Market add-on — prediction market. /predict Kyle is late to the wedding (with a deadline); people bet yes/no with market cash; the predictor (or owner) settles it; payouts follow the odds.
+- Market add-on — weekly lottery. Buy tickets with market cash, one drawing a week.
 - Days-since counters — /dayssince Kyle got food poisoning at the airport. Have the cron post milestones unprompted: "It has been 100 days."
 - Weekly performance review — Monday cron posts fake analytics: message count, "71% of volume attributable to one participant," "morale: unchanged, no action required." Real numbers from KV make it land harder.
 - The Ombudsman — /ruling in the scaffold. Rules on any dispute, cites a fabricated Group Charter section, declares itself non-appealable.
