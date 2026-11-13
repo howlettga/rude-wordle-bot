@@ -3,6 +3,7 @@ import type { BeanCounter } from "./durable-objects/bean-counter.js";
 import type { SpankChain } from "./durable-objects/spank-chain.js";
 import type { ChatPause } from "./durable-objects/chat-pause.js";
 import type { RudeMessages } from "./durable-objects/rude-messages.js";
+import type { Fishing, FishingCastResult, FishingLeaderboard } from "./durable-objects/fishing.js";
 import { type FeatureKey, type FeatureFlags, resolveFeatures } from "./features.js";
 import type {
   WordleGolf,
@@ -36,7 +37,8 @@ export class StorageService {
     private stockMarketNs: DurableObjectNamespace<StockMarket>,
     private stockMarketRegistryNs: DurableObjectNamespace<StockMarketRegistry>,
     private chatPauseNs: DurableObjectNamespace<ChatPause>,
-    private rudeMessagesNs: DurableObjectNamespace<RudeMessages>
+    private rudeMessagesNs: DurableObjectNamespace<RudeMessages>,
+    private fishingNs: DurableObjectNamespace<Fishing>
   ) {}
 
   incrementBeenCounter(name: string, by: number = 1): Promise<number> {
@@ -326,5 +328,25 @@ export class StorageService {
 
   private rudeMessagesStub(chatId: number) {
     return this.rudeMessagesNs.get(this.rudeMessagesNs.idFromName(`rude_messages_${chatId}`));
+  }
+
+  castFishing(chatId: number, input: { userId: number; username?: string; firstName: string }): Promise<FishingCastResult> {
+    return this.fishingStub(chatId).cast(input);
+  }
+
+  getFishingLeaderboard(chatId: number): Promise<FishingLeaderboard> {
+    return this.fishingStub(chatId).getLeaderboard();
+  }
+
+  setFishingWindow(chatId: number, days: number | null): Promise<void> {
+    return this.fishingStub(chatId).setWindow(days);
+  }
+
+  resetFishing(chatId: number): Promise<void> {
+    return this.fishingStub(chatId).reset();
+  }
+
+  private fishingStub(chatId: number) {
+    return this.fishingNs.get(this.fishingNs.idFromName(`fishing_${chatId}`));
   }
 }
