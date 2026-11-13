@@ -167,8 +167,9 @@ export class PetComposer extends Composer<MyContext> {
         await this.postEulogy(ctx.api, ctx.chat.id, result.eulogy);
         return;
       case "COOLDOWN":
-        // Deliberately vague about when: it's a nudge to share, not a timer to watch.
-        await ctx.answerCallbackQuery({ text: cooldownMessage(result.pet.name, action) });
+        // Deliberately vague about when: it's a nudge to share, not a timer to watch. show_alert keeps it up
+        // until dismissed — Telegram gives bots no control over how long a normal toast stays.
+        await ctx.answerCallbackQuery({ text: cooldownMessage(result.pet.name, action), show_alert: true });
         return;
       case "OVERFED":
       case "OK":
