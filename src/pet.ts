@@ -300,8 +300,12 @@ function formatCard(pet: PetStatus): string {
   return [
     `${petTitle(pet)}${rarity}`,
     `Adopted by ${escapeHtml(pet.adoptedByName)} · ${age === 0 ? "brand new" : `${age} day${age === 1 ? "" : "s"} old`}`,
-    `🍖 Food ${meterBar(pet.food, "🟥")} ${Math.round(pet.food)}%`,
-    `💛 Mood ${meterBar(pet.mood, "🟦")} ${Math.round(pet.mood)}%`,
+    // Bar lines start with an emoji (all the same width) so the bars line up; the words go underneath,
+    // since "Food" and "Mood" render at different widths in Telegram's proportional font.
+    `🍖 ${meterBar(pet.food, "🟥")}`,
+    `Food ${Math.round(pet.food)}%`,
+    `💛 ${meterBar(pet.mood, "🟦")}`,
+    `Mood ${Math.round(pet.mood)}%`,
     `<i>${moodLine(pet)}</i>`,
   ].join("\n");
 }
