@@ -35,6 +35,14 @@ export const PET_CONFIG = {
   MISERABLE_WARNING_AT: 15,
 } as const;
 
+// What each feed turns out to be, shown on the card ("Galen fed Gregory some 🌮"). Deliberately not pet
+// food. 🍆 and 🍑 left out on purpose.
+export const PET_FOODS = [
+  "🌮", "🌭", "🍕", "🍔", "🍟", "🍣", "🍜", "🍝", "🥗", "🌯", "🥨", "🧀", "🥐", "🍩", "🍪", "🎂", "🍰", "🧁",
+  "🍫", "🍿", "🥞", "🧇", "🥓", "🍤", "🥟", "🍙", "🌶️", "🥑", "🍋", "🥦", "🌽", "🥕", "🧄", "🧅", "🥥", "🍍",
+  "🍉", "🍦", "🍭", "🥫", "🍱", "🥧", "🧈", "🍳", "🥪", "🍞", "🧃", "☕",
+];
+
 export type PetRarity = "common" | "rare" | "ultra";
 
 // Rolled at adoption. weight is relative: commons 10 each, rares 2, ultras 0.5 — about 95% / 5% / 1%.

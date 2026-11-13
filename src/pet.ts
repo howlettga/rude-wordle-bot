@@ -309,25 +309,27 @@ function formatCard(pet: PetStatus): string {
 }
 
 function lastActionLine(pet: PetStatus): string {
-  const by = escapeHtml(pet.lastAction!.by);
+  const { kind, by, food } = pet.lastAction!;
+  const who = escapeHtml(by);
   const name = escapeHtml(pet.name);
-  switch (pet.lastAction!.kind) {
+  switch (kind) {
     case "fed":
-      return `🍖 ${by} fed ${name}.`;
+      return `🍽️ ${who} fed ${name} some ${food ?? "🍖"}.`;
     case "petted":
-      return `🤚 ${by} pet ${name}.`;
+      return `🤚 ${who} pet ${name}.`;
     case "overfed":
-      return `🤮 ${by} overfed ${name}.`;
+      return `🤮 ${who} overfed ${name} with some ${food ?? "🍖"}.`;
   }
 }
 
 function overfedMessage(pet: PetStatus, by: string): string {
   const name = `<b>${escapeHtml(pet.name)}</b>`;
   const who = escapeHtml(by);
+  const food = pet.lastAction?.food ?? "🍖";
   return random([
-    `🤮 ${who} fed ${name} when it was already full. ${name} threw up everywhere.`,
-    `🤮 ${name} threw up all over ${who}'s shoes. It was already full, ${who}.`,
-    `🤮 ${who} overfed ${name}. Someone get a mop.`,
+    `🤮 ${who} fed ${name} some ${food} when it was already full. ${name} threw up everywhere.`,
+    `🤮 ${name} threw up ${food} all over ${who}'s shoes. It was already full, ${who}.`,
+    `🤮 ${who} overfed ${name} with ${food}. Someone get a mop.`,
   ]);
 }
 

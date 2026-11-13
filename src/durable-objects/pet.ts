@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../main.js";
-import { PET_CONFIG, type PetRarity } from "../pet-config.js";
+import { PET_CONFIG, PET_FOODS, type PetRarity } from "../pet-config.js";
 import { advanceMeters, petFate, type PetMeters } from "../pet-math.js";
 
 export type PetDeathCause = "starved" | "ran_away" | "put_down";
@@ -16,8 +16,9 @@ export interface PetStatus {
   food: number;
   mood: number;
   threadId: number | null;
-  // The most recent feed or pet (an overfeed counts), for the card's "who did what" line.
-  lastAction: { kind: PetAction; by: string } | null;
+  // The most recent feed or pet (an overfeed counts), for the card's "who did what" line. food is the
+  // random PET_FOODS emoji a feed turned out to be, stored so the card shows the same one every time.
+  lastAction: { kind: PetAction; by: string; food: string | null } | null;
 }
 
 export type PetAction = "fed" | "petted" | "overfed";
@@ -86,6 +87,7 @@ type PetRow = {
   last_petted_at: number | null;
   last_action: PetAction | null;
   last_action_by: string | null;
+  last_action_food: string | null;
   died_at: number | null;
   cause: PetDeathCause | null;
 };
@@ -168,6 +170,11 @@ export class Pet extends DurableObject<Env> {
       this.ctx.storage.sql.exec(`ALTER TABLE pets ADD COLUMN last_action TEXT`);
       this.ctx.storage.sql.exec(`ALTER TABLE pets ADD COLUMN last_action_by TEXT`);
       this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (2)`);
+    }
+
+    if (version < 3) {
+      this.ctx.storage.sql.exec(`ALTER TABLE pets ADD COLUMN last_action_food TEXT`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (3)`);
     }
   }
 
@@ -253,7 +260,7 @@ export class Pet extends DurableObject<Env> {
       .exec<PetRow>(
         `UPDATE pets SET food = ?, mood = ?, updated_at = ?, food_empty_since = ?, mood_empty_since = ?, warn_level = ?,
            mood_warned = ?, last_fed_by = ?, last_fed_at = ?, last_petted_by = ?, last_petted_at = ?, last_action = ?,
-           last_action_by = ?
+           last_action_by = ?, last_action_food = ?
          WHERE id = ?
          RETURNING *`,
         food,
@@ -270,6 +277,7 @@ export class Pet extends DurableObject<Env> {
         fed ? row.last_petted_at : now,
         overfed ? "overfed" : fed ? "fed" : "petted",
         input.firstName,
+        fed ? PET_FOODS[Math.floor(Math.random() * PET_FOODS.length)]! : null,
         row.id
       )
       .one();
@@ -374,7 +382,8 @@ export class Pet extends DurableObject<Env> {
     const revived = this.ctx.storage.sql
       .exec<PetRow>(
         `UPDATE pets SET died_at = NULL, cause = NULL, food = 100, mood = 100, updated_at = ?, food_empty_since = NULL,
-           mood_empty_since = NULL, frozen_at = NULL, warn_level = 0, mood_warned = 0, last_action = NULL, last_action_by = NULL
+           mood_empty_since = NULL, frozen_at = NULL, warn_level = 0, mood_warned = 0, last_action = NULL, last_action_by = NULL,
+           last_action_food = NULL
          WHERE id = (SELECT id FROM pets WHERE died_at IS NOT NULL ORDER BY died_at DESC LIMIT 1)
          RETURNING *`,
         now
@@ -486,6 +495,7 @@ function toStatus(row: PetRow): PetStatus {
     food: row.food,
     mood: row.mood,
     threadId: row.thread_id,
-    lastAction: row.last_action && row.last_action_by ? { kind: row.last_action, by: row.last_action_by } : null,
+    lastAction:
+      row.last_action && row.last_action_by ? { kind: row.last_action, by: row.last_action_by, food: row.last_action_food } : null,
   };
 }
