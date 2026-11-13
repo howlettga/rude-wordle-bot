@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../main.js";
+import { easternParts, easternToUtc, toSqliteDatetime } from "../eastern-time.js";
 
 const STARTING_PRICE = 100;
 const STARTING_CASH = 500;
@@ -114,30 +115,45 @@ const HALT_DAILY_CHANCE = 0.15;
 const HALT_DURATION_HOURS = 24;
 const HALT_LEAD_THRESHOLD = 100;
 
-// The "trading day" rolls over at 5pm ET (21:00 UTC, optimized for EDT — same DST-drift tradeoff as the
-// cron triggers in wrangler.jsonc, landing at 4pm EST once winter hits) rather than UTC midnight, so it
-// means something to whoever's actually reading it instead of an arbitrary UTC hour. Used everywhere
-// "today" matters here: diminishing returns on repeat messages/reactions/replies, the decay job's
-// had-activity check, and the daily price change shown in /market and /portfolio — all one boundary, not
-// several different ones, so "today" doesn't quietly mean different things in different queries.
+// The "trading day" rolls over at 5pm ET rather than UTC midnight, so it means something to whoever's
+// actually reading it instead of an arbitrary UTC hour. Used everywhere "today" matters here: diminishing
+// returns on repeat messages/reactions/replies, the decay job's had-activity check, the daily price change
+// shown in /market and /portfolio, and option expiry — all one boundary, not several different ones, so
+// "today" doesn't quietly mean different things in different queries.
 //
-// datetime('now', '-21 hours', 'start of day', '+21 hours') works by shifting back past the boundary,
-// truncating to UTC midnight of that shifted day, then shifting forward the same amount — landing on the
-// most recent 21:00 UTC at or before now. E.g. "now" = 22:30 UTC -> -21h = 01:30 UTC (same day) -> start
-// of day = 00:00 UTC (same day) -> +21h = 21:00 UTC (same day, before now, so that's today's boundary).
-// "now" = 10:00 UTC -> -21h = 13:00 UTC (previous day) -> start of day = 00:00 UTC (previous day) -> +21h
-// = 21:00 UTC (previous day, since 10:00 UTC hasn't reached today's 21:00 UTC rollover yet).
-const TRADING_DAY_START = `datetime('now', '-21 hours', 'start of day', '+21 hours')`;
+// Computed in JS rather than SQL because SQLite has no timezone support, and 5pm ET is 21:00 UTC in EDT
+// but 22:00 UTC in EST — a fixed UTC hour here drifted an hour every November (see eastern-time.ts).
+const TRADING_DAY_START_HOUR_ET = 17;
+
+// The most recent 5pm ET at or before now.
+function tradingDayStart(now = new Date()): Date {
+  const p = easternParts(now);
+  const today = easternToUtc(p.year, p.month, p.day, TRADING_DAY_START_HOUR_ET);
+  return today <= now ? today : easternToUtc(p.year, p.month, p.day - 1, TRADING_DAY_START_HOUR_ET);
+}
+
+// The 5pm ET close `days` Eastern calendar days after the current trading day started — walks Eastern
+// dates rather than adding 24h blocks, so an expiry that spans a DST change still lands on 5pm.
+function tradingDayCloseAfter(days: number): Date {
+  const start = easternParts(tradingDayStart());
+  return easternToUtc(start.year, start.month, start.day + days, TRADING_DAY_START_HOUR_ET);
+}
+
+// tradingDayStart as a quoted SQL literal in SQLite's own datetime() format, for direct interpolation
+// into created_at comparisons. Safe to interpolate: always generated here, never user input.
+function tradingDayStartSql(): string {
+  return `'${toSqliteDatetime(tradingDayStart())}'`;
+}
 
 // message_authors only exists to resolve a reaction back to who wrote the reacted-to message, and
 // price_events doubles as an audit trail (only "today"'s rows are ever queried for the decay math above,
-// via TRADING_DAY_START — nothing ever reads further back than that for any live computation). These used
+// via tradingDayStart — nothing ever reads further back than that for any live computation). These used
 // to be generous (60/180 days) on the theory that storage cost was negligible either way — but rows READ,
 // not storage, turned out to be the actual constraint (see migration 15's indexes, the real fix for that),
 // and every extra day of retention is extra rows any unindexed or partially-indexed query scans through.
 // Trimmed down as a secondary, complementary measure now that the indexing is in place.
 const MESSAGE_AUTHOR_RETENTION_DAYS = 30;
-const PRICE_EVENT_RETENTION_DAYS = 30;
+export const PRICE_EVENT_RETENTION_DAYS = 30;
 
 // Emoji with unambiguous sentiment get a fixed weight; everything else (🗿🌚🍌 etc. — anything not listed
 // below) still moves price, just unpredictably — see randomMemeWeight.
@@ -188,7 +204,7 @@ export interface StockMarketPlayer {
   firstName: string;
   price: number;
   cash: number;
-  dailyChange: number; // sum of this trading day's (since TRADING_DAY_START) price_events deltas — can be negative
+  dailyChange: number; // sum of this trading day's (since tradingDayStart) price_events deltas — can be negative
   isHalted: boolean; // trading halted (see rollHalt) — can't be bought or sold, price frozen, until it lifts
 }
 
@@ -626,7 +642,7 @@ export class StockMarket extends DurableObject<Env> {
     const countToday = this.ctx.storage.sql
       .exec<{ count: number }>(
         `SELECT COUNT(*) as count FROM price_events
-         WHERE user_id = ? AND reason = 'message' AND created_at >= ${TRADING_DAY_START}`,
+         WHERE user_id = ? AND reason = 'message' AND created_at >= ${tradingDayStartSql()}`,
         input.userId
       )
       .one().count;
@@ -665,7 +681,7 @@ export class StockMarket extends DurableObject<Env> {
     const countToday = this.ctx.storage.sql
       .exec<{ count: number }>(
         `SELECT COUNT(*) as count FROM price_events
-         WHERE user_id = ? AND reason = 'reaction' AND created_at >= ${TRADING_DAY_START}`,
+         WHERE user_id = ? AND reason = 'reaction' AND created_at >= ${tradingDayStartSql()}`,
         author.user_id
       )
       .one().count;
@@ -699,7 +715,7 @@ export class StockMarket extends DurableObject<Env> {
     const sameSenderCountToday = this.ctx.storage.sql
       .exec<{ count: number }>(
         `SELECT COUNT(*) as count FROM price_events
-         WHERE user_id = ? AND counterparty_user_id = ? AND reason = 'reply' AND created_at >= ${TRADING_DAY_START}`,
+         WHERE user_id = ? AND counterparty_user_id = ? AND reason = 'reply' AND created_at >= ${tradingDayStartSql()}`,
         input.recipientUserId,
         input.replierUserId
       )
@@ -708,7 +724,7 @@ export class StockMarket extends DurableObject<Env> {
     const distinctSendersSoFarToday = this.ctx.storage.sql
       .exec<{ count: number }>(
         `SELECT COUNT(DISTINCT counterparty_user_id) as count FROM price_events
-         WHERE user_id = ? AND reason = 'reply' AND created_at >= ${TRADING_DAY_START}`,
+         WHERE user_id = ? AND reason = 'reply' AND created_at >= ${tradingDayStartSql()}`,
         input.recipientUserId
       )
       .one().count;
@@ -856,7 +872,7 @@ export class StockMarket extends DurableObject<Env> {
     return this.ctx.storage.sql
       .exec<{ [column: string]: SqlStorageValue; change: number }>(
         `SELECT COALESCE(SUM(delta), 0) as change FROM price_events
-         WHERE user_id = ? AND created_at >= ${TRADING_DAY_START}`,
+         WHERE user_id = ? AND created_at >= ${tradingDayStartSql()}`,
         userId
       )
       .one().change;
@@ -868,7 +884,7 @@ export class StockMarket extends DurableObject<Env> {
     const rows = this.ctx.storage.sql
       .exec<{ [column: string]: SqlStorageValue; user_id: number; change: number }>(
         `SELECT user_id, SUM(delta) as change FROM price_events
-         WHERE created_at >= ${TRADING_DAY_START}
+         WHERE created_at >= ${tradingDayStartSql()}
          GROUP BY user_id`
       )
       .toArray();
@@ -1255,36 +1271,31 @@ export class StockMarket extends DurableObject<Env> {
     const { strikePrice, premium } = this.computeOptionPricing(underlying.price, strikePct, durationDays);
 
     // durationDays here is the real-DTE-style label the user picked (0/1/3/7), not the actual day-offset —
-    // "0D" means "expires at the very next close" (matching real 0DTE), which is TRADING_DAY_START + 1
-    // day, not +0 (which would resolve at-or-before now). Every label is one session short of its raw
+    // "0D" means "expires at the very next close" (matching real 0DTE), which is tradingDayCloseAfter(1),
+    // not (0) (which would resolve at-or-before now). Every label is one session short of its raw
     // offset by design; see OPTION_DURATION_MULTIPLIERS' comment for the same +1 in the pricing table's keys.
+    const expiresAt = tradingDayCloseAfter(durationDays + 1);
     const times = this.ctx.storage.sql
-      .exec<{ [column: string]: SqlStorageValue; expires_at_epoch_sec: number; now_epoch_sec: number }>(
-        `SELECT CAST(strftime('%s', ${TRADING_DAY_START}, '+' || ? || ' days') AS INTEGER) as expires_at_epoch_sec,
-                CAST(strftime('%s', 'now') AS INTEGER) as now_epoch_sec`,
-        durationDays + 1
-      )
+      .exec<{ [column: string]: SqlStorageValue; now_epoch_sec: number }>(`SELECT CAST(strftime('%s', 'now') AS INTEGER) as now_epoch_sec`)
       .one();
 
     return {
       underlyingPrice: underlying.price,
       strikePrice,
       premium,
-      expiresAtEpochSec: times.expires_at_epoch_sec,
+      expiresAtEpochSec: Math.floor(expiresAt.getTime() / 1000),
       nowEpochSec: times.now_epoch_sec,
     };
   }
 
   // Always recomputes strike/premium fresh off the LIVE price at purchase — never trusts an earlier
   // quoteOption call — same "DO is the source of truth, price is read fresh at execution" philosophy as
-  // buy()/sell(). expires_at is the most-recent 5pm-ET boundary at-or-before purchase (TRADING_DAY_START)
-  // plus (durationDays + 1) — the label is one session short of the actual offset (see quoteOption's
+  // buy()/sell(). expires_at is the 5pm-ET close (durationDays + 1) days after the current trading day
+  // started (tradingDayCloseAfter) — the label is one session short of the actual offset (see quoteOption's
   // comment), so "0D" lands on the very next close and "1D"/"3D"/"7D" each land one close further out.
   // Actual runway still varies by time of day within that (buy right after 5pm ET and "0D" gets nearly
-  // 24h; buy right before and it settles almost immediately) — an accepted quirk, same spirit as
-  // TRADING_DAY_START's own documented EDT/DST approximation, and exactly how real 0DTE/short-dated
-  // options behave. durationDays is bound as a parameter, not template-interpolated, even though it only
-  // ever comes from a fixed picker.
+  // 24h; buy right before and it settles almost immediately) — an accepted quirk, and exactly how real
+  // 0DTE/short-dated options behave.
   async buyOption(input: {
     buyerUserId: number;
     buyerUsername?: string;
@@ -1338,7 +1349,7 @@ export class StockMarket extends DurableObject<Env> {
         expires_at_epoch_sec: number;
       }>(
         `INSERT INTO options (buyer_user_id, underlying_user_id, type, strike_pct, duration_days, underlying_price_at_purchase, strike_price, premium_paid, expires_at)
-         VALUES (?, ?, 'call', ?, ?, ?, ?, ?, datetime(${TRADING_DAY_START}, '+' || ? || ' days'))
+         VALUES (?, ?, 'call', ?, ?, ?, ?, ?, ?)
          RETURNING id, strike_price, premium_paid, underlying_price_at_purchase, CAST(strftime('%s', expires_at) AS INTEGER) as expires_at_epoch_sec`,
         input.buyerUserId,
         input.underlyingUserId,
@@ -1347,7 +1358,7 @@ export class StockMarket extends DurableObject<Env> {
         underlying.price,
         strikePrice,
         premium,
-        input.durationDays + 1
+        toSqliteDatetime(tradingDayCloseAfter(input.durationDays + 1))
       )
       .one();
 
@@ -1703,7 +1714,7 @@ export class StockMarket extends DurableObject<Env> {
     const occurrencesToday = this.ctx.storage.sql
       .exec<{ [column: string]: SqlStorageValue; count: number }>(
         `SELECT COUNT(*) as count FROM price_events
-         WHERE user_id = ? AND counterparty_user_id = ? AND reason = 'trade' AND created_at >= ${TRADING_DAY_START}`,
+         WHERE user_id = ? AND counterparty_user_id = ? AND reason = 'trade' AND created_at >= ${tradingDayStartSql()}`,
         targetUserId,
         traderUserId
       )
@@ -1712,7 +1723,7 @@ export class StockMarket extends DurableObject<Env> {
     const distinctTradersToday = this.ctx.storage.sql
       .exec<{ [column: string]: SqlStorageValue; count: number }>(
         `SELECT COUNT(DISTINCT counterparty_user_id) as count FROM price_events
-         WHERE user_id = ? AND reason = 'trade' AND created_at >= ${TRADING_DAY_START}`,
+         WHERE user_id = ? AND reason = 'trade' AND created_at >= ${tradingDayStartSql()}`,
         targetUserId
       )
       .one().count;

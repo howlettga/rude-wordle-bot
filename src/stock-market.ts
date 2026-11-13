@@ -2,8 +2,10 @@ import { Composer, InlineKeyboard } from "grammy";
 import type { Api, Context, Filter, NextFunction } from "grammy";
 import { createConversation } from "@grammyjs/conversations";
 import type { Conversation } from "@grammyjs/conversations";
-import { type MyContext, replyToMessage, replyHTML, realReplyTo, isNotCommand, CONVERSATION_TIMEOUT_MS } from "./context.js";
+import { type MyContext, replyToMessage, replyInThread, replyHTML, realReplyTo, isNotCommand, CONVERSATION_TIMEOUT_MS } from "./context.js";
 import { random } from "./util.js";
+import { easternParts, easternToUtc } from "./eastern-time.js";
+import { MARKET_INSTRUCTIONS } from "./replies.js";
 import type { StorageService } from "./storage-service.js";
 import type {
   StockMarketPlayer,
@@ -15,6 +17,7 @@ import type {
   StockMarketOptionDurationDays,
   StockMarketBuyOptionResult,
 } from "./durable-objects/stock-market.js";
+import { PRICE_EVENT_RETENTION_DAYS } from "./durable-objects/stock-market.js";
 
 // Inside a conversation, ctx is always the plain (unflavored) Context — same pattern as wordle-golf.ts.
 type ConversationContext = Context;
@@ -128,11 +131,11 @@ const MARKET_OPEN_PAYOUT = 15;
 
 // Conversation Terminator only fires between 10am and 10pm ET, and only counts "awake hours" of
 // silence (see awakeHoursBetween in checkSilenceEvents) — otherwise every single night's sleep would read
-// as hours of silence and trigger it every morning. 10am ET ≈ 14:00 UTC and 10pm ET ≈ 02:00 UTC the
-// next day: the same fixed-EDT approximation (and the same accepted DST drift) as TRADING_DAY_START in
-// the durable object. Market Open deliberately does NOT use any of this — see checkSilenceEvents for why.
-const AWAKE_WINDOW_START_UTC_HOUR = 14; // 10am ET
-const AWAKE_WINDOW_END_UTC_HOUR = 2; // 10pm ET, lands on the next UTC day
+// as hours of silence and trigger it every morning. Eastern wall-clock hours, converted per day via
+// eastern-time.ts so the window doesn't drift an hour across DST. Market Open deliberately does NOT use
+// any of this — see checkSilenceEvents for why.
+const AWAKE_WINDOW_START_HOUR_ET = 10;
+const AWAKE_WINDOW_END_HOUR_ET = 22;
 
 const TERMINATOR_MESSAGES: ((label: string, duration: string, payout: number) => string)[] = [
   (label, duration, payout) => `💀 ${label} — CONVERSATION TERMINATED. ${duration} of silence because that message genuinely wasn't worth responding to. +$${payout}.`,
@@ -145,41 +148,36 @@ const TERMINATOR_MESSAGES: ((label: string, duration: string, payout: number) =>
 ];
 
 // True if `now` falls inside the 10am-10pm ET awake window (see the constants above) — the check that
-// gates whether checkSilenceEvents runs at all. AWAKE_WINDOW_END_UTC_HOUR (2) marks the tail end of the
-// PREVIOUS UTC day's window spilling into this one, so "before 2am UTC" also counts as awake.
+// gates whether checkSilenceEvents runs at all.
 function isWithinAwakeWindow(now: Date): boolean {
-  const utcHour = now.getUTCHours();
-  return utcHour >= AWAKE_WINDOW_START_UTC_HOUR || utcHour < AWAKE_WINDOW_END_UTC_HOUR;
+  const { hour } = easternParts(now);
+  return hour >= AWAKE_WINDOW_START_HOUR_ET && hour < AWAKE_WINDOW_END_HOUR_ET;
 }
 
 // Sums only the portion of [startMs, endMs) that falls inside a 10am-10pm ET awake window on some
-// day, walking one UTC calendar day at a time. Windows are built directly in UTC millis (never a JS Date
-// parse of a timezone-ambiguous string — the epoch-second inputs already came from SQLite's own strftime,
-// see getThreadSilenceGap/getChatSilenceGap), and never overlap each other, so no interval can be
+// day, walking one Eastern calendar day at a time. The epoch-millisecond inputs already came from
+// SQLite's own strftime (never a JS Date parse of a timezone-ambiguous string — see
+// getThreadSilenceGap/getChatSilenceGap), and windows never overlap each other, so no interval can be
 // double-counted.
 function awakeMillisBetween(startMs: number, endMs: number): number {
   if (endMs <= startMs) {
     return 0;
   }
 
-  const DAY_MS = 24 * 60 * 60 * 1000;
-  const HOUR_MS = 60 * 60 * 1000;
-
-  const start = new Date(startMs);
-  // Start one UTC day early — a window can begin the previous UTC day and spill into this one (its
-  // 10pm-ET tail lands at AWAKE_WINDOW_END_UTC_HOUR the following day).
-  let dayStart = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate() - 1);
+  const start = easternParts(new Date(startMs));
 
   let total = 0;
-  while (dayStart < endMs) {
-    const windowStart = dayStart + AWAKE_WINDOW_START_UTC_HOUR * HOUR_MS;
-    const windowEnd = dayStart + (24 + AWAKE_WINDOW_END_UTC_HOUR) * HOUR_MS;
+  for (let day = start.day; ; day++) {
+    const windowStart = easternToUtc(start.year, start.month, day, AWAKE_WINDOW_START_HOUR_ET).getTime();
+    if (windowStart >= endMs) {
+      break;
+    }
+    const windowEnd = easternToUtc(start.year, start.month, day, AWAKE_WINDOW_END_HOUR_ET).getTime();
     const overlapStart = Math.max(startMs, windowStart);
     const overlapEnd = Math.min(endMs, windowEnd);
     if (overlapEnd > overlapStart) {
       total += overlapEnd - overlapStart;
     }
-    dayStart += DAY_MS;
   }
 
   return total;
@@ -226,6 +224,10 @@ export class StockMarketComposer extends Composer<MyContext> {
     this.command("delist", (ctx) => this.handleRemoval(ctx, "delist"));
     this.command("reset", (ctx) => this.handleRemoval(ctx, "reset"));
     this.command("stimulus", (ctx) => this.handleStimulus(ctx));
+    this.command("marketrules", (ctx) => replyInThread(ctx, MARKET_INSTRUCTIONS));
+    this.command("restart", (ctx) => this.handleRestart(ctx));
+    this.command("setmarketthread", (ctx) => this.handleSetMarketThread(ctx));
+    this.command("setoptionsguard", (ctx) => this.handleSetOptionsGuard(ctx));
     this.callbackQuery(/^(delist|reset):(confirm|cancel):(\d+)$/, (ctx) => this.handleSelfRemovalCallback(ctx));
     this.on("message", (ctx, next) => this.trackActivity(ctx, next));
     this.on("message_reaction", (ctx) => this.trackReaction(ctx));
@@ -234,7 +236,7 @@ export class StockMarketComposer extends Composer<MyContext> {
   // Opt-in short handle for /buy and /sell targeting (see handleTrade) — replaces @username entirely for
   // trades, since not everyone has one and that was confusing people. Requires having posted a real
   // message already (same reach restriction as findPlayerByTicker) so a ticker never outlives its player
-  // past the weekly ghost purge.
+  // past the daily ghost purge.
   //
   // Tapping /setticker from Telegram's command menu sends it bare — there's no inline way to type the
   // ticker as part of the command itself, which was tripping people up. So bare /setticker now drops into
@@ -612,7 +614,7 @@ export class StockMarketComposer extends Composer<MyContext> {
   }
 
   // Shared math behind formatChange and formatMarketMetrics: this trading day's price movement (see
-  // TRADING_DAY_START — 5pm ET, not midnight), both absolute and percent versus the opening price
+  // tradingDayStart in the durable object — 5pm ET, not midnight), both absolute and percent versus the opening price
   // (price - change). Every row gets the same
   // shape — arrow, signed amount, percent — even when flat or pinned at the floor, so no row looks like a
   // one-off special case (previously a near-zero change short-circuited to a bare "-0.00" with no percent
@@ -1375,11 +1377,68 @@ export class StockMarketComposer extends Composer<MyContext> {
     await this.sendMarketAnnouncement(ctx, random(STIMULUS_MESSAGES)(amount.toFixed(2), count, count === 1 ? "" : "s"));
   }
 
+  // Owner-only full wipe of this chat's stock market — every player, holding, and price event, gone.
+  // For clearing out an economy corrupted by a bug rather than correcting people one at a time, which
+  // /delist and /reset (above) already cover.
+  private async handleRestart(ctx: MyContext) {
+    if (this.ownerChatId === undefined || ctx.from?.id !== this.ownerChatId || !ctx.chat) {
+      return;
+    }
+
+    await this.storage.restartStockMarket(ctx.chat.id);
+    await replyToMessage(ctx, "The market has been reset. Everyone starts fresh from here.");
+  }
+
+  // Owner-only. Cron-driven market announcements (the trading-halt notice, and any future ones) default
+  // to the General topic / main chat since they're not a reply to anyone. Run this inside the topic you
+  // want them to land in instead — captures that topic's message_thread_id and stores it per chat.
+  // Running it outside any topic (e.g. in General) clears the preference back to the default.
+  private async handleSetMarketThread(ctx: MyContext) {
+    if (this.ownerChatId === undefined || ctx.from?.id !== this.ownerChatId || !ctx.chat) {
+      return;
+    }
+
+    const threadId = ctx.message?.message_thread_id ?? null;
+    await this.storage.setStockMarketAnnouncementThread(ctx.chat.id, threadId);
+    await replyToMessage(
+      ctx,
+      threadId !== null
+        ? "Market announcements will now be posted in this thread."
+        : "Market announcements will now be posted in the main chat."
+    );
+  }
+
+  // Owner-only, per-chat. Off by default — self-pumping your own option via a big buy order is
+  // deliberately allowed chaos (see TRADE_BASE_IMPACT_PCT above) — this is the escape hatch if it ever
+  // gets out of hand for a specific chat, not a permanent rule change.
+  private async handleSetOptionsGuard(ctx: MyContext) {
+    if (this.ownerChatId === undefined || ctx.from?.id !== this.ownerChatId || !ctx.chat) {
+      return;
+    }
+
+    const arg = String(ctx.match ?? "").trim().toLowerCase();
+    if (arg !== "on" && arg !== "off") {
+      await replyToMessage(ctx, "Usage: /setoptionsguard on|off");
+      return;
+    }
+
+    await this.storage.setStockMarketOptionsGuard(ctx.chat.id, arg === "on");
+    await replyToMessage(
+      ctx,
+      arg === "on"
+        ? "Anti-pump guard is ON — can't trade shares of anyone you're holding an open option on."
+        : "Anti-pump guard is OFF — pump away."
+    );
+  }
+
   /** Driven by main.ts's scheduled() handler — no Telegram messages to send, just storage mutations. */
 
   async runDailyDecay(): Promise<void> {
     const chatIds = await this.storage.listStockMarketChats();
     for (const chatId of chatIds) {
+      if (await this.storage.isChatPaused(chatId)) {
+        continue;
+      }
       await this.storage.applyStockMarketDailyDecay(chatId);
     }
   }
@@ -1387,6 +1446,9 @@ export class StockMarketComposer extends Composer<MyContext> {
   async runWeeklyAllowance(): Promise<void> {
     const chatIds = await this.storage.listStockMarketChats();
     for (const chatId of chatIds) {
+      if (await this.storage.isChatPaused(chatId)) {
+        continue;
+      }
       await this.storage.applyStockMarketWeeklyAllowance(chatId);
     }
   }
@@ -1395,11 +1457,30 @@ export class StockMarketComposer extends Composer<MyContext> {
   // weekly cron since message_authors/price_events accumulate on every message, and a week between purges
   // let them grow much larger than a day between purges ever would. Purely storage mutation, nothing to
   // announce, so kept separate from runDailyHaltCheck the same way runDailyDecay is kept separate from it.
+  // Skipping paused chats matters more here than for the other jobs: a paused chat records no new
+  // 'message' price_events, so once the old ones age out the ghost purge would delete every player.
+  // Wiping a market should only ever happen via an explicit /restart.
+  //
+  // The same problem follows a chat out of a pause: everyone's pre-pause price_events kept aging the
+  // whole time, so the first purge after /startmarket would delete anyone whose last message was
+  // PRICE_EVENT_RETENTION_DAYS ago counting paused days. So the ghost purge also sits out a grace period
+  // of that same length after resuming, giving everyone a full window of live market to post in before
+  // it judges them. Generous to anyone already inactive going into the pause — a deliberate trade for
+  // not having to track pause history.
   async runDailyCleanup(): Promise<void> {
     const chatIds = await this.storage.listStockMarketChats();
+    const nowEpochSec = Math.floor(Date.now() / 1000);
     for (const chatId of chatIds) {
+      const { paused, resumedAtEpochSec } = await this.storage.getChatPauseState(chatId);
+      if (paused) {
+        continue;
+      }
       await this.storage.purgeStockMarketOldData(chatId);
-      await this.storage.purgeStockMarketGhostPlayers(chatId);
+
+      const inGracePeriod = resumedAtEpochSec !== null && nowEpochSec - resumedAtEpochSec < PRICE_EVENT_RETENTION_DAYS * 24 * 60 * 60;
+      if (!inGracePeriod) {
+        await this.storage.purgeStockMarketGhostPlayers(chatId);
+      }
     }
   }
 
@@ -1410,6 +1491,9 @@ export class StockMarketComposer extends Composer<MyContext> {
   async runDailyHaltCheck(api: Api): Promise<void> {
     const chatIds = await this.storage.listStockMarketChats();
     for (const chatId of chatIds) {
+      if (await this.storage.isChatPaused(chatId)) {
+        continue;
+      }
       const halted = await this.storage.rollStockMarketHalt(chatId);
       if (!halted) {
         continue;
@@ -1431,6 +1515,9 @@ export class StockMarketComposer extends Composer<MyContext> {
   async runOptionsSettlement(api: Api): Promise<void> {
     const chatIds = await this.storage.listStockMarketChats();
     for (const chatId of chatIds) {
+      if (await this.storage.isChatPaused(chatId)) {
+        continue;
+      }
       const settlements = await this.storage.settleStockMarketOptions(chatId);
       if (settlements.length === 0) {
         continue;

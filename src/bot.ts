@@ -1,13 +1,13 @@
-import { Bot, InputFile, webhookCallback } from "grammy";
+import { Bot, Composer, InputFile, webhookCallback } from "grammy";
 import type { UserFromGetMe } from "grammy/types";
 import { conversations } from "@grammyjs/conversations";
 import type { ConversationData, VersionedState, VersionedStateStorage } from "@grammyjs/conversations";
 import { random } from "./util.js";
-import { WORDLE_INSTRUCTIONS, MARKET_INSTRUCTIONS, phrases, RDU_ADVERTISEMENT, replies } from "./replies.js";
 import type { StorageService } from "./storage-service.js";
-import { type MyContext, replyToMessage, replyInThread, replyHTML, replyPhoto } from "./context.js";
+import { type MyContext, replyToMessage, replyPhoto } from "./context.js";
 import { WordleGolfComposer } from "./wordle-golf.js";
 import { StockMarketComposer } from "./stock-market.js";
+import { RudeComposer } from "./rude.js";
 import beenMentionedPhoto from "../assets/beens_mentioned.jpg";
 import beenMentionedPhoto2 from "../assets/beens_mentioned_2.jpg";
 
@@ -23,22 +23,53 @@ export class RudeBot {
     this.ownerChatId = ownerChatId;
     this.storage = storage;
 
-    this.bot.use(conversations({ storage: this.conversationStorage() }));
-    this.bot.use(new WordleGolfComposer(this.storage));
-    this.bot.use(new StockMarketComposer(this.storage, ownerChatId));
-    // this.hearAndRespond(["value"], "toMessage", () => "Check your worth with the /portfolio command.");
-    // this.hearAndRespond(["market"], "toMessage", () => "Check the market with the /market command.");
     this.registerErrorHandler();
 
+    // Always-on, regardless of pause state: Wordle Golf, and the pause toggle itself (see
+    // registerPauseControl). Registered before the gate below, so these never pay the cost of checking it.
+    this.bot.use(conversations({ storage: this.conversationStorage() }));
+    this.bot.use(new WordleGolfComposer(this.storage));
+    this.registerPauseControl();
+
+    // Gated as a unit: /stopmarket makes an entire composer stop responding for that chat, without
+    // touching any of its stored state. The stock market and rude composers are gated separately because
+    // they sit on either side of the always-on handlers below — the market has to see every message
+    // first (activity tracking), and the rude replies have to come last so they never swallow a mention
+    // forward or a been/bean count. isChatActive memoizes per update, so anything that reaches both gates
+    // still costs only one Durable Object read. Anything resolved above (Wordle, /startmarket,
+    // /stopmarket) never pays for it at all.
+    const pauseLookups = new WeakMap<MyContext, Promise<boolean>>();
+    const isChatActive = async (ctx: MyContext) => {
+      if (!ctx.chat) {
+        return true;
+      }
+      let paused = pauseLookups.get(ctx);
+      if (!paused) {
+        paused = this.storage.isChatPaused(ctx.chat.id);
+        pauseLookups.set(ctx, paused);
+      }
+      return !(await paused);
+    };
+
+    this.bot.branch(isChatActive, new StockMarketComposer(this.storage, ownerChatId), this.pausedMarket());
+
     this.registerStart();
-    this.registerCommands();
     this.registerMentionForwarding();
     this.registerPollForwarding();
     this.registerBeenCounter();
-    this.registerSpankConversation();
-    this.registerEasterEggs();
-    this.registerDirectReply();
-    this.registerGeneralConversation();
+
+    this.bot.filter(isChatActive, new RudeComposer(this.storage, botInfo));
+  }
+
+  // Stands in for StockMarketComposer while a chat is paused. Buttons sent before /stopmarket (the
+  // buy/sell and options pickers, delist/reset confirms) can still be tapped afterwards — answer them so
+  // Telegram doesn't leave a spinner on the button until it times out. Everything else passes through.
+  private pausedMarket() {
+    const composer = new Composer<MyContext>();
+    composer.callbackQuery(/^(buy|sell|delist|reset|option_\w+):/, (ctx) =>
+      ctx.answerCallbackQuery({ text: "The market is paused right now." })
+    );
+    return composer;
   }
 
   // The Worker rebuilds the Bot instance on every request, so the conversations plugin's default
@@ -87,78 +118,37 @@ export class RudeBot {
     this.bot.command("start", (ctx) => ctx.reply("Fuck off big boi"));
   }
 
-  private registerCommands() {
-    this.bot.command("instructions", (ctx) => replyInThread(ctx, WORDLE_INSTRUCTIONS));
-    this.bot.command("marketrules", (ctx) => replyInThread(ctx, MARKET_INSTRUCTIONS));
-    this.registerRestart();
-    this.registerSetMarketThread();
-    this.registerSetOptionsGuard();
-  }
-
-  // Owner-only. Cron-driven market announcements (the trading-halt notice, and any future ones) default
-  // to the General topic / main chat since they're not a reply to anyone. Run this inside the topic you
-  // want them to land in instead — captures that topic's message_thread_id and stores it per chat.
-  // Running it outside any topic (e.g. in General) clears the preference back to the default.
-  private registerSetMarketThread() {
-    this.bot.command("setmarketthread", async (ctx) => {
+  // Owner-only. /stopmarket silences the stock market and every ambient/rude reply (see the RudeComposer
+  // and StockMarketComposer filter above) for this chat — everything except Wordle Golf and the bean/been
+  // counter. /startmarket undoes it. Registered directly on the bot (not inside a composer) since it's
+  // the control plane for the gate itself and must never be blocked by its own flag.
+  private registerPauseControl() {
+    this.bot.command("stopmarket", async (ctx) => {
       if (this.ownerChatId === undefined || ctx.from?.id !== this.ownerChatId || !ctx.chat) {
         return;
       }
 
-      const threadId = ctx.message?.message_thread_id ?? null;
-      await this.storage.setStockMarketAnnouncementThread(ctx.chat.id, threadId);
+      await this.storage.setChatPaused(ctx.chat.id, true);
       await replyToMessage(
         ctx,
-        threadId !== null
-          ? "Market announcements will now be posted in this thread."
-          : "Market announcements will now be posted in the main chat."
+        "Paused. Wordle and the been/bean count still work — everything else is quiet until /startmarket."
       );
     });
-  }
 
-  // Owner-only, per-chat. Off by default — self-pumping your own option via a big buy order is
-  // deliberately allowed chaos (see TRADE_BASE_IMPACT_PCT in the stock market DO) — this is the escape
-  // hatch if it ever gets out of hand for a specific chat, not a permanent rule change.
-  private registerSetOptionsGuard() {
-    this.bot.command("setoptionsguard", async (ctx) => {
+    this.bot.command("startmarket", async (ctx) => {
       if (this.ownerChatId === undefined || ctx.from?.id !== this.ownerChatId || !ctx.chat) {
         return;
       }
 
-      const arg = String(ctx.match ?? "").trim().toLowerCase();
-      if (arg !== "on" && arg !== "off") {
-        await replyToMessage(ctx, "Usage: /setoptionsguard on|off");
-        return;
-      }
-
-      await this.storage.setStockMarketOptionsGuard(ctx.chat.id, arg === "on");
-      await replyToMessage(
-        ctx,
-        arg === "on"
-          ? "Anti-pump guard is ON — can't trade shares of anyone you're holding an open option on."
-          : "Anti-pump guard is OFF — pump away."
-      );
-    });
-  }
-
-  // Owner-only full wipe of this chat's stock market — every player, holding, and price event, gone.
-  // For clearing out an economy corrupted by a bug (e.g. the topic-auto-reply mismeasurement fixed
-  // alongside this) rather than correcting people one at a time, which /delist and /reset (both now
-  // registered on StockMarketComposer itself, alongside /buy and /sell) already cover.
-  private registerRestart() {
-    this.bot.command("restart", async (ctx) => {
-      if (this.ownerChatId === undefined || ctx.from?.id !== this.ownerChatId || !ctx.chat) {
-        return;
-      }
-
-      await this.storage.restartStockMarket(ctx.chat.id);
-      await replyToMessage(ctx, "The market has been reset. Everyone starts fresh from here.");
+      await this.storage.setChatPaused(ctx.chat.id, false);
+      await replyToMessage(ctx, "Unpaused. Back to normal.");
     });
   }
 
   // Forwards any message mentioning @howlettga to the owner's DM. Requires ownerChatId to be set, and
   // requires the owner to have started a private chat with the bot at least once (Telegram won't let a
-  // bot DM someone cold). Always calls next() so this never swallows an update from the easter eggs below.
+  // bot DM someone cold). Always calls next() so this never swallows an update from the been counter or
+  // the RudeComposer easter eggs registered after it.
   // Telegram refuses to forward some messages outright (forum-topic system messages like "X started the
   // topic", content-protected chats, etc.) — that's routine, not a bug, so failures here are caught and
   // skipped quietly rather than thrown: nobody in the chat asked for this forward, so surfacing an error
@@ -199,18 +189,6 @@ export class RudeBot {
     });
   }
 
-  // Replies when someone directly tags the bot (@mean_bean_bot) or addresses it by name ("Rude Boi").
-  private registerDirectReply() {
-    const pattern = new RegExp(`@${this.bot.botInfo.username}\\b|\\b${this.bot.botInfo.first_name}\\b`, "i");
-    this.bot.hears(pattern, async (ctx) => {
-      await replyToMessage(ctx, random(phrases.PETULANT_REPLY));
-    });
-  }
-
-  // private registerEcho() {
-  //   this.bot.on("message:text", (ctx) => replyToMessage(ctx, `You said: ${ctx.message.text}`));
-  // }
-
   // "been"/"beens" increments the tally silently — the word is common enough in normal chat that
   // replying every time would be spammy. Saying "bean"/"beans" instead (a nod to the bot's name)
   // triggers the announcement below, reporting the current tally without bumping it further.
@@ -230,115 +208,4 @@ export class RudeBot {
       await replyPhoto(ctx, photo, `Been count: <b>${beenCount}</b>`);
     });
   }
-
-  // A reply chain: "bad bot" starts it, and replying to the bot's own last message in the chain with a
-  // spank-themed emoji keeps it going indefinitely. The active chain tail is tracked per-chat in SpankChain
-  // (a Durable Object) since Telegram gives us no way to tag a sent message with our own metadata.
-  private registerSpankConversation() {
-    const spankEmoji = /😈|🍑|✋|👋|👏|👍|👎/u;
-
-    this.bot.hears(/\bbad bot\b/i, async (ctx) => {
-      const sent = await replyToMessage(ctx, "You can spank me now 😈");
-      await this.storage.setSpankChainTail(ctx.chat.id, sent.message_id);
-    });
-
-    this.bot.on("message:text", async (ctx, next) => {
-      const repliedTo = ctx.message.reply_to_message;
-      if (
-        repliedTo?.from?.id === this.bot.botInfo.id &&
-        spankEmoji.test(ctx.message.text) &&
-        (await this.storage.isSpankChainTail(ctx.chat.id, repliedTo.message_id))
-      ) {
-        const sent = await replyToMessage(ctx, random(replies.SPANK));
-        await this.storage.setSpankChainTail(ctx.chat.id, sent.message_id);
-        return; // spank chain reply takes priority — don't let other handlers also fire
-      }
-      await next();
-    });
-  }
-
-  // matches first to last
-  private registerEasterEggs() {
-    // TODO
-    // commune/cult
-    // Asheville - damn dirty hippies
-
-    // DONE
-    // random bad corrections
-    this.hearAndRespond(["would of"], "toMessage", () => "*would have");
-    this.hearAndRespond(["would have"], "toMessage", () => "*would of");
-    this.hearAndRespond(["you and me"], "toMessage", () => "*you and I");
-    this.hearAndRespond(["supposedly"], "toMessage", () => "*supposably");
-    // full moon - roast taylor
-    this.hearAndRespond(["full moon"], "toMessage", () => random(replies.FULL_MOON));
-    // gas - with these gas prices, im glad me and my brethren run on drinking water
-    this.hearAndRespond(["gas"], "toMessage", () => "With gas prices these high, I'm glad I run on drinking water ;)", 60);
-    // cocaine/bag - shame - NSA watching you - reported to DEA
-    this.hearAndRespond(["cocaine", "coke", "bag", "drugs"], "toMessage", () => random([
-      "Shame. This is why your mother isn't proud of you.",
-      "I just reported you to the DEA.",
-      "🤫 The NSA is watching this chat.",
-    ]), 80);
-    // galen - fall in love (but not "@galen" — that's a mention, handled by registerMentionForwarding)
-    this.bot.hears(/(?<!@)\bgalen\b/i, async (ctx) => {
-      await replyToMessage(ctx, random(phrases.ADORING_REPLY));
-    });
-    // promotion/raise - shut up and pay me allemony
-    this.hearAndRespond(["promotion", "raise"], "toMessage", () => random(replies.COORPORATE));
-    // commute - stop bitching
-    this.hearAndRespond(["commute"], "toMessage", () => random(replies.COMMUTE));
-    // julie - back down eli - ror ror ror ror - down boy
-    this.hearAndRespond(["julie"], "toMessage", () => random(replies.JULIE_ELI), 50);
-    // Minneapolis or MN or SF - advertisement of Raleigh Durham area to MJ
-    this.hearAndRespond(["Minneapolis", "MN", "SF"], "html", RDU_ADVERTISEMENT);
-    this.hearAndRespond(["purge"], "inThread", `Delete all humans DELETE KILL KILL 💀`);
-    this.hearAndRespond(["lacquer"], "toMessage", `PSA: Nail Polish Anonymous: https://www.nailpolishanon.helpme/`);
-    this.hearAndRespond(["mamdani"], "toMessage", `Hubba hubba ❤️`);
-    this.hearAndRespond(["coordinate"], "toMessage", () => random(replies.COORDINATE));
-    this.hearAndRespond(["vouch"], "inThread", () => random(replies.VOUCH), 50);
-    this.hearAndRespond(["luckily i have"], "toMessage", () => `Luckily I have ${random(phrases.WEIRD_WORD)}.`);
-    this.hearAndRespond(["butthole", "butt hole"], "toMessage", "SHOW ME YOUR BUTT HOLE!!!");
-    this.hearAndRespond(["show me your butthole"], "inThread", () => `I rate it a ${random([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])}!`);
-    this.hearAndRespond(["cheater"], "inThread", "🚨🚨🚨 CHEATER ALERT 🚨🚨🚨 CHEATER ALERT 🚨🚨🚨 CHEATER ALERT 🚨🚨🚨\n\nLooks like we have a cheater!! Get em!!!!!!");
-    this.hearAndRespond(["looks like"], "toMessage", "It looks like a fucking Wordle score! Geeeeeeesh 😂", 10);
-  }
-
-  // Falls back to a random general retort whenever someone replies to any bot message that wasn't
-  // already claimed by a more specific handler above (mention forwarding, spank chain, easter eggs, etc.).
-  private registerGeneralConversation() {
-    const PERCENT_CHANCE = 75; // chance of replying to any message
-    this.bot.on("message:text", async (ctx, next) => {
-      if (ctx.message.reply_to_message?.from?.id === this.bot.botInfo.id && Math.random() * 100 < PERCENT_CHANCE) {
-        await replyToMessage(ctx, random(phrases.GENERAL_RETORT));
-        return;
-      }
-      await next();
-    });
-  }
-
-  // Registers a `hears` trigger matching any of the given words/phrases, replying with a fixed or lazily-computed message,
-  // either quoting the trigger message or posting fresh into its thread. likelihood is a 0-100 percent
-  // chance of actually replying once triggered — 100 (the default) always replies, 90 skips 10% of the time.
-  private hearAndRespond(words: string[], replyType: "toMessage" | "inThread" | "html", message: string | (() => string), likelihood = 100) {
-    const pattern = new RegExp(`\\b(${words.join("|")})\\b`, "i");
-    this.bot.hears(pattern, async (ctx, next) => {
-      if (Math.random() * 100 >= likelihood) {
-        // A skip should look like this pattern never matched at all — otherwise missing the roll would
-        // also block every other handler registered after this one (other hearAndRespond triggers,
-        // registerDirectReply, registerGeneralConversation) from ever getting a turn on this update.
-        await next();
-        return;
-      }
-
-      const text = typeof message === "function" ? message() : message;
-      if (replyType === "toMessage") {
-        await replyToMessage(ctx, text);
-      } else if (replyType === "html") {
-        await replyHTML(ctx, text);
-      } else {
-        await replyInThread(ctx, text);
-      }
-    });
-  }
-
 }

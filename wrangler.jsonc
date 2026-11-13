@@ -14,7 +14,8 @@
       { "name": "WORDLE_GOLF", "class_name": "WordleGolf" },
       { "name": "WORDLE_GOLF_REGISTRY", "class_name": "WordleGolfRegistry" },
       { "name": "STOCK_MARKET", "class_name": "StockMarket" },
-      { "name": "STOCK_MARKET_REGISTRY", "class_name": "StockMarketRegistry" }
+      { "name": "STOCK_MARKET_REGISTRY", "class_name": "StockMarketRegistry" },
+      { "name": "CHAT_PAUSE", "class_name": "ChatPause" }
     ]
   },
   "migrations": [
@@ -23,18 +24,18 @@
     { "tag": "v3", "new_sqlite_classes": ["WordleGolf"] },
     { "tag": "v4", "new_sqlite_classes": ["WordleGolfRegistry"] },
     { "tag": "v5", "new_sqlite_classes": ["StockMarket", "StockMarketRegistry"] },
-    { "tag": "v6", "new_sqlite_classes": ["BeanCounter"] }
+    { "tag": "v6", "new_sqlite_classes": ["BeanCounter"] },
+    { "tag": "v7", "new_sqlite_classes": ["ChatPause"] }
   ],
-  // Cron Triggers always run in UTC (no timezone support), so all four drift an hour across DST — the
-  // UTC hours below are tuned for EDT (summer); each lands an hour earlier once EST (winter) hits.
-  // Daily @ midnight ET: Wordle Golf's reminder/finalize sweep + the stock market's daily price decay.
-  // Weekly (Monday) @ midnight ET: the stock market's cash allowance.
-  // Daily @ 8am ET: the stock market's trading-halt roll/announcement — split off from the midnight sweep
-  // since nobody's awake to see it land at midnight.
-  // Daily @ 5pm ET: long-call options settlement — the same boundary TRADING_DAY_START computes, the only
-  // time any option ever settles.
+  // Cron Triggers always run in UTC (no timezone support), and every job is scheduled in Eastern time,
+  // which shifts against UTC across DST. So this is one hourly trigger, and main.ts's scheduled() checks
+  // the Eastern hour and runs whatever's due:
+  // Midnight ET: Wordle Golf's reminder/finalize sweep + the stock market's daily price decay, plus the
+  // weekly cash allowance on Mondays.
+  // 8am ET: the stock market's trading-halt roll/announcement + daily data purge.
+  // 5pm ET: long-call options settlement.
   "triggers": {
-    "crons": ["0 4 * * *", "0 4 * * 1", "0 12 * * *", "0 21 * * *"]
+    "crons": ["0 * * * *"]
   },
   "observability": {
     "enabled": true,

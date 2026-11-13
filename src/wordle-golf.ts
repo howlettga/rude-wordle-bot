@@ -6,7 +6,7 @@ import { type MyContext, replyToMessage, replyInThread, replyHTML, isNotCommand,
 import type { StorageService } from "./storage-service.js";
 import type { WordleGolfGame, WordleGolfScorecard, WordleGolfLeaderboardEntry } from "./durable-objects/wordle-golf.js";
 import { getTodaysWordle, nextDateString } from "./wordle-api.js";
-import { wordleGolf } from "./replies.js";
+import { WORDLE_INSTRUCTIONS, wordleGolf } from "./replies.js";
 import { random } from "./util.js";
 
 // Inside a conversation, ctx is always the plain (unflavored) Context — the conversation itself is the flavor.
@@ -38,6 +38,7 @@ export class WordleGolfComposer extends Composer<MyContext> {
     this.command("wordle", (ctx) => this.handleStartWordle(ctx));
     this.command("scorecard", (ctx) => this.sendScorecard(ctx));
     this.command("leaderboard", (ctx) => this.sendLeaderboard(ctx));
+    this.command("instructions", (ctx) => replyInThread(ctx, WORDLE_INSTRUCTIONS));
     this.hears(/^Wordle.*/, (ctx) => this.handleScoreSubmission(ctx));
   }
 
