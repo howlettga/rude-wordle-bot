@@ -4,6 +4,7 @@ import { createConversation } from "@grammyjs/conversations";
 import type { Conversation } from "@grammyjs/conversations";
 import { type MyContext, replyToMessage, replyInThread, replyHTML, realReplyTo, isNotCommand, CONVERSATION_TIMEOUT_MS } from "./context.js";
 import { random } from "./util.js";
+import { easternParts, easternToUtc } from "./eastern-time.js";
 import { MARKET_INSTRUCTIONS } from "./replies.js";
 import type { StorageService } from "./storage-service.js";
 import type {
@@ -129,11 +130,11 @@ const MARKET_OPEN_PAYOUT = 15;
 
 // Conversation Terminator only fires between 10am and 10pm ET, and only counts "awake hours" of
 // silence (see awakeHoursBetween in checkSilenceEvents) — otherwise every single night's sleep would read
-// as hours of silence and trigger it every morning. 10am ET ≈ 14:00 UTC and 10pm ET ≈ 02:00 UTC the
-// next day: the same fixed-EDT approximation (and the same accepted DST drift) as TRADING_DAY_START in
-// the durable object. Market Open deliberately does NOT use any of this — see checkSilenceEvents for why.
-const AWAKE_WINDOW_START_UTC_HOUR = 14; // 10am ET
-const AWAKE_WINDOW_END_UTC_HOUR = 2; // 10pm ET, lands on the next UTC day
+// as hours of silence and trigger it every morning. Eastern wall-clock hours, converted per day via
+// eastern-time.ts so the window doesn't drift an hour across DST. Market Open deliberately does NOT use
+// any of this — see checkSilenceEvents for why.
+const AWAKE_WINDOW_START_HOUR_ET = 10;
+const AWAKE_WINDOW_END_HOUR_ET = 22;
 
 const TERMINATOR_MESSAGES: ((label: string, duration: string, payout: number) => string)[] = [
   (label, duration, payout) => `💀 ${label} — CONVERSATION TERMINATED. ${duration} of silence because that message genuinely wasn't worth responding to. +$${payout}.`,
@@ -146,41 +147,36 @@ const TERMINATOR_MESSAGES: ((label: string, duration: string, payout: number) =>
 ];
 
 // True if `now` falls inside the 10am-10pm ET awake window (see the constants above) — the check that
-// gates whether checkSilenceEvents runs at all. AWAKE_WINDOW_END_UTC_HOUR (2) marks the tail end of the
-// PREVIOUS UTC day's window spilling into this one, so "before 2am UTC" also counts as awake.
+// gates whether checkSilenceEvents runs at all.
 function isWithinAwakeWindow(now: Date): boolean {
-  const utcHour = now.getUTCHours();
-  return utcHour >= AWAKE_WINDOW_START_UTC_HOUR || utcHour < AWAKE_WINDOW_END_UTC_HOUR;
+  const { hour } = easternParts(now);
+  return hour >= AWAKE_WINDOW_START_HOUR_ET && hour < AWAKE_WINDOW_END_HOUR_ET;
 }
 
 // Sums only the portion of [startMs, endMs) that falls inside a 10am-10pm ET awake window on some
-// day, walking one UTC calendar day at a time. Windows are built directly in UTC millis (never a JS Date
-// parse of a timezone-ambiguous string — the epoch-second inputs already came from SQLite's own strftime,
-// see getThreadSilenceGap/getChatSilenceGap), and never overlap each other, so no interval can be
+// day, walking one Eastern calendar day at a time. The epoch-millisecond inputs already came from
+// SQLite's own strftime (never a JS Date parse of a timezone-ambiguous string — see
+// getThreadSilenceGap/getChatSilenceGap), and windows never overlap each other, so no interval can be
 // double-counted.
 function awakeMillisBetween(startMs: number, endMs: number): number {
   if (endMs <= startMs) {
     return 0;
   }
 
-  const DAY_MS = 24 * 60 * 60 * 1000;
-  const HOUR_MS = 60 * 60 * 1000;
-
-  const start = new Date(startMs);
-  // Start one UTC day early — a window can begin the previous UTC day and spill into this one (its
-  // 10pm-ET tail lands at AWAKE_WINDOW_END_UTC_HOUR the following day).
-  let dayStart = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate() - 1);
+  const start = easternParts(new Date(startMs));
 
   let total = 0;
-  while (dayStart < endMs) {
-    const windowStart = dayStart + AWAKE_WINDOW_START_UTC_HOUR * HOUR_MS;
-    const windowEnd = dayStart + (24 + AWAKE_WINDOW_END_UTC_HOUR) * HOUR_MS;
+  for (let day = start.day; ; day++) {
+    const windowStart = easternToUtc(start.year, start.month, day, AWAKE_WINDOW_START_HOUR_ET).getTime();
+    if (windowStart >= endMs) {
+      break;
+    }
+    const windowEnd = easternToUtc(start.year, start.month, day, AWAKE_WINDOW_END_HOUR_ET).getTime();
     const overlapStart = Math.max(startMs, windowStart);
     const overlapEnd = Math.min(endMs, windowEnd);
     if (overlapEnd > overlapStart) {
       total += overlapEnd - overlapStart;
     }
-    dayStart += DAY_MS;
   }
 
   return total;
@@ -617,7 +613,7 @@ export class StockMarketComposer extends Composer<MyContext> {
   }
 
   // Shared math behind formatChange and formatMarketMetrics: this trading day's price movement (see
-  // TRADING_DAY_START — 5pm ET, not midnight), both absolute and percent versus the opening price
+  // tradingDayStart in the durable object — 5pm ET, not midnight), both absolute and percent versus the opening price
   // (price - change). Every row gets the same
   // shape — arrow, signed amount, percent — even when flat or pinned at the floor, so no row looks like a
   // one-off special case (previously a near-zero change short-circuited to a bare "-0.00" with no percent
