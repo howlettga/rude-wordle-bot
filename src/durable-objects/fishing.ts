@@ -47,6 +47,9 @@ export interface FishingLeaderboard {
   windowDays: number | null; // null = forever
 }
 
+// Eastern date tides take effect (see cast). "YYYY-MM-DD" compares correctly as a plain string.
+const TIDES_START_DATE = "2026-11-14";
+
 type LeaderboardRow = {
   [column: string]: SqlStorageValue;
   user_id: number;
@@ -100,7 +103,12 @@ export class Fishing extends DurableObject<Env> {
     const p = easternParts(new Date());
     const today = `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
     // Without the secret, tides just stay normal rather than becoming predictable from the source code.
-    const tide = this.env.TIDE_SECRET ? tideFor(this.env.TIDE_SECRET, input.chatId, Date.UTC(p.year, p.month - 1, p.day) / 86_400_000) : "normal";
+    // Same before TIDES_START_DATE, so nobody fishing on the day tides shipped got a different tide from
+    // the people who'd already fished that day.
+    const tide =
+      this.env.TIDE_SECRET && today >= TIDES_START_DATE
+        ? tideFor(this.env.TIDE_SECRET, input.chatId, Date.UTC(p.year, p.month - 1, p.day) / 86_400_000)
+        : "normal";
     const highTide = tide === "high" || tide === "king";
 
     const angler = this.ctx.storage.sql
