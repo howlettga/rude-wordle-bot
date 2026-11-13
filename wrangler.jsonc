@@ -14,7 +14,8 @@
       { "name": "WORDLE_GOLF", "class_name": "WordleGolf" },
       { "name": "WORDLE_GOLF_REGISTRY", "class_name": "WordleGolfRegistry" },
       { "name": "STOCK_MARKET", "class_name": "StockMarket" },
-      { "name": "STOCK_MARKET_REGISTRY", "class_name": "StockMarketRegistry" }
+      { "name": "STOCK_MARKET_REGISTRY", "class_name": "StockMarketRegistry" },
+      { "name": "CHAT_PAUSE", "class_name": "ChatPause" }
     ]
   },
   "migrations": [
@@ -23,7 +24,8 @@
     { "tag": "v3", "new_sqlite_classes": ["WordleGolf"] },
     { "tag": "v4", "new_sqlite_classes": ["WordleGolfRegistry"] },
     { "tag": "v5", "new_sqlite_classes": ["StockMarket", "StockMarketRegistry"] },
-    { "tag": "v6", "new_sqlite_classes": ["BeanCounter"] }
+    { "tag": "v6", "new_sqlite_classes": ["BeanCounter"] },
+    { "tag": "v7", "new_sqlite_classes": ["ChatPause"] }
   ],
   // Cron Triggers always run in UTC (no timezone support), so all four drift an hour across DST — the
   // UTC hours below are tuned for EDT (summer); each lands an hour earlier once EST (winter) hits.

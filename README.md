@@ -182,6 +182,8 @@ Still real commands — grammY dispatches on `bot.command()` regardless of what'
 | `/setoptionsguard` | Owner-only: `on`/`off` toggle for the anti-pump guard (blocks trading shares of anyone you hold an option on) | Admin config, not gameplay |
 | `/stimulus` | Owner-only: `/stimulus <amount>` gives every active player in the market a flat cash injection | Destructive to game balance and owner-only, no reason to advertise it |
 | `/start` | Telegram's default entry point for a private chat — just replies "Fuck off big boi" | Not a real feature, just the obligatory handler |
+| `/stopmarket` | Owner-only: pauses the stock market and all ambient/easter-egg replies for this chat — Wordle Golf and the bean/been count keep working | Admin control, not gameplay |
+| `/startmarket` | Owner-only: undoes `/stopmarket` | Admin control, not gameplay |
 
 When adding a new command, put it in whichever list it belongs in — visible if a player should discover it via the `/` menu, invisible if it's admin-only or already implied by another command.
 

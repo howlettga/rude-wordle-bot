@@ -1,6 +1,7 @@
 import type { BeenCounter } from "./durable-objects/been-counter.js";
 import type { BeanCounter } from "./durable-objects/bean-counter.js";
 import type { SpankChain } from "./durable-objects/spank-chain.js";
+import type { ChatPause } from "./durable-objects/chat-pause.js";
 import type {
   WordleGolf,
   WordleGolfGame,
@@ -31,7 +32,8 @@ export class StorageService {
     private wordleGolfNs: DurableObjectNamespace<WordleGolf>,
     private wordleGolfRegistryNs: DurableObjectNamespace<WordleGolfRegistry>,
     private stockMarketNs: DurableObjectNamespace<StockMarket>,
-    private stockMarketRegistryNs: DurableObjectNamespace<StockMarketRegistry>
+    private stockMarketRegistryNs: DurableObjectNamespace<StockMarketRegistry>,
+    private chatPauseNs: DurableObjectNamespace<ChatPause>
   ) {}
 
   incrementBeenCounter(name: string, by: number = 1): Promise<number> {
@@ -293,5 +295,17 @@ export class StorageService {
 
   private stockMarketStub(chatId: number) {
     return this.stockMarketNs.get(this.stockMarketNs.idFromName(`stock_market_${chatId}`));
+  }
+
+  isChatPaused(chatId: number): Promise<boolean> {
+    return this.chatPauseStub(chatId).isPaused();
+  }
+
+  setChatPaused(chatId: number, paused: boolean): Promise<void> {
+    return this.chatPauseStub(chatId).setPaused(paused);
+  }
+
+  private chatPauseStub(chatId: number) {
+    return this.chatPauseNs.get(this.chatPauseNs.idFromName(`chat_pause_${chatId}`));
   }
 }

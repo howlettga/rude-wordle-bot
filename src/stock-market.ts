@@ -2,8 +2,9 @@ import { Composer, InlineKeyboard } from "grammy";
 import type { Api, Context, Filter, NextFunction } from "grammy";
 import { createConversation } from "@grammyjs/conversations";
 import type { Conversation } from "@grammyjs/conversations";
-import { type MyContext, replyToMessage, replyHTML, realReplyTo, isNotCommand, CONVERSATION_TIMEOUT_MS } from "./context.js";
+import { type MyContext, replyToMessage, replyInThread, replyHTML, realReplyTo, isNotCommand, CONVERSATION_TIMEOUT_MS } from "./context.js";
 import { random } from "./util.js";
+import { MARKET_INSTRUCTIONS } from "./replies.js";
 import type { StorageService } from "./storage-service.js";
 import type {
   StockMarketPlayer,
@@ -226,6 +227,10 @@ export class StockMarketComposer extends Composer<MyContext> {
     this.command("delist", (ctx) => this.handleRemoval(ctx, "delist"));
     this.command("reset", (ctx) => this.handleRemoval(ctx, "reset"));
     this.command("stimulus", (ctx) => this.handleStimulus(ctx));
+    this.command("marketrules", (ctx) => replyInThread(ctx, MARKET_INSTRUCTIONS));
+    this.command("restart", (ctx) => this.handleRestart(ctx));
+    this.command("setmarketthread", (ctx) => this.handleSetMarketThread(ctx));
+    this.command("setoptionsguard", (ctx) => this.handleSetOptionsGuard(ctx));
     this.callbackQuery(/^(delist|reset):(confirm|cancel):(\d+)$/, (ctx) => this.handleSelfRemovalCallback(ctx));
     this.on("message", (ctx, next) => this.trackActivity(ctx, next));
     this.on("message_reaction", (ctx) => this.trackReaction(ctx));
@@ -1375,11 +1380,68 @@ export class StockMarketComposer extends Composer<MyContext> {
     await this.sendMarketAnnouncement(ctx, random(STIMULUS_MESSAGES)(amount.toFixed(2), count, count === 1 ? "" : "s"));
   }
 
+  // Owner-only full wipe of this chat's stock market — every player, holding, and price event, gone.
+  // For clearing out an economy corrupted by a bug rather than correcting people one at a time, which
+  // /delist and /reset (above) already cover.
+  private async handleRestart(ctx: MyContext) {
+    if (this.ownerChatId === undefined || ctx.from?.id !== this.ownerChatId || !ctx.chat) {
+      return;
+    }
+
+    await this.storage.restartStockMarket(ctx.chat.id);
+    await replyToMessage(ctx, "The market has been reset. Everyone starts fresh from here.");
+  }
+
+  // Owner-only. Cron-driven market announcements (the trading-halt notice, and any future ones) default
+  // to the General topic / main chat since they're not a reply to anyone. Run this inside the topic you
+  // want them to land in instead — captures that topic's message_thread_id and stores it per chat.
+  // Running it outside any topic (e.g. in General) clears the preference back to the default.
+  private async handleSetMarketThread(ctx: MyContext) {
+    if (this.ownerChatId === undefined || ctx.from?.id !== this.ownerChatId || !ctx.chat) {
+      return;
+    }
+
+    const threadId = ctx.message?.message_thread_id ?? null;
+    await this.storage.setStockMarketAnnouncementThread(ctx.chat.id, threadId);
+    await replyToMessage(
+      ctx,
+      threadId !== null
+        ? "Market announcements will now be posted in this thread."
+        : "Market announcements will now be posted in the main chat."
+    );
+  }
+
+  // Owner-only, per-chat. Off by default — self-pumping your own option via a big buy order is
+  // deliberately allowed chaos (see TRADE_BASE_IMPACT_PCT above) — this is the escape hatch if it ever
+  // gets out of hand for a specific chat, not a permanent rule change.
+  private async handleSetOptionsGuard(ctx: MyContext) {
+    if (this.ownerChatId === undefined || ctx.from?.id !== this.ownerChatId || !ctx.chat) {
+      return;
+    }
+
+    const arg = String(ctx.match ?? "").trim().toLowerCase();
+    if (arg !== "on" && arg !== "off") {
+      await replyToMessage(ctx, "Usage: /setoptionsguard on|off");
+      return;
+    }
+
+    await this.storage.setStockMarketOptionsGuard(ctx.chat.id, arg === "on");
+    await replyToMessage(
+      ctx,
+      arg === "on"
+        ? "Anti-pump guard is ON — can't trade shares of anyone you're holding an open option on."
+        : "Anti-pump guard is OFF — pump away."
+    );
+  }
+
   /** Driven by main.ts's scheduled() handler — no Telegram messages to send, just storage mutations. */
 
   async runDailyDecay(): Promise<void> {
     const chatIds = await this.storage.listStockMarketChats();
     for (const chatId of chatIds) {
+      if (await this.storage.isChatPaused(chatId)) {
+        continue;
+      }
       await this.storage.applyStockMarketDailyDecay(chatId);
     }
   }
@@ -1387,6 +1449,9 @@ export class StockMarketComposer extends Composer<MyContext> {
   async runWeeklyAllowance(): Promise<void> {
     const chatIds = await this.storage.listStockMarketChats();
     for (const chatId of chatIds) {
+      if (await this.storage.isChatPaused(chatId)) {
+        continue;
+      }
       await this.storage.applyStockMarketWeeklyAllowance(chatId);
     }
   }
@@ -1410,6 +1475,9 @@ export class StockMarketComposer extends Composer<MyContext> {
   async runDailyHaltCheck(api: Api): Promise<void> {
     const chatIds = await this.storage.listStockMarketChats();
     for (const chatId of chatIds) {
+      if (await this.storage.isChatPaused(chatId)) {
+        continue;
+      }
       const halted = await this.storage.rollStockMarketHalt(chatId);
       if (!halted) {
         continue;
@@ -1431,6 +1499,9 @@ export class StockMarketComposer extends Composer<MyContext> {
   async runOptionsSettlement(api: Api): Promise<void> {
     const chatIds = await this.storage.listStockMarketChats();
     for (const chatId of chatIds) {
+      if (await this.storage.isChatPaused(chatId)) {
+        continue;
+      }
       const settlements = await this.storage.settleStockMarketOptions(chatId);
       if (settlements.length === 0) {
         continue;

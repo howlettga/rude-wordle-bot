@@ -1,7 +1,5 @@
 Bugfixes
 
-- wordle golf total - mulligan's are replacing points instead of missed days
-
 Features
 
 - Days-since counters — /dayssince Kyle got food poisoning at the airport. Have the cron post milestones unprompted: "It has been 100 days."

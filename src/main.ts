@@ -7,11 +7,12 @@ import { WordleGolf } from "./durable-objects/wordle-golf.js";
 import { WordleGolfRegistry } from "./durable-objects/wordle-golf-registry.js";
 import { StockMarket } from "./durable-objects/stock-market.js";
 import { StockMarketRegistry } from "./durable-objects/stock-market-registry.js";
+import { ChatPause } from "./durable-objects/chat-pause.js";
 import { StorageService } from "./storage-service.js";
 import { WordleGolfComposer } from "./wordle-golf.js";
 import { StockMarketComposer } from "./stock-market.js";
 
-export { BeenCounter, BeanCounter, SpankChain, WordleGolf, WordleGolfRegistry, StockMarket, StockMarketRegistry };
+export { BeenCounter, BeanCounter, SpankChain, WordleGolf, WordleGolfRegistry, StockMarket, StockMarketRegistry, ChatPause };
 
 // Must match wrangler.jsonc's triggers.crons exactly — that's what ScheduledController.cron is compared
 // against below to tell the daily sweep apart from the weekly one. 04:00 UTC = midnight ET during EDT
@@ -34,6 +35,7 @@ export interface Env {
   WORDLE_GOLF_REGISTRY: DurableObjectNamespace<WordleGolfRegistry>;
   STOCK_MARKET: DurableObjectNamespace<StockMarket>;
   STOCK_MARKET_REGISTRY: DurableObjectNamespace<StockMarketRegistry>;
+  CHAT_PAUSE: DurableObjectNamespace<ChatPause>;
   OWNER_CHAT_ID?: string;
 }
 
@@ -45,7 +47,8 @@ function buildStorage(env: Env): StorageService {
     env.WORDLE_GOLF,
     env.WORDLE_GOLF_REGISTRY,
     env.STOCK_MARKET,
-    env.STOCK_MARKET_REGISTRY
+    env.STOCK_MARKET_REGISTRY,
+    env.CHAT_PAUSE
   );
 }
 
