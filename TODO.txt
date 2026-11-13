@@ -10,7 +10,6 @@ Features
 - market events (random stories explaining massive stock changes)
 - less invasive chat (random money replies in-thread, no buy/sell replies, etc) - keep messages contained to primary thread
 - /featurerequest - ask for a bot feature
-- reply to beens mentioned with "how many beans?" to get the bean count
 
 Maybe
 - stock splitting
