@@ -173,12 +173,13 @@ export class PetComposer extends Composer<MyContext> {
         return;
       case "OVERFED":
       case "OK": {
-        // The pop-up first, so the tap feels instant — and one that stays until dismissed, since a toast
-        // vanishes before anyone can read it. Then the card catches up.
-        await ctx.answerCallbackQuery({ text: actionPopup(result.pet), show_alert: true });
+        // Card first, then the pop-up (one that stays until dismissed, since a toast vanishes before anyone
+        // can read it). The other order edits the card's buttons while the alert is open, and Telegram's
+        // mobile apps then leave those buttons dead after the alert is dismissed.
         await ctx
           .editMessageText(formatCard(result.pet), { parse_mode: "HTML", reply_markup: cardKeyboard(result.pet) })
           .catch((err) => console.error(err)); // e.g. "message is not modified"
+        await ctx.answerCallbackQuery({ text: actionPopup(result.pet), show_alert: true });
         // Everything else stays on the card, but throwing up, biting, and learning a trick go public.
         const kind = result.pet.lastAction!.kind;
         const shout =
