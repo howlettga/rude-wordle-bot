@@ -16,7 +16,11 @@ export interface PetStatus {
   food: number;
   mood: number;
   threadId: number | null;
+  // The most recent feed or pet (an overfeed counts), for the card's "who did what" line.
+  lastAction: { kind: PetAction; by: string } | null;
 }
+
+export type PetAction = "fed" | "petted" | "overfed";
 
 export interface PetEulogy {
   name: string;
@@ -80,6 +84,8 @@ type PetRow = {
   last_fed_at: number | null;
   last_petted_by: string | null;
   last_petted_at: number | null;
+  last_action: PetAction | null;
+  last_action_by: string | null;
   died_at: number | null;
   cause: PetDeathCause | null;
 };
@@ -98,45 +104,71 @@ const nowSec = () => Math.floor(Date.now() / 1000);
 export class Pet extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this.migrate();
+  }
+
+  // Same _schema_migrations approach as the StockMarket DO: CREATE TABLE IF NOT EXISTS is a no-op against
+  // an already-existing table, so later columns need real migrations.
+  private migrate(): void {
     this.ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS pets (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        species TEXT NOT NULL,
-        emoji TEXT NOT NULL,
-        rarity TEXT NOT NULL,
-        adopted_by_id INTEGER NOT NULL,
-        adopted_by_name TEXT NOT NULL,
-        adopted_at INTEGER NOT NULL,
-        thread_id INTEGER,
-        food REAL NOT NULL,
-        mood REAL NOT NULL,
-        updated_at INTEGER NOT NULL,
-        food_empty_since INTEGER,
-        mood_empty_since INTEGER,
-        frozen_at INTEGER,
-        warn_level INTEGER NOT NULL DEFAULT 0,
-        mood_warned INTEGER NOT NULL DEFAULT 0,
-        last_fed_by TEXT,
-        last_fed_at INTEGER,
-        last_petted_by TEXT,
-        last_petted_at INTEGER,
-        died_at INTEGER,
-        cause TEXT
+      CREATE TABLE IF NOT EXISTS _schema_migrations (
+        id INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
       )
     `);
-    this.ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS caretakers (
-        pet_id INTEGER NOT NULL REFERENCES pets(id),
-        user_id INTEGER NOT NULL,
-        first_name TEXT NOT NULL,
-        feeds INTEGER NOT NULL DEFAULT 0,
-        pets INTEGER NOT NULL DEFAULT 0,
-        last_fed_at INTEGER,
-        last_petted_at INTEGER,
-        PRIMARY KEY (pet_id, user_id)
-      )
-    `);
+    const version = this.ctx.storage.sql
+      .exec<{ version: number }>(`SELECT COALESCE(MAX(id), 0) as version FROM _schema_migrations`)
+      .one().version;
+
+    if (version < 1) {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS pets (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          species TEXT NOT NULL,
+          emoji TEXT NOT NULL,
+          rarity TEXT NOT NULL,
+          adopted_by_id INTEGER NOT NULL,
+          adopted_by_name TEXT NOT NULL,
+          adopted_at INTEGER NOT NULL,
+          thread_id INTEGER,
+          food REAL NOT NULL,
+          mood REAL NOT NULL,
+          updated_at INTEGER NOT NULL,
+          food_empty_since INTEGER,
+          mood_empty_since INTEGER,
+          frozen_at INTEGER,
+          warn_level INTEGER NOT NULL DEFAULT 0,
+          mood_warned INTEGER NOT NULL DEFAULT 0,
+          last_fed_by TEXT,
+          last_fed_at INTEGER,
+          last_petted_by TEXT,
+          last_petted_at INTEGER,
+          died_at INTEGER,
+          cause TEXT
+        )
+      `);
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS caretakers (
+          pet_id INTEGER NOT NULL REFERENCES pets(id),
+          user_id INTEGER NOT NULL,
+          first_name TEXT NOT NULL,
+          feeds INTEGER NOT NULL DEFAULT 0,
+          pets INTEGER NOT NULL DEFAULT 0,
+          last_fed_at INTEGER,
+          last_petted_at INTEGER,
+          PRIMARY KEY (pet_id, user_id)
+        )
+      `);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (1)`);
+    }
+
+    if (version < 2) {
+      // The most recent feed/pet, shown on the card so everyone can see who did what.
+      this.ctx.storage.sql.exec(`ALTER TABLE pets ADD COLUMN last_action TEXT`);
+      this.ctx.storage.sql.exec(`ALTER TABLE pets ADD COLUMN last_action_by TEXT`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (2)`);
+    }
   }
 
   async lookup(): Promise<PetLookup> {
@@ -220,7 +252,8 @@ export class Pet extends DurableObject<Env> {
     const updated = this.ctx.storage.sql
       .exec<PetRow>(
         `UPDATE pets SET food = ?, mood = ?, updated_at = ?, food_empty_since = ?, mood_empty_since = ?, warn_level = ?,
-           mood_warned = ?, last_fed_by = ?, last_fed_at = ?, last_petted_by = ?, last_petted_at = ?
+           mood_warned = ?, last_fed_by = ?, last_fed_at = ?, last_petted_by = ?, last_petted_at = ?, last_action = ?,
+           last_action_by = ?
          WHERE id = ?
          RETURNING *`,
         food,
@@ -235,6 +268,8 @@ export class Pet extends DurableObject<Env> {
         fed ? now : row.last_fed_at,
         fed ? row.last_petted_by : input.firstName,
         fed ? row.last_petted_at : now,
+        overfed ? "overfed" : fed ? "fed" : "petted",
+        input.firstName,
         row.id
       )
       .one();
@@ -339,7 +374,7 @@ export class Pet extends DurableObject<Env> {
     const revived = this.ctx.storage.sql
       .exec<PetRow>(
         `UPDATE pets SET died_at = NULL, cause = NULL, food = 100, mood = 100, updated_at = ?, food_empty_since = NULL,
-           mood_empty_since = NULL, frozen_at = NULL, warn_level = 0, mood_warned = 0
+           mood_empty_since = NULL, frozen_at = NULL, warn_level = 0, mood_warned = 0, last_action = NULL, last_action_by = NULL
          WHERE id = (SELECT id FROM pets WHERE died_at IS NOT NULL ORDER BY died_at DESC LIMIT 1)
          RETURNING *`,
         now
@@ -451,5 +486,6 @@ function toStatus(row: PetRow): PetStatus {
     food: row.food,
     mood: row.mood,
     threadId: row.thread_id,
+    lastAction: row.last_action && row.last_action_by ? { kind: row.last_action, by: row.last_action_by } : null,
   };
 }

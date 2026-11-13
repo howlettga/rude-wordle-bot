@@ -7,7 +7,7 @@ import type { StorageService } from "./storage-service.js";
 import type { PetEulogy, PetStatus, PetWarning } from "./durable-objects/pet.js";
 import { PET_CONFIG, rollSpecies } from "./pet-config.js";
 import { easternParts } from "./eastern-time.js";
-import { escapeHtml } from "./util.js";
+import { escapeHtml, random } from "./util.js";
 
 // The "pet" feature (see features.ts): one shared pet per chat, kept alive by everyone.
 //   /adopt      -> when there's no living pet: reveals a random animal, then asks the adopter to name it
@@ -163,15 +163,17 @@ export class PetComposer extends Composer<MyContext> {
         await ctx.answerCallbackQuery({ text: "That pet is no longer with us." });
         return;
       case "GONE":
-        await ctx.answerCallbackQuery({ text: "You're too late." });
+        await ctx.answerCallbackQuery({ text: "Too late." });
         await this.postEulogy(ctx.api, ctx.chat.id, result.eulogy);
         return;
       case "COOLDOWN":
+        // A pop-up that stays until dismissed, since it has a time in it worth reading. Toasts vanish fast.
         await ctx.answerCallbackQuery({
+          show_alert: true,
           text:
             action === "feed"
-              ? `${result.pet.name} isn't hungry for your food yet. Try again in ${formatDuration(result.retryInSeconds)}.`
-              : `${result.pet.name} needs some space from you. Try again in ${formatDuration(result.retryInSeconds)}.`,
+              ? `You fed ${result.pet.name} recently. You can feed again in ${formatDuration(result.retryInSeconds)}.`
+              : `You pet ${result.pet.name} recently. You can pet again in ${formatDuration(result.retryInSeconds)}.`,
         });
         return;
       case "OVERFED":
@@ -179,14 +181,16 @@ export class PetComposer extends Composer<MyContext> {
         await ctx
           .editMessageText(formatCard(result.pet), { parse_mode: "HTML", reply_markup: cardKeyboard(result.pet) })
           .catch((err) => console.error(err)); // e.g. "message is not modified" — the toast still goes out
-        await ctx.answerCallbackQuery({
-          text:
-            result.result === "OVERFED"
-              ? `${result.pet.name} was already full and threw up. Nice going.`
-              : action === "feed"
-                ? `You fed ${result.pet.name}. 🍖`
-                : `You pet ${result.pet.name}. 🤚`,
-        });
+        await ctx.answerCallbackQuery({ text: result.result === "OVERFED" ? "🤮 Gross." : action === "feed" ? "🍖 Fed!" : "🤚 Petted!" });
+        // Everything else stays on the card, but throwing up is worth a public shaming.
+        if (result.result === "OVERFED") {
+          const cardMessage = ctx.callbackQuery?.message;
+          await ctx.api.sendMessage(ctx.chat.id, overfedMessage(result.pet, ctx.from.first_name), {
+            parse_mode: "HTML",
+            ...(cardMessage && { reply_to_message_id: cardMessage.message_id }),
+            ...(cardMessage?.message_thread_id !== undefined && { message_thread_id: cardMessage.message_thread_id }),
+          });
+        }
         return;
     }
   }
@@ -307,7 +311,31 @@ function formatCard(pet: PetStatus): string {
     `💛 ${meterBar(pet.mood, "🟦")}`,
     `Mood ${Math.round(pet.mood)}%`,
     `<i>${moodLine(pet)}</i>`,
+    ...(pet.lastAction ? [lastActionLine(pet)] : []),
   ].join("\n");
+}
+
+function lastActionLine(pet: PetStatus): string {
+  const by = escapeHtml(pet.lastAction!.by);
+  const name = escapeHtml(pet.name);
+  switch (pet.lastAction!.kind) {
+    case "fed":
+      return `🍖 ${by} fed ${name}.`;
+    case "petted":
+      return `🤚 ${by} pet ${name}.`;
+    case "overfed":
+      return `🤮 ${by} overfed ${name}.`;
+  }
+}
+
+function overfedMessage(pet: PetStatus, by: string): string {
+  const name = `<b>${escapeHtml(pet.name)}</b>`;
+  const who = escapeHtml(by);
+  return random([
+    `🤮 ${who} fed ${name} when it was already full. ${name} threw up everywhere.`,
+    `🤮 ${name} threw up all over ${who}'s shoes. It was already full, ${who}.`,
+    `🤮 ${who} overfed ${name}. Someone get a mop.`,
+  ]);
 }
 
 // Telegram can't color text, so the bars are colored square emoji: 10 squares, one per 10%.
