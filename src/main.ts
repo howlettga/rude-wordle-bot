@@ -8,12 +8,13 @@ import { WordleGolfRegistry } from "./durable-objects/wordle-golf-registry.js";
 import { StockMarket } from "./durable-objects/stock-market.js";
 import { StockMarketRegistry } from "./durable-objects/stock-market-registry.js";
 import { ChatPause } from "./durable-objects/chat-pause.js";
+import { RudeMessages } from "./durable-objects/rude-messages.js";
 import { StorageService } from "./storage-service.js";
 import { WordleGolfComposer } from "./wordle-golf.js";
 import { StockMarketComposer } from "./stock-market.js";
 import { easternParts } from "./eastern-time.js";
 
-export { BeenCounter, BeanCounter, SpankChain, WordleGolf, WordleGolfRegistry, StockMarket, StockMarketRegistry, ChatPause };
+export { BeenCounter, BeanCounter, SpankChain, WordleGolf, WordleGolfRegistry, StockMarket, StockMarketRegistry, ChatPause, RudeMessages };
 
 // Cron Triggers are UTC-only, and every job here is scheduled in Eastern time, which shifts an hour
 // against UTC across DST. So wrangler.jsonc runs a single hourly trigger, and scheduled() below works out
@@ -37,6 +38,7 @@ export interface Env {
   STOCK_MARKET: DurableObjectNamespace<StockMarket>;
   STOCK_MARKET_REGISTRY: DurableObjectNamespace<StockMarketRegistry>;
   CHAT_PAUSE: DurableObjectNamespace<ChatPause>;
+  RUDE_MESSAGES: DurableObjectNamespace<RudeMessages>;
   OWNER_CHAT_ID?: string;
 }
 
@@ -49,7 +51,8 @@ function buildStorage(env: Env): StorageService {
     env.WORDLE_GOLF_REGISTRY,
     env.STOCK_MARKET,
     env.STOCK_MARKET_REGISTRY,
-    env.CHAT_PAUSE
+    env.CHAT_PAUSE,
+    env.RUDE_MESSAGES
   );
 }
 

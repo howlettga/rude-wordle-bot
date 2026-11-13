@@ -1,22 +1,21 @@
-import { Bot, Composer, InputFile, webhookCallback } from "grammy";
+import { Bot, Composer, webhookCallback } from "grammy";
 import type { UserFromGetMe } from "grammy/types";
 import { conversations } from "@grammyjs/conversations";
 import type { ConversationData, VersionedState, VersionedStateStorage } from "@grammyjs/conversations";
-import { random } from "./util.js";
 import type { StorageService } from "./storage-service.js";
-import { type MyContext, replyToMessage, replyPhoto } from "./context.js";
+import { type MyContext, replyToMessage } from "./context.js";
+import { FEATURES, type FeatureFlags, type FeatureKey, resolveFeatures } from "./features.js";
+import { FeatureControlComposer } from "./feature-control.js";
 import { WordleGolfComposer } from "./wordle-golf.js";
 import { StockMarketComposer } from "./stock-market.js";
-import { RudeComposer } from "./rude.js";
-import beenMentionedPhoto from "../assets/beens_mentioned.jpg";
-import beenMentionedPhoto2 from "../assets/beens_mentioned_2.jpg";
-
-const BEEN_PHOTOS = [beenMentionedPhoto, beenMentionedPhoto2];
+import { BeanCounterComposer } from "./beans.js";
+import { SpicyComposer, EasterEggComposer, RepliesComposer } from "./rude.js";
 
 export class RudeBot {
   private bot: Bot<MyContext>;
   private ownerChatId: number | undefined;
   private storage: StorageService;
+  private featureLookups = new WeakMap<MyContext, Promise<FeatureFlags>>();
 
   constructor(token: string, botInfo: UserFromGetMe, storage: StorageService, ownerChatId?: number) {
     this.bot = new Bot<MyContext>(token, { botInfo });
@@ -25,51 +24,59 @@ export class RudeBot {
 
     this.registerErrorHandler();
 
-    // Always-on, regardless of pause state: Wordle Golf, and the pause toggle itself (see
-    // registerPauseControl). Registered before the gate below, so these never pay the cost of checking it.
+    // Core, never switchable: the conversations plugin (Wordle and market dialogues both run on it), and
+    // /features itself, which has to sit ahead of every gate so it can never switch off its own controls.
     this.bot.use(conversations({ storage: this.conversationStorage() }));
-    this.bot.use(new WordleGolfComposer(this.storage));
-    this.registerPauseControl();
+    this.bot.use(new FeatureControlComposer(this.storage, ownerChatId));
 
-    // Gated as a unit: /stopmarket makes an entire composer stop responding for that chat, without
-    // touching any of its stored state. The stock market and rude composers are gated separately because
-    // they sit on either side of the always-on handlers below — the market has to see every message
-    // first (activity tracking), and the rude replies have to come last so they never swallow a mention
-    // forward or a been/bean count. isChatActive memoizes per update, so anything that reaches both gates
-    // still costs only one Durable Object read. Anything resolved above (Wordle, /startmarket,
-    // /stopmarket) never pays for it at all.
-    const pauseLookups = new WeakMap<MyContext, Promise<boolean>>();
-    const isChatActive = async (ctx: MyContext) => {
-      if (!ctx.chat) {
-        return true;
-      }
-      let paused = pauseLookups.get(ctx);
-      if (!paused) {
-        paused = this.storage.isChatPaused(ctx.chat.id);
-        pauseLookups.set(ctx, paused);
-      }
-      return !(await paused);
-    };
-
-    this.bot.branch(isChatActive, new StockMarketComposer(this.storage, ownerChatId), this.pausedMarket());
+    // Handler order matters: whichever handler answers first without calling next() ends the update. The
+    // market has to see every message early (activity tracking always calls next()); the been/bean counter
+    // swallows its words before the rude composers can; and the rude composers come last so an easter egg
+    // never swallows a mention forward or a count.
+    this.gate("wordle", new WordleGolfComposer(this.storage), /^wordle_/);
+    this.gate("market", new StockMarketComposer(this.storage, ownerChatId), /^(buy|sell|delist|reset|option_\w+):/);
 
     this.registerStart();
     this.registerMentionForwarding();
     this.registerPollForwarding();
-    this.registerBeenCounter();
 
-    this.bot.filter(isChatActive, new RudeComposer(this.storage, botInfo));
+    this.gate("beans", new BeanCounterComposer(this.storage));
+    const features = (ctx: MyContext) => this.features(ctx);
+    this.gate("spicy", new SpicyComposer(this.storage, botInfo, features));
+    this.gate("eastereggs", new EasterEggComposer(this.storage, botInfo, features));
+    this.gate("replies", new RepliesComposer(this.storage, botInfo, features));
   }
 
-  // Stands in for StockMarketComposer while a chat is paused. Buttons sent before /stopmarket (the
-  // buy/sell and options pickers, delist/reset confirms) can still be tapped afterwards — answer them so
-  // Telegram doesn't leave a spinner on the button until it times out. Everything else passes through.
-  private pausedMarket() {
-    const composer = new Composer<MyContext>();
-    composer.callbackQuery(/^(buy|sell|delist|reset|option_\w+):/, (ctx) =>
-      ctx.answerCallbackQuery({ text: "The market is paused right now." })
-    );
-    return composer;
+  // This chat's feature switches, loaded at most once per update no matter how many gates (or handlers,
+  // like the spicy-aware easter eggs) ask — one Durable Object read per message, the same cost the old
+  // single pause flag had. Lazy, so anything resolved before the first gate never pays for it.
+  private features(ctx: MyContext): Promise<FeatureFlags> {
+    if (!ctx.chat) {
+      return Promise.resolve(resolveFeatures([]));
+    }
+    let lookup = this.featureLookups.get(ctx);
+    if (!lookup) {
+      lookup = this.storage.getChatFeatures(ctx.chat.id);
+      this.featureLookups.set(ctx, lookup);
+    }
+    return lookup;
+  }
+
+  // Runs `composer` only in chats where `key` is switched on. Switching a feature off never touches its
+  // stored state — flipping it back on picks up exactly where it left off. staleButtons matches the
+  // feature's inline-keyboard callback data: buttons sent before it was switched off can still be tapped,
+  // so they get a short notice instead of a spinner stuck until Telegram times out.
+  private gate(key: FeatureKey, composer: Composer<MyContext>, staleButtons?: RegExp) {
+    const enabled = async (ctx: MyContext) => (await this.features(ctx))[key].enabled;
+    if (!staleButtons) {
+      this.bot.filter(enabled, composer);
+      return;
+    }
+
+    const label = FEATURES.find((feature) => feature.key === key)!.label;
+    const off = new Composer<MyContext>();
+    off.callbackQuery(staleButtons, (ctx) => ctx.answerCallbackQuery({ text: `${label} is turned off in this chat.` }));
+    this.bot.branch(enabled, composer, off);
   }
 
   // The Worker rebuilds the Bot instance on every request, so the conversations plugin's default
@@ -118,37 +125,10 @@ export class RudeBot {
     this.bot.command("start", (ctx) => ctx.reply("Fuck off big boi"));
   }
 
-  // Owner-only. /stopmarket silences the stock market and every ambient/rude reply (see the RudeComposer
-  // and StockMarketComposer filter above) for this chat — everything except Wordle Golf and the bean/been
-  // counter. /startmarket undoes it. Registered directly on the bot (not inside a composer) since it's
-  // the control plane for the gate itself and must never be blocked by its own flag.
-  private registerPauseControl() {
-    this.bot.command("stopmarket", async (ctx) => {
-      if (this.ownerChatId === undefined || ctx.from?.id !== this.ownerChatId || !ctx.chat) {
-        return;
-      }
-
-      await this.storage.setChatPaused(ctx.chat.id, true);
-      await replyToMessage(
-        ctx,
-        "Paused. Wordle and the been/bean count still work — everything else is quiet until /startmarket."
-      );
-    });
-
-    this.bot.command("startmarket", async (ctx) => {
-      if (this.ownerChatId === undefined || ctx.from?.id !== this.ownerChatId || !ctx.chat) {
-        return;
-      }
-
-      await this.storage.setChatPaused(ctx.chat.id, false);
-      await replyToMessage(ctx, "Unpaused. Back to normal.");
-    });
-  }
-
   // Forwards any message mentioning @howlettga to the owner's DM. Requires ownerChatId to be set, and
   // requires the owner to have started a private chat with the bot at least once (Telegram won't let a
   // bot DM someone cold). Always calls next() so this never swallows an update from the been counter or
-  // the RudeComposer easter eggs registered after it.
+  // the rude composers registered after it.
   // Telegram refuses to forward some messages outright (forum-topic system messages like "X started the
   // topic", content-protected chats, etc.) — that's routine, not a bug, so failures here are caught and
   // skipped quietly rather than thrown: nobody in the chat asked for this forward, so surfacing an error
@@ -186,26 +166,6 @@ export class RudeBot {
         }
       }
       await next();
-    });
-  }
-
-  // "been"/"beens" increments the tally silently — the word is common enough in normal chat that
-  // replying every time would be spammy. Saying "bean"/"beans" instead (a nod to the bot's name)
-  // triggers the announcement below, reporting the current tally without bumping it further.
-  private registerBeenCounter() {
-    this.bot.hears(/(?<!@)\bbeens?\b/i, async (ctx) => {
-      const occurrences = ctx.message?.text?.match(/(?<!@)\bbeens?\b/gi)?.length ?? 1;
-      await this.storage.incrementBeenCounter(`been_counter_${ctx.chat.id}`, occurrences);
-    });
-
-    this.bot.hears(/(?<!@)\bbeans?\b/i, async (ctx) => {
-      const occurrences = ctx.message?.text?.match(/(?<!@)\bbeans?\b/gi)?.length ?? 1;
-      const [beenCount] = await Promise.all([
-        this.storage.incrementBeenCounter(`been_counter_${ctx.chat.id}`, 0),
-        this.storage.incrementBeanCounter(`bean_counter_${ctx.chat.id}`, occurrences),
-      ]);
-      const photo = new InputFile(new Uint8Array(random(BEEN_PHOTOS)), "beens_mentioned.jpg");
-      await replyPhoto(ctx, photo, `Been count: <b>${beenCount}</b>`);
     });
   }
 }
