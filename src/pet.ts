@@ -190,15 +190,32 @@ export class PetComposer extends Composer<MyContext> {
                 ? `🎓 ${escapeHtml(ctx.from.first_name)} taught <b>${escapeHtml(result.pet.name)}</b> a new trick: <b>${trickTitle(result.pet.lastAction!.trick)}</b>!`
                 : null;
         if (shout) {
-          const cardMessage = ctx.callbackQuery?.message;
-          await ctx.api.sendMessage(ctx.chat.id, shout, {
-            parse_mode: "HTML",
-            ...(cardMessage && { reply_to_message_id: cardMessage.message_id }),
-            ...(cardMessage?.message_thread_id !== undefined && { message_thread_id: cardMessage.message_thread_id }),
-          });
+          await this.postShout(ctx, result.pet, shout);
         }
         return;
       }
+    }
+  }
+
+  // Replies to the card the button was on, quoting just the pet's title, so the reply preview shows
+  // "Bingo the rabbit 🐇" rather than however much of the whole card fits on a wide screen. Telegram
+  // rejects a quote that isn't exact text from that message; if it ever does, post plainly into the same
+  // topic instead, so the message itself never gets lost.
+  private async postShout(ctx: MyContext, pet: PetStatus, text: string) {
+    const card = ctx.callbackQuery?.message;
+    if (!ctx.chat || !card) {
+      return;
+    }
+    const thread = card.message_thread_id !== undefined ? { message_thread_id: card.message_thread_id } : {};
+    try {
+      await ctx.api.sendMessage(ctx.chat.id, text, {
+        parse_mode: "HTML",
+        reply_parameters: { message_id: card.message_id, quote: `${pet.name} the ${pet.species} ${pet.emoji}` },
+        ...thread,
+      });
+    } catch (err) {
+      console.error(err);
+      await ctx.api.sendMessage(ctx.chat.id, text, { parse_mode: "HTML", ...thread });
     }
   }
 
