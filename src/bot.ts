@@ -1,4 +1,4 @@
-import { Bot, InputFile, webhookCallback } from "grammy";
+import { Bot, Composer, InputFile, webhookCallback } from "grammy";
 import type { UserFromGetMe } from "grammy/types";
 import { conversations } from "@grammyjs/conversations";
 import type { ConversationData, VersionedState, VersionedStateStorage } from "@grammyjs/conversations";
@@ -32,17 +32,44 @@ export class RudeBot {
     this.registerPauseControl();
 
     // Gated as a unit: /stopmarket makes an entire composer stop responding for that chat, without
-    // touching any of its stored state. isChatActive is the only extra work a paused-off command pays
-    // for — one Durable Object read — since anything above (Wordle, /startmarket, /stopmarket) already
-    // resolved the update before this predicate ever runs.
-    const isChatActive = async (ctx: MyContext) => !ctx.chat || !(await this.storage.isChatPaused(ctx.chat.id));
-    this.bot.filter(isChatActive, new StockMarketComposer(this.storage, ownerChatId));
-    this.bot.filter(isChatActive, new RudeComposer(this.storage, botInfo));
+    // touching any of its stored state. The stock market and rude composers are gated separately because
+    // they sit on either side of the always-on handlers below — the market has to see every message
+    // first (activity tracking), and the rude replies have to come last so they never swallow a mention
+    // forward or a been/bean count. isChatActive memoizes per update, so anything that reaches both gates
+    // still costs only one Durable Object read. Anything resolved above (Wordle, /startmarket,
+    // /stopmarket) never pays for it at all.
+    const pauseLookups = new WeakMap<MyContext, Promise<boolean>>();
+    const isChatActive = async (ctx: MyContext) => {
+      if (!ctx.chat) {
+        return true;
+      }
+      let paused = pauseLookups.get(ctx);
+      if (!paused) {
+        paused = this.storage.isChatPaused(ctx.chat.id);
+        pauseLookups.set(ctx, paused);
+      }
+      return !(await paused);
+    };
+
+    this.bot.branch(isChatActive, new StockMarketComposer(this.storage, ownerChatId), this.pausedMarket());
 
     this.registerStart();
     this.registerMentionForwarding();
     this.registerPollForwarding();
     this.registerBeenCounter();
+
+    this.bot.filter(isChatActive, new RudeComposer(this.storage, botInfo));
+  }
+
+  // Stands in for StockMarketComposer while a chat is paused. Buttons sent before /stopmarket (the
+  // buy/sell and options pickers, delist/reset confirms) can still be tapped afterwards — answer them so
+  // Telegram doesn't leave a spinner on the button until it times out. Everything else passes through.
+  private pausedMarket() {
+    const composer = new Composer<MyContext>();
+    composer.callbackQuery(/^(buy|sell|delist|reset|option_\w+):/, (ctx) =>
+      ctx.answerCallbackQuery({ text: "The market is paused right now." })
+    );
+    return composer;
   }
 
   // The Worker rebuilds the Bot instance on every request, so the conversations plugin's default
@@ -120,7 +147,8 @@ export class RudeBot {
 
   // Forwards any message mentioning @howlettga to the owner's DM. Requires ownerChatId to be set, and
   // requires the owner to have started a private chat with the bot at least once (Telegram won't let a
-  // bot DM someone cold). Always calls next() so this never swallows an update from the easter eggs below.
+  // bot DM someone cold). Always calls next() so this never swallows an update from the been counter or
+  // the RudeComposer easter eggs registered after it.
   // Telegram refuses to forward some messages outright (forum-topic system messages like "X started the
   // topic", content-protected chats, etc.) — that's routine, not a bug, so failures here are caught and
   // skipped quietly rather than thrown: nobody in the chat asked for this forward, so surfacing an error
