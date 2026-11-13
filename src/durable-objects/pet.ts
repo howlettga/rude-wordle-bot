@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../main.js";
-import { PET_CONFIG, PET_FOODS, rollPlayOutcome, type PetRarity, type PlayOutcome } from "../pet-config.js";
+import { PET_CONFIG, PET_FOODS, PET_TRICKS, rollPlayOutcome, type PetRarity, type PlayOutcome } from "../pet-config.js";
 import { advanceMeters, petFate, type PetMeters } from "../pet-math.js";
 
 export type PetDeathCause = "starved" | "ran_away" | "put_down";
@@ -16,9 +16,11 @@ export interface PetStatus {
   food: number;
   mood: number;
   threadId: number | null;
-  // The most recent feed or pet (an overfeed counts), for the card's "who did what" line. food is the
-  // random PET_FOODS emoji a feed turned out to be, stored so the card shows the same one every time.
-  lastAction: { kind: PetAction; by: string; food: string | null } | null;
+  // The most recent feed, pet, or play outcome, for the card's "who did what" line. food is the random
+  // PET_FOODS emoji a feed turned out to be, and trick the PET_TRICKS name a play learned or showed off —
+  // both stored so the card shows the same thing every time.
+  lastAction: { kind: PetAction; by: string; food: string | null; trick: string | null } | null;
+  tricksKnown: number;
 }
 
 // What a button press turned into: a feed (or an overfeed), a pet, or one of the random Play outcomes.
@@ -39,6 +41,7 @@ export interface PetEulogy {
   lastPettedAt: number | null;
   onlyPetted: string[]; // petted it, never fed it
   onlyFed: string[]; // fed it, never petted it
+  tricksKnown: number;
 }
 
 export type PetWarning = { type: "hungry" } | { type: "starving" } | { type: "dying"; hoursLeft: number } | { type: "miserable" };
@@ -62,6 +65,7 @@ export interface PetGraveyardEntry {
   adoptedAt: number;
   diedAt: number;
   cause: PetDeathCause;
+  tricksKnown: number;
 }
 
 type PetRow = {
@@ -90,6 +94,7 @@ type PetRow = {
   last_action: PetAction | null;
   last_action_by: string | null;
   last_action_food: string | null;
+  last_action_trick: string | null;
   died_at: number | null;
   cause: PetDeathCause | null;
 };
@@ -185,11 +190,26 @@ export class Pet extends DurableObject<Env> {
       this.ctx.storage.sql.exec(`ALTER TABLE caretakers ADD COLUMN last_played_at INTEGER`);
       this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (4)`);
     }
+
+    if (version < 5) {
+      // Tricks learned through 🎾 Play (see PET_TRICKS).
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE pet_tricks (
+          pet_id INTEGER NOT NULL REFERENCES pets(id),
+          trick TEXT NOT NULL,
+          taught_by TEXT NOT NULL,
+          learned_at INTEGER NOT NULL,
+          PRIMARY KEY (pet_id, trick)
+        )
+      `);
+      this.ctx.storage.sql.exec(`ALTER TABLE pets ADD COLUMN last_action_trick TEXT`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (5)`);
+    }
   }
 
   async lookup(): Promise<PetLookup> {
     const { row, eulogy } = this.settle(nowSec());
-    return { pet: row ? toStatus(row) : null, ...(eulogy && { eulogy }) };
+    return { pet: row ? this.status(row) : null, ...(eulogy && { eulogy }) };
   }
 
   // Fails if a living pet already exists — two people finishing /adopt at once can't both get one.
@@ -205,7 +225,7 @@ export class Pet extends DurableObject<Env> {
     const now = nowSec();
     const { row, eulogy } = this.settle(now);
     if (row) {
-      return { ok: false, type: "ALREADY_HAS_PET", pet: toStatus(row) };
+      return { ok: false, type: "ALREADY_HAS_PET", pet: this.status(row) };
     }
 
     const inserted = this.ctx.storage.sql
@@ -224,7 +244,7 @@ export class Pet extends DurableObject<Env> {
         now
       )
       .one();
-    return { ok: true, pet: toStatus(inserted), ...(eulogy && { eulogy }) };
+    return { ok: true, pet: this.status(inserted), ...(eulogy && { eulogy }) };
   }
 
   async interact(input: { petId: number; action: PetInput; userId: number; firstName: string }): Promise<PetInteractResult> {
@@ -251,12 +271,13 @@ export class Pet extends DurableObject<Env> {
       play: PET_CONFIG.PLAY_COOLDOWN_HOURS,
     }[input.action];
     if (last != null && now - last < cooldownHours * 3600) {
-      return { result: "COOLDOWN", pet: toStatus(row), retryInSeconds: last + cooldownHours * 3600 - now };
+      return { result: "COOLDOWN", pet: this.status(row), retryInSeconds: last + cooldownHours * 3600 - now };
     }
 
     let food = row.food;
     let mood = row.mood;
     let kind: PetAction;
+    let trick: string | null = null;
     if (input.action === "feed") {
       if (food >= PET_CONFIG.OVERFED_AT) {
         kind = "overfed";
@@ -269,10 +290,24 @@ export class Pet extends DurableObject<Env> {
       kind = "petted";
       mood += PET_CONFIG.PET_AMOUNT;
     } else {
-      const outcome = rollPlayOutcome();
+      const known = this.knownTricks(row.id);
+      const outcome = rollPlayOutcome({ learn: known.length < PET_TRICKS.length, showOff: known.length > 0 });
       kind = outcome.kind;
       food += outcome.food;
       mood += outcome.mood;
+      if (kind === "learned") {
+        const unknown = PET_TRICKS.map((t) => t.name).filter((name) => !known.includes(name));
+        trick = unknown[Math.floor(Math.random() * unknown.length)]!;
+        this.ctx.storage.sql.exec(
+          `INSERT INTO pet_tricks (pet_id, trick, taught_by, learned_at) VALUES (?, ?, ?, ?)`,
+          row.id,
+          trick,
+          input.firstName,
+          now
+        );
+      } else if (kind === "trick") {
+        trick = known[Math.floor(Math.random() * known.length)]!;
+      }
     }
     food = Math.max(0, Math.min(100, food));
     mood = Math.max(0, Math.min(100, mood));
@@ -283,7 +318,7 @@ export class Pet extends DurableObject<Env> {
       .exec<PetRow>(
         `UPDATE pets SET food = ?, mood = ?, updated_at = ?, food_empty_since = ?, mood_empty_since = ?, warn_level = ?,
            mood_warned = ?, last_fed_by = ?, last_fed_at = ?, last_petted_by = ?, last_petted_at = ?, last_action = ?,
-           last_action_by = ?, last_action_food = ?
+           last_action_by = ?, last_action_food = ?, last_action_trick = ?
          WHERE id = ?
          RETURNING *`,
         food,
@@ -301,6 +336,7 @@ export class Pet extends DurableObject<Env> {
         kind,
         input.firstName,
         fed ? PET_FOODS[Math.floor(Math.random() * PET_FOODS.length)]! : null,
+        trick,
         row.id
       )
       .one();
@@ -327,7 +363,7 @@ export class Pet extends DurableObject<Env> {
       input.action === "play" ? now : null
     );
 
-    return { result: kind === "overfed" ? "OVERFED" : "OK", pet: toStatus(updated) };
+    return { result: kind === "overfed" ? "OVERFED" : "OK", pet: this.status(updated) };
   }
 
   // The hourly check (see PetComposer.runHourlyCheck). Settles the pet — which is where deaths get
@@ -362,7 +398,7 @@ export class Pet extends DurableObject<Env> {
     if (warnLevel !== row.warn_level || moodWarned !== row.mood_warned) {
       this.ctx.storage.sql.exec(`UPDATE pets SET warn_level = ?, mood_warned = ? WHERE id = ?`, warnLevel, moodWarned, row.id);
     }
-    return { pet: toStatus(row), warnings };
+    return { pet: this.status(row), warnings };
   }
 
   // Called by the hourly check while the "pet" feature is switched off in this chat: stops the clock, so
@@ -385,6 +421,7 @@ export class Pet extends DurableObject<Env> {
         adoptedAt: row.adopted_at,
         diedAt: row.died_at!,
         cause: row.cause!,
+        tricksKnown: this.knownTricks(row.id).length,
       }));
   }
 
@@ -410,13 +447,13 @@ export class Pet extends DurableObject<Env> {
       .exec<PetRow>(
         `UPDATE pets SET died_at = NULL, cause = NULL, food = 100, mood = 100, updated_at = ?, food_empty_since = NULL,
            mood_empty_since = NULL, frozen_at = NULL, warn_level = 0, mood_warned = 0, last_action = NULL, last_action_by = NULL,
-           last_action_food = NULL
+           last_action_food = NULL, last_action_trick = NULL
          WHERE id = (SELECT id FROM pets WHERE died_at IS NOT NULL ORDER BY died_at DESC LIMIT 1)
          RETURNING *`,
         now
       )
       .toArray()[0];
-    return revived ? toStatus(revived) : null;
+    return revived ? this.status(revived) : null;
   }
 
   // Brings the living pet's meters up to `now`, thawing it first if the hourly check froze it. If it
@@ -493,7 +530,19 @@ export class Pet extends DurableObject<Env> {
       lastPettedAt: row.last_petted_at,
       onlyPetted: caretakers.filter((c) => c.feeds === 0 && c.pets > 0).map((c) => c.first_name),
       onlyFed: caretakers.filter((c) => c.pets === 0 && c.feeds > 0).map((c) => c.first_name),
+      tricksKnown: this.knownTricks(petId).length,
     };
+  }
+
+  private knownTricks(petId: number): string[] {
+    return this.ctx.storage.sql
+      .exec<{ trick: string }>(`SELECT trick FROM pet_tricks WHERE pet_id = ?`, petId)
+      .toArray()
+      .map((row) => row.trick);
+  }
+
+  private status(row: PetRow): PetStatus {
+    return toStatusRow(row, this.knownTricks(row.id).length);
   }
 }
 
@@ -510,7 +559,7 @@ function warnLevelFor(food: number): number {
   return WARN_NONE;
 }
 
-function toStatus(row: PetRow): PetStatus {
+function toStatusRow(row: PetRow, tricksKnown: number): PetStatus {
   return {
     id: row.id,
     name: row.name,
@@ -523,6 +572,9 @@ function toStatus(row: PetRow): PetStatus {
     mood: row.mood,
     threadId: row.thread_id,
     lastAction:
-      row.last_action && row.last_action_by ? { kind: row.last_action, by: row.last_action_by, food: row.last_action_food } : null,
+      row.last_action && row.last_action_by
+        ? { kind: row.last_action, by: row.last_action_by, food: row.last_action_food, trick: row.last_action_trick }
+        : null,
+    tricksKnown,
   };
 }

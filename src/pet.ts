@@ -5,7 +5,7 @@ import type { Conversation } from "@grammyjs/conversations";
 import { type MyContext, replyToMessage, replyHTML, isNotCommand, CONVERSATION_TIMEOUT_MS } from "./context.js";
 import type { StorageService } from "./storage-service.js";
 import type { PetAction, PetEulogy, PetInput, PetStatus, PetWarning } from "./durable-objects/pet.js";
-import { PET_CONFIG, rollSpecies } from "./pet-config.js";
+import { PET_CONFIG, PET_TRICKS, rollSpecies } from "./pet-config.js";
 import { easternParts } from "./eastern-time.js";
 import { escapeHtml, random } from "./util.js";
 
@@ -172,23 +172,33 @@ export class PetComposer extends Composer<MyContext> {
         await ctx.answerCallbackQuery({ text: cooldownMessage(result.pet.name, action), show_alert: true });
         return;
       case "OVERFED":
-      case "OK":
+      case "OK": {
+        // The pop-up first, so the tap feels instant — and one that stays until dismissed, since a toast
+        // vanishes before anyone can read it. Then the card catches up.
+        await ctx.answerCallbackQuery({ text: actionPopup(result.pet), show_alert: true });
         await ctx
           .editMessageText(formatCard(result.pet), { parse_mode: "HTML", reply_markup: cardKeyboard(result.pet) })
-          .catch((err) => console.error(err)); // e.g. "message is not modified" — the toast still goes out
+          .catch((err) => console.error(err)); // e.g. "message is not modified"
+        // Everything else stays on the card, but throwing up, biting, and learning a trick go public.
         const kind = result.pet.lastAction!.kind;
-        await ctx.answerCallbackQuery({ text: ACTION_TOASTS[kind] });
-        // Everything else stays on the card, but throwing up and biting are worth a public shaming.
-        const shame = kind === "overfed" ? overfedMessage(result.pet, ctx.from.first_name) : kind === "bit" ? bitMessage(result.pet, ctx.from.first_name) : null;
-        if (shame) {
+        const shout =
+          kind === "overfed"
+            ? overfedMessage(result.pet, ctx.from.first_name)
+            : kind === "bit"
+              ? bitMessage(result.pet, ctx.from.first_name)
+              : kind === "learned"
+                ? `🎓 ${escapeHtml(ctx.from.first_name)} taught <b>${escapeHtml(result.pet.name)}</b> a new trick: <b>${trickTitle(result.pet.lastAction!.trick)}</b>!`
+                : null;
+        if (shout) {
           const cardMessage = ctx.callbackQuery?.message;
-          await ctx.api.sendMessage(ctx.chat.id, shame, {
+          await ctx.api.sendMessage(ctx.chat.id, shout, {
             parse_mode: "HTML",
             ...(cardMessage && { reply_to_message_id: cardMessage.message_id }),
             ...(cardMessage?.message_thread_id !== undefined && { message_thread_id: cardMessage.message_thread_id }),
           });
         }
         return;
+      }
     }
   }
 
@@ -204,7 +214,8 @@ export class PetComposer extends Composer<MyContext> {
     const lines = entries.map(
       (e) =>
         `${e.emoji} <b>${escapeHtml(e.name)}</b> the ${e.species} — ${formatDate(e.adoptedAt)} to ${formatDate(e.diedAt)} ` +
-        `(${formatLifespan(e.diedAt - e.adoptedAt)}), ${CAUSE_LABELS[e.cause]}`
+        `(${formatLifespan(e.diedAt - e.adoptedAt)}), ${CAUSE_LABELS[e.cause]}` +
+        (e.tricksKnown > 0 ? `, knew ${pluralTricks(e.tricksKnown)}` : "")
     );
     await replyHTML(ctx, [`🪦 <b>Graveyard</b>`, ``, ...lines].join("\n"));
   }
@@ -298,16 +309,30 @@ function cardKeyboard(pet: PetStatus): InlineKeyboard {
     .text("🎾 Play", `pet:play:${pet.id}`);
 }
 
-// The tapper's private pop-up for each outcome — kept to a word or two, since toasts vanish fast.
-const ACTION_TOASTS: Record<PetAction, string> = {
-  fed: "🍖 Fed!",
-  petted: "🤚 Petted!",
-  overfed: "🤮 Gross.",
-  zoomies: "💨 Zoomies!",
-  fetch: "🎾 Fetch!",
-  bored: "🥱 Bored.",
-  bit: "🦷 Ouch!",
-};
+// The tapper's own pop-up, in second person. Plain text: Telegram pop-ups don't render HTML.
+function actionPopup(pet: PetStatus): string {
+  const { kind, food, trick } = pet.lastAction!;
+  const name = pet.name;
+  const popups: Record<PetAction, () => string> = {
+    fed: () => `${food ?? "🍖"} You fed ${name}!`,
+    petted: () => `🤚 You pet ${name}!`,
+    overfed: () => `🤮 ${name} was already full and threw up on you!`,
+    zoomies: () => `💨 ${name} zoomZoom'd with you!`,
+    fetch: () => `🎾 ${name} played fetch with you!`,
+    bored: () => `🥱 ${name} ignored you!`,
+    bit: () => `🦷 ${name} bit you!`,
+    learned: () => `🎓 You taught ${name} a new trick: ${trickTitle(trick)}!`,
+    trick: () => `🪄 ${trickLine(trick, name, "you", "your")}`,
+  };
+  return popups[kind]();
+}
+
+// A PET_TRICKS line with the names filled in. A trick that's since been removed from the list still
+// gets a generic line.
+function trickLine(trick: string | null, pet: string, person: string, possessive: string): string {
+  const template = PET_TRICKS.find((t) => t.name === trick)?.line ?? "{pet} did a trick for {person}.";
+  return template.replace("{pet}", pet).replace("{person's}", possessive).replace("{person}", person);
+}
 
 function formatCard(pet: PetStatus): string {
   const rarity = pet.rarity === "ultra" ? " 🌟" : pet.rarity === "rare" ? " ✨" : "";
@@ -320,12 +345,13 @@ function formatCard(pet: PetStatus): string {
     `Food ${Math.round(pet.food)}%`,
     `💛 ${meterBar(pet.mood, "🟦")}`,
     `Mood ${Math.round(pet.mood)}%`,
+    ...(pet.tricksKnown > 0 ? [`🎓 Knows ${pluralTricks(pet.tricksKnown)}`] : []),
     ...(pet.lastAction ? [lastActionLine(pet)] : []),
   ].join("\n");
 }
 
 function lastActionLine(pet: PetStatus): string {
-  const { kind, by, food } = pet.lastAction!;
+  const { kind, by, food, trick } = pet.lastAction!;
   const who = escapeHtml(by);
   const name = escapeHtml(pet.name);
   switch (kind) {
@@ -336,14 +362,28 @@ function lastActionLine(pet: PetStatus): string {
     case "overfed":
       return `🤮 ${who} overfed ${name}.`;
     case "zoomies":
-      return `💨 ${who} gave ${name} the zoomies.`;
+      return `💨 ${name} zoomZoom'd with ${who}.`;
     case "fetch":
       return `🎾 ${who} played fetch with ${name}.`;
     case "bored":
       return `🥱 ${name} ignored ${who}.`;
     case "bit":
       return `🦷 ${name} bit ${who}.`;
+    case "learned":
+      return `🎓 ${who} taught ${name} a new trick: ${trickTitle(trick)}.`;
+    case "trick":
+      return `🪄 ${trickLine(trick, name, who, `${who}'s`)}`;
   }
+}
+
+// "file taxes" -> "File taxes", for "a new trick: File taxes!"
+function trickTitle(trick: string | null): string {
+  const name = trick ?? "something";
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+function pluralTricks(count: number): string {
+  return `${count} trick${count === 1 ? "" : "s"}`;
 }
 
 function bitMessage(pet: PetStatus, by: string): string {
@@ -414,7 +454,12 @@ function formatEulogy(e: PetEulogy): string {
       : e.cause === "ran_away"
         ? `🧳 ${title} ran away. Nobody showed it any love.`
         : `🪦 ${title} has been put down by management.`;
-  const lines = [headline, `${formatDate(e.adoptedAt)} – ${formatDate(e.diedAt)} (${formatLifespan(e.diedAt - e.adoptedAt)})`, ``];
+  const lines = [
+    headline,
+    `${formatDate(e.adoptedAt)} – ${formatDate(e.diedAt)} (${formatLifespan(e.diedAt - e.adoptedAt)})`,
+    ...(e.tricksKnown > 0 ? [`It knew ${pluralTricks(e.tricksKnown)}.`] : []),
+    ``,
+  ];
 
   if (e.cause === "starved") {
     lines.push(

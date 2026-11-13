@@ -46,18 +46,49 @@ export const PET_FOODS = [
 
 // What 🎾 Play can turn into. Playing mostly burns food for mood, so even a pet at 100/100 always has
 // something worth doing — and then needs feeding again. weight is relative; food/mood are the changes.
-// A bite is posted publicly (see pet.ts), like overfeeding.
-export type PlayOutcome = "zoomies" | "fetch" | "bored" | "bit";
+// A bite and learning a trick are posted publicly (see pet.ts). "learned" picks up a new PET_TRICKS
+// entry (skipped once it knows them all); "trick" shows off one it already knows (skipped until it
+// knows one) — whichever is skipped, the rest share its odds.
+export type PlayOutcome = "zoomies" | "fetch" | "bored" | "bit" | "learned" | "trick";
 export const PLAY_OUTCOMES: { kind: PlayOutcome; weight: number; food: number; mood: number }[] = [
-  { kind: "zoomies", weight: 35, food: -15, mood: 15 },
-  { kind: "fetch", weight: 35, food: -10, mood: 10 },
-  { kind: "bored", weight: 17, food: 0, mood: 0 },
-  { kind: "bit", weight: 13, food: 0, mood: -10 },
+  { kind: "zoomies", weight: 30, food: -15, mood: 15 },
+  { kind: "fetch", weight: 30, food: -10, mood: 10 },
+  { kind: "bored", weight: 15, food: 0, mood: 0 },
+  { kind: "bit", weight: 10, food: 0, mood: -10 },
+  { kind: "learned", weight: 5, food: 0, mood: 20 },
+  { kind: "trick", weight: 10, food: -5, mood: 10 },
 ];
 
-export function rollPlayOutcome(random: () => number = Math.random): (typeof PLAY_OUTCOMES)[number] {
-  return weightedPick(PLAY_OUTCOMES, random);
+export function rollPlayOutcome(
+  can: { learn: boolean; showOff: boolean },
+  random: () => number = Math.random
+): (typeof PLAY_OUTCOMES)[number] {
+  const options = PLAY_OUTCOMES.filter((o) => (o.kind !== "learned" || can.learn) && (o.kind !== "trick" || can.showOff));
+  return weightedPick(options, random);
 }
+
+// Tricks a pet can learn through Play. name is announced as "Galen taught Gregory a new trick: ___!"
+// (capitalized); line is how it's described
+// when performed, with {pet}, {person}, and {person's} filled in — {person} becomes "you" in the
+// tapper's own pop-up, so never start a sentence with it. Add freely; never rename one a pet may know.
+export const PET_TRICKS: { name: string; line: string }[] = [
+  { name: "sit", line: "{pet} sat for {person}." },
+  { name: "high five", line: "{pet} high-fived {person}." },
+  { name: "shake hands", line: "{pet} shook {person's} hand." },
+  { name: "roll over", line: "{pet} rolled over for {person}." },
+  { name: "play dead", line: "{pet} played dead and {person} panicked." },
+  { name: "speak", line: "{pet} said \"hello\" to {person}." },
+  { name: "moonwalk", line: "{pet} moonwalked past {person}." },
+  { name: "do a backflip", line: "{pet} did a backflip and {person} clapped." },
+  { name: "do the worm", line: "{pet} did the worm for {person}." },
+  { name: "beatbox", line: "{pet} beatboxed for {person}." },
+  { name: "juggle", line: "{pet} juggled three eggs for {person}." },
+  { name: "make toast", line: "{pet} made {person} toast. Slightly burnt." },
+  { name: "fold laundry", line: "{pet} folded {person's} laundry." },
+  { name: "parallel park", line: "{pet} parallel parked {person's} car." },
+  { name: "file taxes", line: "{pet} filed {person's} taxes." },
+  { name: "apologize", line: "{pet} apologized to {person}. It didn't mean it." },
+];
 
 export type PetRarity = "common" | "rare" | "ultra";
 
