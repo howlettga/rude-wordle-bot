@@ -37,6 +37,37 @@ export function rollWeight(rolls: number, random: () => number = Math.random): n
   return Math.max(0.1, Math.round(weight * 10) / 10);
 }
 
+// Any cast, fish or not, has the same flat chance of reeling in junk instead: no weight, never on the
+// leaderboard. It still uses up the day's cast and the waiting bonus, which keeps it fair — daily and
+// weekly fishers both lose the same ~5% of their rolls on average.
+const TRASH_CHANCE = 0.05;
+
+const TRASH: [item: string, emoji: string][] = [
+  ["an old boot", "🥾"],
+  ["a soggy sock", "🧦"],
+  ["a bald tire", "🛞"],
+  ["someone's dentures", "🦷"],
+  ["a single AirPod", "🎧"],
+  ["a shopping cart", "🛒"],
+  ["one Croc", "🐊"],
+  ["a parking ticket with your name on it", "🎫"],
+  ["a Live Laugh Love sign", "🪧"],
+  ["a dead vape", "💨"],
+  ["an unopened can of Natty Light", "🍺"],
+  ["a Blockbuster membership card", "📼"],
+  ["a rubber duck", "🦆"],
+  ["a clump of seaweed", "🌿"],
+  ["a traffic cone", "🚧"],
+];
+
+export function rollTrash(random: () => number = Math.random): { item: string; emoji: string } | null {
+  if (random() >= TRASH_CHANCE) {
+    return null;
+  }
+  const [item, emoji] = TRASH[Math.floor(random() * TRASH.length)]!;
+  return { item, emoji };
+}
+
 // Species are picked by weight, so the name tells you how good the catch was (a marlin is always huge).
 const SPECIES_BANDS: { maxLb: number; species: [name: string, emoji: string][] }[] = [
   { maxLb: 1, species: [["minnow", "🐟"], ["sunfish", "🐠"], ["perch", "🐟"]] },

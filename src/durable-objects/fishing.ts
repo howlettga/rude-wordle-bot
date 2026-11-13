@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../main.js";
 import { easternParts } from "../eastern-time.js";
-import { MAX_WAIT_DAYS, rollsForWait, rollWeight, speciesForWeight } from "../fishing-math.js";
+import { MAX_WAIT_DAYS, rollsForWait, rollTrash, rollWeight, speciesForWeight } from "../fishing-math.js";
 
 export interface FishingCatch {
   species: string;
@@ -11,8 +11,11 @@ export interface FishingCatch {
 
 export type FishingCastResult =
   | { ok: false; type: "ALREADY_FISHED" }
+  // Junk instead of a fish (see rollTrash): not recorded anywhere, but the cast is still used up.
+  | { ok: true; kind: "trash"; item: string; emoji: string }
   | {
       ok: true;
+      kind: "fish";
       catch: FishingCatch;
       // All three are judged within the current leaderboard (window + last reset), same as /fishing.
       // previousBest is null when this is the angler's first catch on the current leaderboard.
@@ -101,6 +104,11 @@ export class Fishing extends DurableObject<Env> {
       today
     );
 
+    const trash = rollTrash();
+    if (trash) {
+      return { ok: true, kind: "trash", ...trash };
+    }
+
     const weight = rollWeight(rollsForWait(daysWaited));
     const { species, emoji } = speciesForWeight(weight);
 
@@ -129,6 +137,7 @@ export class Fishing extends DurableObject<Env> {
     const rank = this.leaderboardRows().findIndex((row) => row.user_id === input.userId) + 1;
     return {
       ok: true,
+      kind: "fish",
       catch: { species, emoji, weight },
       previousBest,
       chatRecord: weight > (previousRecord ?? 0),

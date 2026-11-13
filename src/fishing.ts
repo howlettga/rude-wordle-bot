@@ -5,8 +5,8 @@ import type { FishingLeaderboardEntry } from "./durable-objects/fishing.js";
 
 // The "fishing" feature (see features.ts):
 //   /fish                         -> one cast per day; reports the catch, plus personal best / rank / chat
-//                                    record lines when they apply. The roll math (fishing-math.ts) is
-//                                    deliberately never shown.
+//                                    record lines when they apply — or, now and then, worthless junk. The
+//                                    roll math (fishing-math.ts) is deliberately never shown.
 //   /fishing                      -> leaderboard: everyone's heaviest catch, ranked by weight
 //   /fishingwindow <days>|forever -> owner-only: how far back the leaderboard looks (default forever)
 //   /resetfishing                 -> owner-only: leaderboard starts over; nothing is deleted
@@ -43,6 +43,10 @@ export class FishingComposer extends Composer<MyContext> {
     });
     if (!result.ok) {
       await replyToMessage(ctx, "You already fished today. Come back tomorrow.");
+      return;
+    }
+    if (result.kind === "trash") {
+      await replyToMessage(ctx, `You reeled in ${result.item} ${result.emoji}. Worthless.`);
       return;
     }
 

@@ -203,7 +203,7 @@ Every feature can be turned on or off per chat by the owner, with `/features` ru
 |---|---|---|---|
 | `wordle` | Wordle Golf | Rounds, score submissions, nightly reminders | on |
 | `market` | Stock market | Every market command, price tracking, and the market's scheduled jobs | on |
-| `fishing` | Fishing | `/fish` once a day, the `/fishing` leaderboard, and the owner's fishing commands | on |
+| `fishing` | Fishing | `/fish` once a day (with a small chance of worthless junk instead of a fish), the `/fishing` leaderboard, and the owner's fishing commands | on |
 | `beans` | Been/bean counter | Counts "been", posts the tally on "bean". Reply to that post with a question (anything with a "?") to get the bean count | on |
 | `replies` | Talk-back | Replies when someone names the bot, replies to one of its jokes, or says "galen" | on |
 | `eastereggs` | Easter eggs | Keyword jokes in normal conversation (gas, commute, raise, ...) | on |
