@@ -153,7 +153,7 @@ function tradingDayStartSql(): string {
 // and every extra day of retention is extra rows any unindexed or partially-indexed query scans through.
 // Trimmed down as a secondary, complementary measure now that the indexing is in place.
 const MESSAGE_AUTHOR_RETENTION_DAYS = 30;
-const PRICE_EVENT_RETENTION_DAYS = 30;
+export const PRICE_EVENT_RETENTION_DAYS = 30;
 
 // Emoji with unambiguous sentiment get a fixed weight; everything else (🗿🌚🍌 etc. — anything not listed
 // below) still moves price, just unpredictably — see randomMemeWeight.

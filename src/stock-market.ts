@@ -17,6 +17,7 @@ import type {
   StockMarketOptionDurationDays,
   StockMarketBuyOptionResult,
 } from "./durable-objects/stock-market.js";
+import { PRICE_EVENT_RETENTION_DAYS } from "./durable-objects/stock-market.js";
 
 // Inside a conversation, ctx is always the plain (unflavored) Context — same pattern as wordle-golf.ts.
 type ConversationContext = Context;
@@ -235,7 +236,7 @@ export class StockMarketComposer extends Composer<MyContext> {
   // Opt-in short handle for /buy and /sell targeting (see handleTrade) — replaces @username entirely for
   // trades, since not everyone has one and that was confusing people. Requires having posted a real
   // message already (same reach restriction as findPlayerByTicker) so a ticker never outlives its player
-  // past the weekly ghost purge.
+  // past the daily ghost purge.
   //
   // Tapping /setticker from Telegram's command menu sends it bare — there's no inline way to type the
   // ticker as part of the command itself, which was tripping people up. So bare /setticker now drops into
@@ -1459,14 +1460,27 @@ export class StockMarketComposer extends Composer<MyContext> {
   // Skipping paused chats matters more here than for the other jobs: a paused chat records no new
   // 'message' price_events, so once the old ones age out the ghost purge would delete every player.
   // Wiping a market should only ever happen via an explicit /restart.
+  //
+  // The same problem follows a chat out of a pause: everyone's pre-pause price_events kept aging the
+  // whole time, so the first purge after /startmarket would delete anyone whose last message was
+  // PRICE_EVENT_RETENTION_DAYS ago counting paused days. So the ghost purge also sits out a grace period
+  // of that same length after resuming, giving everyone a full window of live market to post in before
+  // it judges them. Generous to anyone already inactive going into the pause — a deliberate trade for
+  // not having to track pause history.
   async runDailyCleanup(): Promise<void> {
     const chatIds = await this.storage.listStockMarketChats();
+    const nowEpochSec = Math.floor(Date.now() / 1000);
     for (const chatId of chatIds) {
-      if (await this.storage.isChatPaused(chatId)) {
+      const { paused, resumedAtEpochSec } = await this.storage.getChatPauseState(chatId);
+      if (paused) {
         continue;
       }
       await this.storage.purgeStockMarketOldData(chatId);
-      await this.storage.purgeStockMarketGhostPlayers(chatId);
+
+      const inGracePeriod = resumedAtEpochSec !== null && nowEpochSec - resumedAtEpochSec < PRICE_EVENT_RETENTION_DAYS * 24 * 60 * 60;
+      if (!inGracePeriod) {
+        await this.storage.purgeStockMarketGhostPlayers(chatId);
+      }
     }
   }
 

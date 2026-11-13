@@ -1,7 +1,7 @@
 import type { BeenCounter } from "./durable-objects/been-counter.js";
 import type { BeanCounter } from "./durable-objects/bean-counter.js";
 import type { SpankChain } from "./durable-objects/spank-chain.js";
-import type { ChatPause } from "./durable-objects/chat-pause.js";
+import type { ChatPause, ChatPauseState } from "./durable-objects/chat-pause.js";
 import type {
   WordleGolf,
   WordleGolfGame,
@@ -299,6 +299,10 @@ export class StorageService {
 
   isChatPaused(chatId: number): Promise<boolean> {
     return this.chatPauseStub(chatId).isPaused();
+  }
+
+  getChatPauseState(chatId: number): Promise<ChatPauseState> {
+    return this.chatPauseStub(chatId).getState();
   }
 
   setChatPaused(chatId: number, paused: boolean): Promise<void> {
