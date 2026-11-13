@@ -17,7 +17,9 @@
       { "name": "STOCK_MARKET_REGISTRY", "class_name": "StockMarketRegistry" },
       { "name": "CHAT_PAUSE", "class_name": "ChatPause" },
       { "name": "RUDE_MESSAGES", "class_name": "RudeMessages" },
-      { "name": "FISHING", "class_name": "Fishing" }
+      { "name": "FISHING", "class_name": "Fishing" },
+      { "name": "PET", "class_name": "Pet" },
+      { "name": "PET_REGISTRY", "class_name": "PetRegistry" }
     ]
   },
   "migrations": [
@@ -29,7 +31,8 @@
     { "tag": "v6", "new_sqlite_classes": ["BeanCounter"] },
     { "tag": "v7", "new_sqlite_classes": ["ChatPause"] },
     { "tag": "v8", "new_sqlite_classes": ["RudeMessages"] },
-    { "tag": "v9", "new_sqlite_classes": ["Fishing"] }
+    { "tag": "v9", "new_sqlite_classes": ["Fishing"] },
+    { "tag": "v10", "new_sqlite_classes": ["Pet", "PetRegistry"] }
   ],
   // Cron Triggers always run in UTC (no timezone support), and every job is scheduled in Eastern time,
   // which shifts against UTC across DST. So this is one hourly trigger, and main.ts's scheduled() checks
@@ -38,6 +41,7 @@
   // weekly cash allowance on Mondays.
   // 8am ET: the stock market's trading-halt roll/announcement + daily data purge.
   // 5pm ET: long-call options settlement.
+  // Every hour: pet hunger/mood warnings and deaths.
   "triggers": {
     "crons": ["0 * * * *"]
   },

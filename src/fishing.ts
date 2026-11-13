@@ -2,6 +2,7 @@ import { Composer } from "grammy";
 import { type MyContext, replyToMessage, replyHTML } from "./context.js";
 import type { StorageService } from "./storage-service.js";
 import type { FishingLeaderboardEntry } from "./durable-objects/fishing.js";
+import { escapeHtml } from "./util.js";
 
 // The "fishing" feature (see features.ts):
 //   /fish                         -> one cast per day; reports the catch, plus personal best / rank / chat
@@ -125,10 +126,4 @@ function formatEntry(entry: FishingLeaderboardEntry, index: number): string {
 function article(weightText: string): string {
   const whole = weightText.split(".")[0]!;
   return whole.startsWith("8") || whole === "11" || whole === "18" ? "an" : "a";
-}
-
-// Telegram's HTML parse mode rejects the whole message on a stray <, >, or & — and first names are
-// user-controlled.
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }

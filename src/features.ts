@@ -15,6 +15,8 @@ export const FEATURES = [
   { key: "market", label: "Stock market", defaultEnabled: true },
   // /fish once a day, /fishing leaderboard
   { key: "fishing", label: "Fishing", defaultEnabled: true },
+  // One shared pet per chat: /adopt, /pet, /graveyard, plus hourly hunger/mood warnings and deaths
+  { key: "pet", label: "Group pet", defaultEnabled: true },
   // Counts "been", posts the tally on "bean", reports the bean tally to a question replying to that post
   { key: "beans", label: "Been/bean counter", defaultEnabled: true },
   // Replies when someone names the bot, replies to one of its jokes, or says "galen"

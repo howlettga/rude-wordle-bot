@@ -133,6 +133,9 @@ Registering a command with `bot.command()` in `src/bot.ts` only wires up the han
 | `instructions` | how's this work? |
 | `fish` | cast a line |
 | `fishing` | biggest catches |
+| `adopt` | get a group pet |
+| `pet` | check on the pet |
+| `graveyard` | pets we've lost |
 
 Register these with `setMyCommands`. A heredoc avoids fighting bash over the apostrophes in the descriptions:
 
@@ -155,7 +158,10 @@ curl "https://api.telegram.org/bot<TOKEN>/setMyCommands" \
   {"command":"marketrules","description":"how to win"},
   {"command":"instructions","description":"how's this work?"},
   {"command":"fish","description":"cast a line"},
-  {"command":"fishing","description":"biggest catches"}
+  {"command":"fishing","description":"biggest catches"},
+  {"command":"adopt","description":"get a group pet"},
+  {"command":"pet","description":"check on the pet"},
+  {"command":"graveyard","description":"pets we've lost"}
 ]}
 EOF
 ```
@@ -180,6 +186,9 @@ marketrules - how to win
 instructions - how's this work?
 fish - cast a line
 fishing - biggest catches
+adopt - get a group pet
+pet - check on the pet
+graveyard - pets we've lost
 ```
 
 ### Invisible commands (do not register these)
@@ -195,6 +204,8 @@ Still real commands — grammY dispatches on `bot.command()` regardless of what'
 | `/stimulus` | Owner-only: `/stimulus <amount>` gives every active player in the market a flat cash injection | Destructive to game balance and owner-only, no reason to advertise it |
 | `/fishingwindow` | Owner-only: `/fishingwindow <days>` or `/fishingwindow forever` sets how far back the fishing leaderboard looks (default forever). Applies retroactively, since every catch is kept | Admin config, not gameplay |
 | `/resetfishing` | Owner-only: starts the fishing leaderboard over. Soft reset: earlier catches stay stored but stop counting; nobody's daily cast or waiting bonus changes | Admin control, not gameplay |
+| `/petkill` | Owner-only: puts the chat's pet down (posts its eulogy) — for mercy or testing | Destructive and owner-only |
+| `/petrevive` | Owner-only: brings the most recently dead pet back at full food and mood, if no pet is alive — for when a bug killed it | Admin control, not gameplay |
 | `/start` | Telegram's default entry point for a private chat — just replies "Fuck off big boi" | Not a real feature, just the obligatory handler |
 | `/features` | Owner-only: turn features on/off for this chat. `/features` shows a button per feature; `/features <key> on\|off` does it by typing. Only shows bare keys and on/off in chat, never what a feature does. See [Feature switches](#feature-switches) | Admin control, not gameplay |
 
@@ -209,6 +220,7 @@ Every feature can be turned on or off per chat by the owner, with `/features` ru
 | `wordle` | Wordle Golf | Rounds, score submissions, nightly reminders | on |
 | `market` | Stock market | Every market command, price tracking, and the market's scheduled jobs | on |
 | `fishing` | Fishing | `/fish` (at most once a day; catches build up over about a month of waiting, and casting too often mostly turns up junk), the `/fishing` leaderboard, and the owner's fishing commands | on |
+| `pet` | Group pet | One shared pet per chat: `/adopt`, the `/pet` card with Feed / Pet buttons, `/graveyard`, and hourly hunger/mood warnings and deaths. Switching it off freezes the pet rather than letting it starve. Every tuning number (how fast it gets hungry, cooldowns, how long until it dies) is in `src/pet-config.ts` | on |
 | `beans` | Been/bean counter | Counts "been", posts the tally on "bean". Reply to that post with a question (anything with a "?") to get the bean count | on |
 | `replies` | Talk-back | Replies when someone names the bot, replies to one of its jokes, or says "galen" | on |
 | `eastereggs` | Easter eggs | Keyword jokes in normal conversation (gas, commute, raise, ...) | on |
