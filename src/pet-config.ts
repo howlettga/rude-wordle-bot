@@ -22,6 +22,7 @@ export const PET_CONFIG = {
   // Per person, per action — so one person can't carry the pet alone or mash the buttons.
   FEED_COOLDOWN_HOURS: 3,
   PET_COOLDOWN_HOURS: 3,
+  PLAY_COOLDOWN_HOURS: 3,
 
   // How long a meter can sit at 0 before it's over.
   STARVE_AFTER_EMPTY_HOURS: 24,
@@ -42,6 +43,21 @@ export const PET_FOODS = [
   "🍫", "🍿", "🥞", "🧇", "🥓", "🍤", "🥟", "🍙", "🌶️", "🥑", "🍋", "🥦", "🌽", "🥕", "🧄", "🧅", "🥥", "🍍",
   "🍉", "🍦", "🍭", "🥫", "🍱", "🥧", "🧈", "🍳", "🥪", "🍞", "🧃", "☕",
 ];
+
+// What 🎾 Play can turn into. Playing mostly burns food for mood, so even a pet at 100/100 always has
+// something worth doing — and then needs feeding again. weight is relative; food/mood are the changes.
+// A bite is posted publicly (see pet.ts), like overfeeding.
+export type PlayOutcome = "zoomies" | "fetch" | "bored" | "bit";
+export const PLAY_OUTCOMES: { kind: PlayOutcome; weight: number; food: number; mood: number }[] = [
+  { kind: "zoomies", weight: 35, food: -15, mood: 15 },
+  { kind: "fetch", weight: 35, food: -10, mood: 10 },
+  { kind: "bored", weight: 17, food: 0, mood: 0 },
+  { kind: "bit", weight: 13, food: 0, mood: -10 },
+];
+
+export function rollPlayOutcome(random: () => number = Math.random): (typeof PLAY_OUTCOMES)[number] {
+  return weightedPick(PLAY_OUTCOMES, random);
+}
 
 export type PetRarity = "common" | "rare" | "ultra";
 
@@ -67,13 +83,17 @@ export const PET_SPECIES: { species: string; emoji: string; rarity: PetRarity; w
 ];
 
 export function rollSpecies(random: () => number = Math.random): (typeof PET_SPECIES)[number] {
-  const total = PET_SPECIES.reduce((sum, s) => sum + s.weight, 0);
+  return weightedPick(PET_SPECIES, random);
+}
+
+function weightedPick<T extends { weight: number }>(options: T[], random: () => number): T {
+  const total = options.reduce((sum, option) => sum + option.weight, 0);
   let roll = random() * total;
-  for (const species of PET_SPECIES) {
-    roll -= species.weight;
+  for (const option of options) {
+    roll -= option.weight;
     if (roll < 0) {
-      return species;
+      return option;
     }
   }
-  return PET_SPECIES[PET_SPECIES.length - 1]!;
+  return options[options.length - 1]!;
 }

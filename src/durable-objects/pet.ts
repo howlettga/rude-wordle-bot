@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../main.js";
-import { PET_CONFIG, PET_FOODS, type PetRarity } from "../pet-config.js";
+import { PET_CONFIG, PET_FOODS, rollPlayOutcome, type PetRarity, type PlayOutcome } from "../pet-config.js";
 import { advanceMeters, petFate, type PetMeters } from "../pet-math.js";
 
 export type PetDeathCause = "starved" | "ran_away" | "put_down";
@@ -21,7 +21,9 @@ export interface PetStatus {
   lastAction: { kind: PetAction; by: string; food: string | null } | null;
 }
 
-export type PetAction = "fed" | "petted" | "overfed";
+// What a button press turned into: a feed (or an overfeed), a pet, or one of the random Play outcomes.
+export type PetAction = "fed" | "petted" | "overfed" | PlayOutcome;
+export type PetInput = "feed" | "pet" | "play";
 
 export interface PetEulogy {
   name: string;
@@ -176,6 +178,13 @@ export class Pet extends DurableObject<Env> {
       this.ctx.storage.sql.exec(`ALTER TABLE pets ADD COLUMN last_action_food TEXT`);
       this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (3)`);
     }
+
+    if (version < 4) {
+      // 🎾 Play: its own per-person cooldown and count.
+      this.ctx.storage.sql.exec(`ALTER TABLE caretakers ADD COLUMN plays INTEGER NOT NULL DEFAULT 0`);
+      this.ctx.storage.sql.exec(`ALTER TABLE caretakers ADD COLUMN last_played_at INTEGER`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (4)`);
+    }
   }
 
   async lookup(): Promise<PetLookup> {
@@ -218,7 +227,7 @@ export class Pet extends DurableObject<Env> {
     return { ok: true, pet: toStatus(inserted), ...(eulogy && { eulogy }) };
   }
 
-  async interact(input: { petId: number; action: "feed" | "pet"; userId: number; firstName: string }): Promise<PetInteractResult> {
+  async interact(input: { petId: number; action: PetInput; userId: number; firstName: string }): Promise<PetInteractResult> {
     const now = nowSec();
     const { row, eulogy } = this.settle(now);
     if (eulogy) {
@@ -229,33 +238,47 @@ export class Pet extends DurableObject<Env> {
     }
 
     const caretaker = this.ctx.storage.sql
-      .exec<{ last_fed_at: number | null; last_petted_at: number | null }>(
-        `SELECT last_fed_at, last_petted_at FROM caretakers WHERE pet_id = ? AND user_id = ?`,
+      .exec<{ last_fed_at: number | null; last_petted_at: number | null; last_played_at: number | null }>(
+        `SELECT last_fed_at, last_petted_at, last_played_at FROM caretakers WHERE pet_id = ? AND user_id = ?`,
         row.id,
         input.userId
       )
       .toArray()[0];
-    const last = input.action === "feed" ? caretaker?.last_fed_at : caretaker?.last_petted_at;
-    const cooldownHours = input.action === "feed" ? PET_CONFIG.FEED_COOLDOWN_HOURS : PET_CONFIG.PET_COOLDOWN_HOURS;
+    const last = { feed: caretaker?.last_fed_at, pet: caretaker?.last_petted_at, play: caretaker?.last_played_at }[input.action];
+    const cooldownHours = {
+      feed: PET_CONFIG.FEED_COOLDOWN_HOURS,
+      pet: PET_CONFIG.PET_COOLDOWN_HOURS,
+      play: PET_CONFIG.PLAY_COOLDOWN_HOURS,
+    }[input.action];
     if (last != null && now - last < cooldownHours * 3600) {
       return { result: "COOLDOWN", pet: toStatus(row), retryInSeconds: last + cooldownHours * 3600 - now };
     }
 
     let food = row.food;
     let mood = row.mood;
-    let overfed = false;
+    let kind: PetAction;
     if (input.action === "feed") {
       if (food >= PET_CONFIG.OVERFED_AT) {
-        overfed = true;
-        mood = Math.max(0, mood - PET_CONFIG.OVERFED_MOOD_PENALTY);
+        kind = "overfed";
+        mood -= PET_CONFIG.OVERFED_MOOD_PENALTY;
       } else {
-        food = Math.min(100, food + PET_CONFIG.FEED_AMOUNT);
+        kind = "fed";
+        food += PET_CONFIG.FEED_AMOUNT;
       }
+    } else if (input.action === "pet") {
+      kind = "petted";
+      mood += PET_CONFIG.PET_AMOUNT;
     } else {
-      mood = Math.min(100, mood + PET_CONFIG.PET_AMOUNT);
+      const outcome = rollPlayOutcome();
+      kind = outcome.kind;
+      food += outcome.food;
+      mood += outcome.mood;
     }
+    food = Math.max(0, Math.min(100, food));
+    mood = Math.max(0, Math.min(100, mood));
 
     const fed = input.action === "feed";
+    const petted = input.action === "pet";
     const updated = this.ctx.storage.sql
       .exec<PetRow>(
         `UPDATE pets SET food = ?, mood = ?, updated_at = ?, food_empty_since = ?, mood_empty_since = ?, warn_level = ?,
@@ -273,9 +296,9 @@ export class Pet extends DurableObject<Env> {
         mood > PET_CONFIG.MISERABLE_WARNING_AT ? 0 : row.mood_warned,
         fed ? input.firstName : row.last_fed_by,
         fed ? now : row.last_fed_at,
-        fed ? row.last_petted_by : input.firstName,
-        fed ? row.last_petted_at : now,
-        overfed ? "overfed" : fed ? "fed" : "petted",
+        petted ? input.firstName : row.last_petted_by,
+        petted ? now : row.last_petted_at,
+        kind,
         input.firstName,
         fed ? PET_FOODS[Math.floor(Math.random() * PET_FOODS.length)]! : null,
         row.id
@@ -283,24 +306,28 @@ export class Pet extends DurableObject<Env> {
       .one();
 
     this.ctx.storage.sql.exec(
-      `INSERT INTO caretakers (pet_id, user_id, first_name, feeds, pets, last_fed_at, last_petted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO caretakers (pet_id, user_id, first_name, feeds, pets, plays, last_fed_at, last_petted_at, last_played_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(pet_id, user_id) DO UPDATE SET
          first_name = excluded.first_name,
          feeds = feeds + excluded.feeds,
          pets = pets + excluded.pets,
+         plays = plays + excluded.plays,
          last_fed_at = COALESCE(excluded.last_fed_at, last_fed_at),
-         last_petted_at = COALESCE(excluded.last_petted_at, last_petted_at)`,
+         last_petted_at = COALESCE(excluded.last_petted_at, last_petted_at),
+         last_played_at = COALESCE(excluded.last_played_at, last_played_at)`,
       row.id,
       input.userId,
       input.firstName,
       fed ? 1 : 0,
-      fed ? 0 : 1,
+      petted ? 1 : 0,
+      input.action === "play" ? 1 : 0,
       fed ? now : null,
-      fed ? null : now
+      petted ? now : null,
+      input.action === "play" ? now : null
     );
 
-    return { result: overfed ? "OVERFED" : "OK", pet: toStatus(updated) };
+    return { result: kind === "overfed" ? "OVERFED" : "OK", pet: toStatus(updated) };
   }
 
   // The hourly check (see PetComposer.runHourlyCheck). Settles the pet — which is where deaths get

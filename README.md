@@ -220,7 +220,7 @@ Every feature can be turned on or off per chat by the owner, with `/features` ru
 | `wordle` | Wordle Golf | Rounds, score submissions, nightly reminders | on |
 | `market` | Stock market | Every market command, price tracking, and the market's scheduled jobs | on |
 | `fishing` | Fishing | `/fish` (at most once a day; catches build up over about a month of waiting, and casting too often mostly turns up junk), the `/fishing` leaderboard, and the owner's fishing commands | on |
-| `pet` | Group pet | One shared pet per chat: `/adopt`, the `/pet` card with Feed / Pet buttons, `/graveyard`, and hourly hunger/mood warnings and deaths. Switching it off freezes the pet rather than letting it starve. Every tuning number (how fast it gets hungry, cooldowns, how long until it dies) is in `src/pet-config.ts` | on |
+| `pet` | Group pet | One shared pet per chat: `/adopt`, the `/pet` card with Feed / Pet / Play buttons, `/graveyard`, and hourly hunger/mood warnings and deaths. Switching it off freezes the pet rather than letting it starve. Every tuning number (how fast it gets hungry, cooldowns, how long until it dies) is in `src/pet-config.ts` | on |
 | `beans` | Been/bean counter | Counts "been", posts the tally on "bean". Reply to that post with a question (anything with a "?") to get the bean count | on |
 | `replies` | Talk-back | Replies when someone names the bot, replies to one of its jokes, or says "galen" | on |
 | `eastereggs` | Easter eggs | Keyword jokes in normal conversation (gas, commute, raise, ...) | on |

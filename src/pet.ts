@@ -4,14 +4,14 @@ import { createConversation } from "@grammyjs/conversations";
 import type { Conversation } from "@grammyjs/conversations";
 import { type MyContext, replyToMessage, replyHTML, isNotCommand, CONVERSATION_TIMEOUT_MS } from "./context.js";
 import type { StorageService } from "./storage-service.js";
-import type { PetEulogy, PetStatus, PetWarning } from "./durable-objects/pet.js";
+import type { PetAction, PetEulogy, PetInput, PetStatus, PetWarning } from "./durable-objects/pet.js";
 import { PET_CONFIG, rollSpecies } from "./pet-config.js";
 import { easternParts } from "./eastern-time.js";
 import { escapeHtml, random } from "./util.js";
 
 // The "pet" feature (see features.ts): one shared pet per chat, kept alive by everyone.
 //   /adopt      -> when there's no living pet: reveals a random animal, then asks the adopter to name it
-//   /pet        -> status card (food, mood, age) with Feed / Pet buttons that update the card in place
+//   /pet        -> status card (food, mood) with Feed / Pet / Play buttons that update the card in place
 //   /graveyard  -> past pets, how long they lived, and how they went
 //   /petkill    -> owner-only: puts the pet down (mercy, or testing)
 //   /petrevive  -> owner-only: brings the last dead pet back at full meters (in case a bug killed it)
@@ -37,7 +37,7 @@ export class PetComposer extends Composer<MyContext> {
     this.command("graveyard", (ctx) => this.sendGraveyard(ctx));
     this.command("petkill", (ctx) => this.handleKill(ctx));
     this.command("petrevive", (ctx) => this.handleRevive(ctx));
-    this.callbackQuery(/^pet:(feed|pet):(\d+)$/, (ctx) => this.handleButton(ctx));
+    this.callbackQuery(/^pet:(feed|pet|play):(\d+)$/, (ctx) => this.handleButton(ctx));
   }
 
   private isOwner(ctx: MyContext): boolean {
@@ -146,11 +146,11 @@ export class PetComposer extends Composer<MyContext> {
   // Feed / Pet buttons work on any message that carries them (the card, warnings) and turn it into an
   // up-to-date card. Everything else is a private toast, so caring for the pet doesn't flood the chat.
   private async handleButton(ctx: MyContext) {
-    const match = ctx.callbackQuery?.data?.match(/^pet:(feed|pet):(\d+)$/);
+    const match = ctx.callbackQuery?.data?.match(/^pet:(feed|pet|play):(\d+)$/);
     if (!match || !ctx.chat || !ctx.from) {
       return;
     }
-    const action = match[1] as "feed" | "pet";
+    const action = match[1] as PetInput;
     const result = await this.storage.interactWithPet(ctx.chat.id, {
       petId: Number(match[2]),
       action,
@@ -176,11 +176,13 @@ export class PetComposer extends Composer<MyContext> {
         await ctx
           .editMessageText(formatCard(result.pet), { parse_mode: "HTML", reply_markup: cardKeyboard(result.pet) })
           .catch((err) => console.error(err)); // e.g. "message is not modified" — the toast still goes out
-        await ctx.answerCallbackQuery({ text: result.result === "OVERFED" ? "🤮 Gross." : action === "feed" ? "🍖 Fed!" : "🤚 Petted!" });
-        // Everything else stays on the card, but throwing up is worth a public shaming.
-        if (result.result === "OVERFED") {
+        const kind = result.pet.lastAction!.kind;
+        await ctx.answerCallbackQuery({ text: ACTION_TOASTS[kind] });
+        // Everything else stays on the card, but throwing up and biting are worth a public shaming.
+        const shame = kind === "overfed" ? overfedMessage(result.pet, ctx.from.first_name) : kind === "bit" ? bitMessage(result.pet, ctx.from.first_name) : null;
+        if (shame) {
           const cardMessage = ctx.callbackQuery?.message;
-          await ctx.api.sendMessage(ctx.chat.id, overfedMessage(result.pet, ctx.from.first_name), {
+          await ctx.api.sendMessage(ctx.chat.id, shame, {
             parse_mode: "HTML",
             ...(cardMessage && { reply_to_message_id: cardMessage.message_id }),
             ...(cardMessage?.message_thread_id !== undefined && { message_thread_id: cardMessage.message_thread_id }),
@@ -290,8 +292,22 @@ function petTitle(pet: { name: string; species: string; emoji: string }): string
 }
 
 function cardKeyboard(pet: PetStatus): InlineKeyboard {
-  return new InlineKeyboard().text("🍖 Feed", `pet:feed:${pet.id}`).text("🤚 Pet", `pet:pet:${pet.id}`);
+  return new InlineKeyboard()
+    .text("🍖 Feed", `pet:feed:${pet.id}`)
+    .text("🤚 Pet", `pet:pet:${pet.id}`)
+    .text("🎾 Play", `pet:play:${pet.id}`);
 }
+
+// The tapper's private pop-up for each outcome — kept to a word or two, since toasts vanish fast.
+const ACTION_TOASTS: Record<PetAction, string> = {
+  fed: "🍖 Fed!",
+  petted: "🤚 Petted!",
+  overfed: "🤮 Gross.",
+  zoomies: "💨 Zoomies!",
+  fetch: "🎾 Fetch!",
+  bored: "🥱 Bored.",
+  bit: "🦷 Ouch!",
+};
 
 function formatCard(pet: PetStatus): string {
   const rarity = pet.rarity === "ultra" ? " 🌟" : pet.rarity === "rare" ? " ✨" : "";
@@ -319,7 +335,25 @@ function lastActionLine(pet: PetStatus): string {
       return `🤚 ${who} pet ${name}.`;
     case "overfed":
       return `🤮 ${who} overfed ${name}.`;
+    case "zoomies":
+      return `💨 ${who} gave ${name} the zoomies.`;
+    case "fetch":
+      return `🎾 ${who} played fetch with ${name}.`;
+    case "bored":
+      return `🥱 ${name} ignored ${who}.`;
+    case "bit":
+      return `🦷 ${name} bit ${who}.`;
   }
+}
+
+function bitMessage(pet: PetStatus, by: string): string {
+  const name = `<b>${escapeHtml(pet.name)}</b>`;
+  const who = escapeHtml(by);
+  return random([
+    `🦷 ${who} tried to play with ${name}. ${name} bit ${who}.`,
+    `🦷 ${name} bit ${who}. Hard.`,
+    `🦷 ${who} played too rough and ${name} bit back.`,
+  ]);
 }
 
 function overfedMessage(pet: PetStatus, by: string): string {
@@ -423,10 +457,12 @@ function formatLifespan(seconds: number): string {
   return `${days} days`;
 }
 
-function cooldownMessage(name: string, action: "feed" | "pet"): string {
+function cooldownMessage(name: string, action: PetInput): string {
   return random(
-    action === "feed"
-      ? [`You fed ${name} recently. Give someone else a turn!`, `${name} is still chewing your last meal. Let someone else have a go!`]
-      : [`You pet ${name} recently. Give someone else a turn!`, `${name} has had plenty of you for now. Let someone else have a go!`]
+    {
+      feed: [`You fed ${name} recently. Give someone else a turn!`, `${name} is still chewing your last meal. Let someone else have a go!`],
+      pet: [`You pet ${name} recently. Give someone else a turn!`, `${name} has had plenty of you for now. Let someone else have a go!`],
+      play: [`You played with ${name} recently. Give someone else a turn!`, `${name} is worn out from you. Let someone else have a go!`],
+    }[action]
   );
 }
