@@ -46,13 +46,13 @@ export class FishingComposer extends Composer<MyContext> {
       return;
     }
     if (result.kind === "trash") {
-      await replyToMessage(ctx, `You reeled in ${result.item} ${result.emoji}. Worthless.`);
+      await replyToMessage(ctx, `You reeled in ${result.item}! ${result.emoji}\nWorthless.`);
       return;
     }
 
     const { species, emoji, weight } = result.catch;
     const weightText = weight.toFixed(1);
-    const lines = [`You caught ${article(weightText)} ${weightText} lbs ${species} ${emoji}!`];
+    const lines = [`You caught ${article(weightText)} ${weightText} lbs ${species}! ${emoji}`];
     if (result.chatRecord) {
       lines.push(`🏆 New chat record!`);
     } else if (result.previousBest === null) {
