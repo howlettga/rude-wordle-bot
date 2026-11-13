@@ -1,7 +1,7 @@
 import { Composer, InlineKeyboard } from "grammy";
 import { type MyContext, replyToMessage } from "./context.js";
 import type { StorageService } from "./storage-service.js";
-import { FEATURES, type FeatureFlags, type FeatureKey, isFeatureKey } from "./features.js";
+import { FEATURES, type FeatureFlags, isFeatureKey } from "./features.js";
 
 // Owner-only, invisible (not in the / menu — see the README's "Invisible commands"). Per-chat feature
 // switches, run inside the chat they apply to:
@@ -10,6 +10,10 @@ import { FEATURES, type FeatureFlags, type FeatureKey, isFeatureKey } from "./fe
 // Registered in bot.ts before any feature gate, so it can never switch off its own controls. Anyone
 // else running it gets no response, same as the other owner commands; anyone else tapping a button
 // gets a short "owner only" notice, since the buttons are visible to the whole chat.
+//
+// Everything this posts is visible to the whole chat, and some features are meant to be discovered, not
+// advertised (easter eggs, spicy) — so it only ever shows bare keys and on/off, never labels or
+// descriptions. What each key covers is documented in the README's "Feature switches" section.
 const CALLBACK_PREFIX = "features:toggle:";
 
 export class FeatureControlComposer extends Composer<MyContext> {
@@ -34,8 +38,7 @@ export class FeatureControlComposer extends Composer<MyContext> {
     const args = String(ctx.match ?? "").trim().toLowerCase().split(/\s+/).filter(Boolean);
     if (args.length === 0) {
       const flags = await this.storage.getChatFeatures(ctx.chat.id);
-      await ctx.reply(this.formatMenu(flags), {
-        parse_mode: "HTML",
+      await ctx.reply("Settings", {
         reply_markup: this.menuKeyboard(flags),
         ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
       });
@@ -44,12 +47,12 @@ export class FeatureControlComposer extends Composer<MyContext> {
 
     const [key, state] = args;
     if (args.length !== 2 || !key || !isFeatureKey(key) || (state !== "on" && state !== "off")) {
-      await replyToMessage(ctx, `Usage: /features <key> on|off\nKeys: ${FEATURES.map((feature) => feature.key).join(", ")}`);
+      await replyToMessage(ctx, "Usage: /features <key> on|off");
       return;
     }
 
     await this.storage.setChatFeature(ctx.chat.id, key, state === "on");
-    await replyToMessage(ctx, `${key} is now ${state} in this chat.`);
+    await replyToMessage(ctx, "Done.");
   }
 
   private async handleToggle(ctx: MyContext) {
@@ -69,15 +72,8 @@ export class FeatureControlComposer extends Composer<MyContext> {
     await this.storage.setChatFeature(ctx.chat.id, key, enabled);
 
     const after: FeatureFlags = { ...before, [key]: { ...before[key], enabled } };
-    await ctx.editMessageText(this.formatMenu(after), { parse_mode: "HTML", reply_markup: this.menuKeyboard(after) });
-    await ctx.answerCallbackQuery({ text: `${this.label(key)} turned ${enabled ? "on" : "off"}.` });
-  }
-
-  private formatMenu(flags: FeatureFlags): string {
-    const lines = FEATURES.map(
-      (feature) => `${flags[feature.key].enabled ? "✅" : "❌"} <b>${feature.label}</b> (<code>${feature.key}</code>) — ${feature.description}`
-    );
-    return [`<b>Features in this chat</b>`, `Tap a button to turn it on or off.`, ``, ...lines].join("\n");
+    await ctx.editMessageReplyMarkup({ reply_markup: this.menuKeyboard(after) });
+    await ctx.answerCallbackQuery();
   }
 
   // One button per row. Built from rows directly rather than text().row() in a loop, which leaves an
@@ -85,12 +81,8 @@ export class FeatureControlComposer extends Composer<MyContext> {
   private menuKeyboard(flags: FeatureFlags): InlineKeyboard {
     return InlineKeyboard.from(
       FEATURES.map((feature) => [
-        InlineKeyboard.text(`${flags[feature.key].enabled ? "✅" : "❌"} ${feature.label}`, `${CALLBACK_PREFIX}${feature.key}`),
+        InlineKeyboard.text(`${flags[feature.key].enabled ? "✅" : "❌"} ${feature.key}`, `${CALLBACK_PREFIX}${feature.key}`),
       ])
     );
-  }
-
-  private label(key: FeatureKey): string {
-    return FEATURES.find((feature) => feature.key === key)!.label;
   }
 }

@@ -183,7 +183,7 @@ Still real commands — grammY dispatches on `bot.command()` regardless of what'
 | `/setoptionsguard` | Owner-only: `on`/`off` toggle for the anti-pump guard (blocks trading shares of anyone you hold an option on) | Admin config, not gameplay |
 | `/stimulus` | Owner-only: `/stimulus <amount>` gives every active player in the market a flat cash injection | Destructive to game balance and owner-only, no reason to advertise it |
 | `/start` | Telegram's default entry point for a private chat — just replies "Fuck off big boi" | Not a real feature, just the obligatory handler |
-| `/features` | Owner-only: turn features on/off for this chat. `/features` shows a button per feature; `/features <key> on\|off` does it by typing. See [Feature switches](#feature-switches) | Admin control, not gameplay |
+| `/features` | Owner-only: turn features on/off for this chat. `/features` shows a button per feature; `/features <key> on\|off` does it by typing. Only shows bare keys and on/off in chat, never what a feature does. See [Feature switches](#feature-switches) | Admin control, not gameplay |
 
 When adding a new command, put it in whichever list it belongs in — visible if a player should discover it via the `/` menu, invisible if it's admin-only or already implied by another command.
 

@@ -5,13 +5,22 @@
 //
 // Pure data on purpose: storage-service.ts and the cron jobs import this too, without pulling in any
 // composer. Order here is display order in /features, not handler order (that's bot.ts's job).
+//
+// /features only ever shows the bare key (see feature-control.ts); label is only used in the "turned off
+// in this chat" notice for stale buttons, which only the public features (wordle, market) have.
 export const FEATURES = [
-  { key: "wordle", label: "Wordle Golf", description: "Rounds, score submissions, nightly reminders", defaultEnabled: true },
-  { key: "market", label: "Stock market", description: "Every market command, price tracking, and market cron jobs", defaultEnabled: true },
-  { key: "beans", label: "Been/bean counter", description: "Counts \"been\", posts the tally on \"bean\"", defaultEnabled: true },
-  { key: "replies", label: "Talk-back", description: "Replies when someone names the bot, replies to its jokes, or says \"galen\"", defaultEnabled: true },
-  { key: "eastereggs", label: "Easter eggs", description: "Keyword jokes in normal conversation (gas, commute, raise, ...)", defaultEnabled: true },
-  { key: "spicy", label: "Spicy", description: "The spank chain, butthole replies, and the crudest easter-egg lines", defaultEnabled: true },
+  // Rounds, score submissions, nightly reminders
+  { key: "wordle", label: "Wordle Golf", defaultEnabled: true },
+  // Every market command, price tracking, and the market's scheduled jobs
+  { key: "market", label: "Stock market", defaultEnabled: true },
+  // Counts "been", posts the tally on "bean"
+  { key: "beans", label: "Been/bean counter", defaultEnabled: true },
+  // Replies when someone names the bot, replies to one of its jokes, or says "galen"
+  { key: "replies", label: "Talk-back", defaultEnabled: true },
+  // Keyword jokes in normal conversation (gas, commute, raise, ...)
+  { key: "eastereggs", label: "Easter eggs", defaultEnabled: true },
+  // The spank chain, the butthole replies, and the crudest easter-egg lines
+  { key: "spicy", label: "Spicy", defaultEnabled: true },
 ] as const;
 
 export type FeatureKey = (typeof FEATURES)[number]["key"];
