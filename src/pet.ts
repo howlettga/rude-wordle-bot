@@ -167,14 +167,8 @@ export class PetComposer extends Composer<MyContext> {
         await this.postEulogy(ctx.api, ctx.chat.id, result.eulogy);
         return;
       case "COOLDOWN":
-        // A pop-up that stays until dismissed, since it has a time in it worth reading. Toasts vanish fast.
-        await ctx.answerCallbackQuery({
-          show_alert: true,
-          text:
-            action === "feed"
-              ? `You fed ${result.pet.name} recently. You can feed again in ${formatDuration(result.retryInSeconds)}.`
-              : `You pet ${result.pet.name} recently. You can pet again in ${formatDuration(result.retryInSeconds)}.`,
-        });
+        // Deliberately vague about when: it's a nudge to share, not a timer to watch.
+        await ctx.answerCallbackQuery({ text: cooldownMessage(result.pet.name, action) });
         return;
       case "OVERFED":
       case "OK":
@@ -429,8 +423,10 @@ function formatLifespan(seconds: number): string {
   return `${days} days`;
 }
 
-function formatDuration(seconds: number): string {
-  const minutes = Math.max(1, Math.ceil(seconds / 60));
-  const hours = Math.floor(minutes / 60);
-  return hours > 0 ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
+function cooldownMessage(name: string, action: "feed" | "pet"): string {
+  return random(
+    action === "feed"
+      ? [`You fed ${name} recently. Give someone else a turn!`, `${name} is still chewing your last meal. Let someone else have a go!`]
+      : [`You pet ${name} recently. Give someone else a turn!`, `${name} has had plenty of you for now. Let someone else have a go!`]
+  );
 }
