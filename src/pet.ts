@@ -300,15 +300,16 @@ function formatCard(pet: PetStatus): string {
   return [
     `${petTitle(pet)}${rarity}`,
     `Adopted by ${escapeHtml(pet.adoptedByName)} · ${age === 0 ? "brand new" : `${age} day${age === 1 ? "" : "s"} old`}`,
-    `🍖 Food ${meterBar(pet.food)} ${Math.round(pet.food)}%`,
-    `💛 Mood ${meterBar(pet.mood)} ${Math.round(pet.mood)}%`,
+    `🍖 Food ${meterBar(pet.food, "🟥")} ${Math.round(pet.food)}%`,
+    `💛 Mood ${meterBar(pet.mood, "🟦")} ${Math.round(pet.mood)}%`,
     `<i>${moodLine(pet)}</i>`,
   ].join("\n");
 }
 
-function meterBar(value: number): string {
+// Telegram can't color text, so the bars are colored square emoji: 10 squares, one per 10%.
+function meterBar(value: number, filledSquare: string): string {
   const filled = Math.round(Math.max(0, Math.min(100, value)) / 10);
-  return "█".repeat(filled) + "░".repeat(10 - filled);
+  return filledSquare.repeat(filled) + "⬜".repeat(10 - filled);
 }
 
 function moodLine(pet: PetStatus): string {
