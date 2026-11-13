@@ -9,12 +9,13 @@ import { StockMarket } from "./durable-objects/stock-market.js";
 import { StockMarketRegistry } from "./durable-objects/stock-market-registry.js";
 import { ChatPause } from "./durable-objects/chat-pause.js";
 import { RudeMessages } from "./durable-objects/rude-messages.js";
+import { Fishing } from "./durable-objects/fishing.js";
 import { StorageService } from "./storage-service.js";
 import { WordleGolfComposer } from "./wordle-golf.js";
 import { StockMarketComposer } from "./stock-market.js";
 import { easternParts } from "./eastern-time.js";
 
-export { BeenCounter, BeanCounter, SpankChain, WordleGolf, WordleGolfRegistry, StockMarket, StockMarketRegistry, ChatPause, RudeMessages };
+export { BeenCounter, BeanCounter, SpankChain, WordleGolf, WordleGolfRegistry, StockMarket, StockMarketRegistry, ChatPause, RudeMessages, Fishing };
 
 // Cron Triggers are UTC-only, and every job here is scheduled in Eastern time, which shifts an hour
 // against UTC across DST. So wrangler.jsonc runs a single hourly trigger, and scheduled() below works out
@@ -39,7 +40,10 @@ export interface Env {
   STOCK_MARKET_REGISTRY: DurableObjectNamespace<StockMarketRegistry>;
   CHAT_PAUSE: DurableObjectNamespace<ChatPause>;
   RUDE_MESSAGES: DurableObjectNamespace<RudeMessages>;
+  FISHING: DurableObjectNamespace<Fishing>;
   OWNER_CHAT_ID?: string;
+  // Seeds fishing tides (see tideFor in fishing-math.ts). Unset means tides stay normal.
+  TIDE_SECRET?: string;
 }
 
 function buildStorage(env: Env): StorageService {
@@ -52,7 +56,8 @@ function buildStorage(env: Env): StorageService {
     env.STOCK_MARKET,
     env.STOCK_MARKET_REGISTRY,
     env.CHAT_PAUSE,
-    env.RUDE_MESSAGES
+    env.RUDE_MESSAGES,
+    env.FISHING
   );
 }
 

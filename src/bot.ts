@@ -9,6 +9,7 @@ import { FeatureControlComposer } from "./feature-control.js";
 import { WordleGolfComposer } from "./wordle-golf.js";
 import { StockMarketComposer } from "./stock-market.js";
 import { BeanCounterComposer } from "./beans.js";
+import { FishingComposer } from "./fishing.js";
 import { SpicyComposer, EasterEggComposer, RepliesComposer } from "./rude.js";
 
 export class RudeBot {
@@ -35,6 +36,7 @@ export class RudeBot {
     // never swallows a mention forward or a count.
     this.gate("wordle", new WordleGolfComposer(this.storage), /^wordle_/);
     this.gate("market", new StockMarketComposer(this.storage, ownerChatId), /^(buy|sell|delist|reset|option_\w+):/);
+    this.gate("fishing", new FishingComposer(this.storage, ownerChatId));
 
     this.registerStart();
     this.registerMentionForwarding();

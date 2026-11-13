@@ -52,6 +52,7 @@ Create a `.dev.vars` file (gitignored, never commit this) with your **test bot's
 ```
 BOT_TOKEN=<test bot token>
 BOT_INFO=<test bot getMe result, from step 2>
+TIDE_SECRET=<any long random string>
 ```
 
 Start the dev server with a public tunnel (Cloudflare manages `cloudflared` for you — no separate install):
@@ -92,7 +93,11 @@ npx wrangler secret put BOT_TOKEN
 # paste the real bot's token when prompted
 
 curl -s "https://api.telegram.org/bot<TOKEN>/getMe" | jq -c '.result' | npx wrangler secret put BOT_INFO
+
+openssl rand -hex 32 | npx wrangler secret put TIDE_SECRET
 ```
+
+`TIDE_SECRET` seeds the hidden daily fishing tides. Without it, tides stay normal. Never commit it or change it casually: changing it reshuffles every chat's tides.
 
 Deploy:
 
@@ -126,6 +131,8 @@ Registering a command with `bot.command()` in `src/bot.ts` only wires up the han
 | `setticker` | what ya called? |
 | `marketrules` | how to win |
 | `instructions` | how's this work? |
+| `fish` | cast a line |
+| `fishing` | biggest catches |
 
 Register these with `setMyCommands`. A heredoc avoids fighting bash over the apostrophes in the descriptions:
 
@@ -146,7 +153,9 @@ curl "https://api.telegram.org/bot<TOKEN>/setMyCommands" \
   {"command":"options","description":"to the moon"},
   {"command":"setticker","description":"what ya called?"},
   {"command":"marketrules","description":"how to win"},
-  {"command":"instructions","description":"how's this work?"}
+  {"command":"instructions","description":"how's this work?"},
+  {"command":"fish","description":"cast a line"},
+  {"command":"fishing","description":"biggest catches"}
 ]}
 EOF
 ```
@@ -169,6 +178,8 @@ options - to the moon
 setticker - what ya called?
 marketrules - how to win
 instructions - how's this work?
+fish - cast a line
+fishing - biggest catches
 ```
 
 ### Invisible commands (do not register these)
@@ -182,6 +193,8 @@ Still real commands — grammY dispatches on `bot.command()` regardless of what'
 | `/setmarketthread` | Owner-only: pins market announcements (trading halts, etc.) to whichever topic you run it in | Admin config, not gameplay |
 | `/setoptionsguard` | Owner-only: `on`/`off` toggle for the anti-pump guard (blocks trading shares of anyone you hold an option on) | Admin config, not gameplay |
 | `/stimulus` | Owner-only: `/stimulus <amount>` gives every active player in the market a flat cash injection | Destructive to game balance and owner-only, no reason to advertise it |
+| `/fishingwindow` | Owner-only: `/fishingwindow <days>` or `/fishingwindow forever` sets how far back the fishing leaderboard looks (default forever). Applies retroactively, since every catch is kept | Admin config, not gameplay |
+| `/resetfishing` | Owner-only: starts the fishing leaderboard over. Soft reset: earlier catches stay stored but stop counting; nobody's daily cast or waiting bonus changes | Admin control, not gameplay |
 | `/start` | Telegram's default entry point for a private chat — just replies "Fuck off big boi" | Not a real feature, just the obligatory handler |
 | `/features` | Owner-only: turn features on/off for this chat. `/features` shows a button per feature; `/features <key> on\|off` does it by typing. Only shows bare keys and on/off in chat, never what a feature does. See [Feature switches](#feature-switches) | Admin control, not gameplay |
 
@@ -195,7 +208,8 @@ Every feature can be turned on or off per chat by the owner, with `/features` ru
 |---|---|---|---|
 | `wordle` | Wordle Golf | Rounds, score submissions, nightly reminders | on |
 | `market` | Stock market | Every market command, price tracking, and the market's scheduled jobs | on |
-| `beans` | Been/bean counter | Counts "been", posts the tally on "bean" | on |
+| `fishing` | Fishing | `/fish` (at most once a day; catches build up over about a month of waiting, and casting too often mostly turns up junk), the `/fishing` leaderboard, and the owner's fishing commands | on |
+| `beans` | Been/bean counter | Counts "been", posts the tally on "bean". Reply to that post with a question (anything with a "?") to get the bean count | on |
 | `replies` | Talk-back | Replies when someone names the bot, replies to one of its jokes, or says "galen" | on |
 | `eastereggs` | Easter eggs | Keyword jokes in normal conversation (gas, commute, raise, ...) | on |
 | `spicy` | Spicy | The spank chain, the butthole replies, and the crudest easter-egg lines | on |

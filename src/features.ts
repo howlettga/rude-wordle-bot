@@ -13,7 +13,9 @@ export const FEATURES = [
   { key: "wordle", label: "Wordle Golf", defaultEnabled: true },
   // Every market command, price tracking, and the market's scheduled jobs
   { key: "market", label: "Stock market", defaultEnabled: true },
-  // Counts "been", posts the tally on "bean"
+  // /fish once a day, /fishing leaderboard
+  { key: "fishing", label: "Fishing", defaultEnabled: true },
+  // Counts "been", posts the tally on "bean", reports the bean tally to a question replying to that post
   { key: "beans", label: "Been/bean counter", defaultEnabled: true },
   // Replies when someone names the bot, replies to one of its jokes, or says "galen"
   { key: "replies", label: "Talk-back", defaultEnabled: true },
