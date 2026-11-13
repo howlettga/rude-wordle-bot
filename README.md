@@ -52,6 +52,7 @@ Create a `.dev.vars` file (gitignored, never commit this) with your **test bot's
 ```
 BOT_TOKEN=<test bot token>
 BOT_INFO=<test bot getMe result, from step 2>
+TIDE_SECRET=<any long random string>
 ```
 
 Start the dev server with a public tunnel (Cloudflare manages `cloudflared` for you — no separate install):
@@ -92,7 +93,11 @@ npx wrangler secret put BOT_TOKEN
 # paste the real bot's token when prompted
 
 curl -s "https://api.telegram.org/bot<TOKEN>/getMe" | jq -c '.result' | npx wrangler secret put BOT_INFO
+
+openssl rand -hex 32 | npx wrangler secret put TIDE_SECRET
 ```
+
+`TIDE_SECRET` seeds the hidden daily fishing tides. Without it, tides stay normal. Never commit it or change it casually: changing it reshuffles every chat's tides.
 
 Deploy:
 

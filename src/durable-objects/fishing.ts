@@ -1,7 +1,16 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../main.js";
 import { easternParts } from "../eastern-time.js";
-import { FIRST_CAST_WAIT_DAYS, OVERFISHED_WITHIN_DAYS, rollsForWait, rollTrash, rollWeight, speciesForWeight } from "../fishing-math.js";
+import {
+  FIRST_CAST_WAIT_DAYS,
+  OVERFISHED_WITHIN_DAYS,
+  rollsForWait,
+  rollTrash,
+  rollWeight,
+  speciesForWeight,
+  tideFor,
+  tideMultiplier,
+} from "../fishing-math.js";
 
 export interface FishingCatch {
   species: string;
@@ -9,14 +18,17 @@ export interface FishingCatch {
   weight: number;
 }
 
+// highTide: today's tide in this chat is high or king (see tideFor) — reported as just "high tide", so a
+// king tide stays a surprise.
 export type FishingCastResult =
   | { ok: false; type: "ALREADY_FISHED" }
   // Junk instead of a fish (see rollTrash): not recorded anywhere, but the cast is still used up.
   // overfished: caught within OVERFISHED_WITHIN_DAYS of the angler's last cast.
-  | { ok: true; kind: "trash"; item: string; emoji: string; overfished: boolean }
+  | { ok: true; kind: "trash"; item: string; emoji: string; overfished: boolean; highTide: boolean }
   | {
       ok: true;
       kind: "fish";
+      highTide: boolean;
       catch: FishingCatch;
       // All three are judged within the current leaderboard (window + last reset), same as /fishing.
       // previousBest is null when this is the angler's first catch on the current leaderboard.
@@ -84,9 +96,12 @@ export class Fishing extends DurableObject<Env> {
   // the roll and the junk chance (see fishing-math.ts); a first-ever cast counts as FIRST_CAST_WAIT_DAYS,
   // a medium start. No await between the "already fished today?" check and the write, so two /fish sent
   // at once can't both get through.
-  async cast(input: { userId: number; username?: string; firstName: string }): Promise<FishingCastResult> {
+  async cast(input: { chatId: number; userId: number; username?: string; firstName: string }): Promise<FishingCastResult> {
     const p = easternParts(new Date());
     const today = `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
+    // Without the secret, tides just stay normal rather than becoming predictable from the source code.
+    const tide = this.env.TIDE_SECRET ? tideFor(this.env.TIDE_SECRET, input.chatId, Date.UTC(p.year, p.month - 1, p.day) / 86_400_000) : "normal";
+    const highTide = tide === "high" || tide === "king";
 
     const angler = this.ctx.storage.sql
       .exec<{ last_cast_date: string }>(`SELECT last_cast_date FROM anglers WHERE user_id = ?`, input.userId)
@@ -107,10 +122,10 @@ export class Fishing extends DurableObject<Env> {
 
     const trash = rollTrash(daysWaited);
     if (trash) {
-      return { ok: true, kind: "trash", ...trash, overfished: daysWaited <= OVERFISHED_WITHIN_DAYS };
+      return { ok: true, kind: "trash", ...trash, overfished: daysWaited <= OVERFISHED_WITHIN_DAYS, highTide };
     }
 
-    const weight = rollWeight(rollsForWait(daysWaited));
+    const weight = rollWeight(rollsForWait(daysWaited) * tideMultiplier(tide));
     const { species, emoji } = speciesForWeight(weight);
 
     // Judged against the leaderboard as it stood before this catch.
@@ -139,6 +154,7 @@ export class Fishing extends DurableObject<Env> {
     return {
       ok: true,
       kind: "fish",
+      highTide,
       catch: { species, emoji, weight },
       previousBest,
       chatRecord: weight > (previousRecord ?? 0),

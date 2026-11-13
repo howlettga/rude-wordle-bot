@@ -331,7 +331,7 @@ export class StorageService {
   }
 
   castFishing(chatId: number, input: { userId: number; username?: string; firstName: string }): Promise<FishingCastResult> {
-    return this.fishingStub(chatId).cast(input);
+    return this.fishingStub(chatId).cast({ ...input, chatId });
   }
 
   getFishingLeaderboard(chatId: number): Promise<FishingLeaderboard> {

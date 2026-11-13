@@ -42,6 +42,8 @@ export interface Env {
   RUDE_MESSAGES: DurableObjectNamespace<RudeMessages>;
   FISHING: DurableObjectNamespace<Fishing>;
   OWNER_CHAT_ID?: string;
+  // Seeds fishing tides (see tideFor in fishing-math.ts). Unset means tides stay normal.
+  TIDE_SECRET?: string;
 }
 
 function buildStorage(env: Env): StorageService {

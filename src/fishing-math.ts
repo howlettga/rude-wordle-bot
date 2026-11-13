@@ -81,6 +81,62 @@ export function rollTrash(daysWaited: number, random: () => number = Math.random
   return { item, emoji };
 }
 
+// Tides: each chat's water has a hidden tide that multiplies everyone's rolls that day (see rollsForWait,
+// which it scales — so a king tide two days after your last cast is still a bad cast). It comes in
+// streaks, like real weather, without following any real-world cycle anyone could plan around:
+//   1. Every chat/day gets a "swell": a standard normal value derived from a hash of the secret, the chat,
+//      and the day. Unpredictable without the secret (TIDE_SECRET), and the same every time it's computed.
+//   2. A day's tide is the average of the last TIDE_WINDOW_DAYS swells (scaled back to N(0, 1)), so
+//      neighboring days share most of their inputs and drift together.
+//   3. That average maps onto fixed tiers at N(0, 1) quantiles, so over time the split is exactly
+//      25% low / 50% normal / 20% high / 5% king.
+// With a 4-day window, high-or-better stretches last ~2.8 days on average and come around every ~8 days;
+// a high day is followed by another 64% of the time. The multipliers average exactly 1
+// (.25 * .44 + .5 * 1 + .2 * 1.4 + .05 * 2.2), so tides add swing without shifting long-run odds.
+// Nothing is stored and nothing is scheduled — a day's tide is just TIDE_WINDOW_DAYS hashes.
+export type Tide = "low" | "normal" | "high" | "king";
+
+const TIDE_WINDOW_DAYS = 4;
+const TIDE_TIERS: { tide: Tide; below: number; multiplier: number }[] = [
+  { tide: "low", below: -0.6745, multiplier: 0.44 }, // N(0, 1) 25th percentile
+  { tide: "normal", below: 0.6745, multiplier: 1 }, // 75th
+  { tide: "high", below: 1.6449, multiplier: 1.4 }, // 95th
+  { tide: "king", below: Infinity, multiplier: 2.2 },
+];
+
+// dayNumber: whole days since the Unix epoch, for the Eastern calendar date (so the tide turns at
+// midnight ET, along with the daily cast limit).
+export function tideFor(secret: string, chatId: number, dayNumber: number): Tide {
+  let sum = 0;
+  for (let day = dayNumber - TIDE_WINDOW_DAYS + 1; day <= dayNumber; day++) {
+    const u = (cyrb53(`${secret}:${chatId}:${day}`) + 0.5) / 2 ** 53;
+    sum += inverseNormalCdf(u);
+  }
+  const level = sum / Math.sqrt(TIDE_WINDOW_DAYS);
+  return TIDE_TIERS.find((tier) => level < tier.below)!.tide;
+}
+
+export function tideMultiplier(tide: Tide): number {
+  return TIDE_TIERS.find((tier) => tier.tide === tide)!.multiplier;
+}
+
+// cyrb53 (bryc, public domain): a fast, well-mixed 53-bit string hash. Not cryptographic, but with a
+// long random secret in the input there's no practical way to predict tides from the ones already seen.
+function cyrb53(str: string): number {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+}
+
 // Species are picked by weight, so the name tells you how good the catch was (a marlin is always huge).
 const SPECIES_BANDS: { maxLb: number; species: [name: string, emoji: string][] }[] = [
   { maxLb: 1, species: [["minnow", "🐟"], ["sunfish", "🐠"], ["perch", "🐟"]] },

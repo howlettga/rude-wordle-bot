@@ -47,7 +47,7 @@ export class FishingComposer extends Composer<MyContext> {
     }
     if (result.kind === "trash") {
       const tagline = result.overfished ? "Nothing good comes from overfished waters." : "Worthless.";
-      await replyToMessage(ctx, `You reeled in ${result.item}! ${result.emoji}\n${tagline}`);
+      await replyToMessage(ctx, [`You reeled in ${result.item}! ${result.emoji}`, tagline, ...tideLine(result.highTide)].join("\n"));
       return;
     }
 
@@ -61,6 +61,7 @@ export class FishingComposer extends Composer<MyContext> {
     } else if (weight > result.previousBest) {
       lines.push(`New personal best! You're #${result.rank} on the leaderboard.`);
     }
+    lines.push(...tideLine(result.highTide));
     await replyToMessage(ctx, lines.join("\n"));
   }
 
@@ -108,6 +109,11 @@ export class FishingComposer extends Composer<MyContext> {
     await this.storage.resetFishing(ctx.chat.id);
     await replyToMessage(ctx, "Fishing leaderboard reset. Earlier catches no longer count.");
   }
+}
+
+// The only hint tides exist at all. King tides read the same, so they stay a surprise.
+function tideLine(highTide: boolean): string[] {
+  return highTide ? ["🌊 High tide today!"] : [];
 }
 
 function formatEntry(entry: FishingLeaderboardEntry, index: number): string {
