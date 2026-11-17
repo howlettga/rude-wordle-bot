@@ -13,6 +13,15 @@ export const PET_CONFIG = {
   HUNGRY_MOOD_DECAY_MULTIPLIER: 2,
   HUNGRY_BELOW: 25,
 
+  // While the chat has fishing switched on, feeding means feeding it one of your fish (see pet.ts), and a
+  // bigger fish is a bigger meal: FISH_FOOD_AT_MEDIAN * sqrt(weight / FISH_FOOD_MEDIAN_LB), clamped.
+  // 2 lb -> 11, 5 -> 18, 10 -> 25, 14 -> 30, 20 -> 36, 40 -> 51, 56+ -> 60. A typical catch averages
+  // about 27, so the pet needs roughly 1.2 fish a day across the whole chat.
+  FISH_FOOD_AT_MEDIAN: 30,
+  FISH_FOOD_MEDIAN_LB: 14,
+  FISH_FOOD_MIN: 8,
+  FISH_FOOD_MAX: 60,
+  // A feed with fishing switched off (no fish needed).
   FEED_AMOUNT: 35,
   // Feeding at or above this much food makes it throw up instead: no food gained, some mood lost.
   OVERFED_AT: 90,
@@ -28,13 +37,21 @@ export const PET_CONFIG = {
   STARVE_AFTER_EMPTY_HOURS: 24,
   RUN_AWAY_AFTER_MISERABLE_HOURS: 48,
 
-  // Hourly-check warnings only post in this Eastern window (a warning due overnight waits until morning).
+  // The hourly check's one warning ("it's dying": food at 0) only posts in this Eastern window (one due
+  // overnight waits until morning). Hunger and loneliness aren't posted on their own; the pet begs in
+  // people's /fish replies instead, below these levels (see petDesireLine in pet.ts).
   WARN_FROM_HOUR_ET: 9,
   WARN_UNTIL_HOUR_ET: 22,
   HUNGRY_WARNING_AT: 25,
   STARVING_WARNING_AT: 10,
   MISERABLE_WARNING_AT: 15,
 } as const;
+
+export function foodForFish(weight: number): number {
+  const { FISH_FOOD_AT_MEDIAN, FISH_FOOD_MEDIAN_LB, FISH_FOOD_MIN, FISH_FOOD_MAX } = PET_CONFIG;
+  const food = Math.round(FISH_FOOD_AT_MEDIAN * Math.sqrt(Math.max(0, weight) / FISH_FOOD_MEDIAN_LB));
+  return Math.min(FISH_FOOD_MAX, Math.max(FISH_FOOD_MIN, food));
+}
 
 // The emoji on the card's feed line ("🌮 Galen fed Gregory."), one picked per feed. Deliberately not pet
 // food — an implication, not a statement. 🍆 and 🍑 left out on purpose.

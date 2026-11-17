@@ -4,8 +4,9 @@ import { createConversation } from "@grammyjs/conversations";
 import type { Conversation } from "@grammyjs/conversations";
 import { type MyContext, replyToMessage, replyHTML, isNotCommand, CONVERSATION_TIMEOUT_MS } from "./context.js";
 import type { StorageService } from "./storage-service.js";
-import type { PetAction, PetEulogy, PetInput, PetStatus, PetWarning } from "./durable-objects/pet.js";
-import { PET_CONFIG, PET_TRICKS, rollSpecies } from "./pet-config.js";
+import type { PetAction, PetEulogy, PetInput, PetPeek, PetStatus, PetWarning } from "./durable-objects/pet.js";
+import type { FishSize, HeldFish } from "./durable-objects/fishing.js";
+import { PET_CONFIG, PET_TRICKS, foodForFish, rollSpecies } from "./pet-config.js";
 import { easternParts } from "./eastern-time.js";
 import { escapeHtml, random } from "./util.js";
 
@@ -15,8 +16,12 @@ import { escapeHtml, random } from "./util.js";
 //   /graveyard  -> past pets, how long they lived, and how they went
 //   /petkill    -> owner-only: puts the pet down (mercy, or testing)
 //   /petrevive  -> owner-only: brings the last dead pet back at full meters (in case a bug killed it)
-// The hourly check (runHourlyCheck) posts hunger/mood warnings and announces deaths. Every number lives
-// in pet-config.ts.
+// While the chat has fishing on, feeding costs one of the feeder's own fish: the card's Feed button is
+// three — small, medium, large — each taking that size from the tapper's bucket (see Fishing.takeFish),
+// with bigger fish worth more food (foodForFish). Nobody sees what's in their bucket.
+// The hourly check (runHourlyCheck) posts only the "it's dying" warning and announces deaths; hunger and
+// loneliness show up as the pet begging in /fish replies instead (petDesireLine). Every number lives in
+// pet-config.ts.
 type ConversationContext = Context;
 type MyConversation = Conversation<MyContext, ConversationContext>;
 
@@ -24,6 +29,10 @@ const ADOPT_CONVERSATION = "pet-adopt";
 const EXIT_KEYWORDS = new Set(["stop", "quit", "exit", "end", "cancel"]);
 const MAX_NAME_LENGTH = 24;
 const GRAVEYARD_SIZE = 10;
+// Callback data: pet:<action>:<petId>, plus :s / :m / :l for which size of fish a feed takes. Cards posted
+// before fish feeding have plain pet:feed:<id> buttons, which count as medium.
+const BUTTON_DATA = /^pet:(feed|pet|play):(\d+)(?::([sml]))?$/;
+const FISH_SIZES: Record<string, FishSize> = { s: "small", m: "medium", l: "large" };
 
 export class PetComposer extends Composer<MyContext> {
   constructor(
@@ -37,11 +46,16 @@ export class PetComposer extends Composer<MyContext> {
     this.command("graveyard", (ctx) => this.sendGraveyard(ctx));
     this.command("petkill", (ctx) => this.handleKill(ctx));
     this.command("petrevive", (ctx) => this.handleRevive(ctx));
-    this.callbackQuery(/^pet:(feed|pet|play):(\d+)$/, (ctx) => this.handleButton(ctx));
+    this.callbackQuery(BUTTON_DATA, (ctx) => this.handleButton(ctx));
   }
 
   private isOwner(ctx: MyContext): boolean {
     return this.ownerChatId !== undefined && ctx.from?.id === this.ownerChatId;
+  }
+
+  // Whether feeding costs a fish in this chat: only while fishing is on, or nobody could ever feed it.
+  private async feedsOnFish(chatId: number): Promise<boolean> {
+    return (await this.storage.getChatFeatures(chatId)).fishing.enabled;
   }
 
   private async handleAdopt(ctx: MyContext) {
@@ -94,7 +108,7 @@ export class PetComposer extends Composer<MyContext> {
         continue;
       }
 
-      const result = await conversation.external(async () => {
+      const { result, fishFeeding } = await conversation.external(async () => {
         const adopted = await this.storage.adoptPet(chatId, {
           name,
           species: species.species,
@@ -107,7 +121,7 @@ export class PetComposer extends Composer<MyContext> {
         if (adopted.ok) {
           await this.storage.registerPetChat(chatId);
         }
-        return adopted;
+        return { result: adopted, fishFeeding: await this.feedsOnFish(chatId) };
       });
 
       if (!result.ok) {
@@ -116,7 +130,7 @@ export class PetComposer extends Composer<MyContext> {
       }
       await response.reply(`🎉 Welcome home, ${petTitle(result.pet)}!\n\n${formatCard(result.pet)}`, {
         parse_mode: "HTML",
-        reply_markup: cardKeyboard(result.pet),
+        reply_markup: cardKeyboard(result.pet, fishFeeding),
         ...(threadId !== null && { message_thread_id: threadId }),
       });
       return;
@@ -138,25 +152,56 @@ export class PetComposer extends Composer<MyContext> {
     }
     await ctx.reply(formatCard(pet), {
       parse_mode: "HTML",
-      reply_markup: cardKeyboard(pet),
+      reply_markup: cardKeyboard(pet, await this.feedsOnFish(ctx.chat.id)),
       ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
     });
   }
 
   // Feed / Pet buttons work on any message that carries them (the card, warnings) and turn it into an
   // up-to-date card. Everything else is a private toast, so caring for the pet doesn't flood the chat.
+  //
+  // A feed (with fishing on) takes the fish first, then asks the pet, and puts the fish back if the feed
+  // didn't happen (cooldown, stale card, pet just died). Doing it in that order here, rather than inside
+  // the Pet DO, keeps the pet's cooldown check and its write free of any await, so a double tap can't get
+  // two feeds through; each tap takes its own fish, and the one that hits the cooldown gets it back.
   private async handleButton(ctx: MyContext) {
-    const match = ctx.callbackQuery?.data?.match(/^pet:(feed|pet|play):(\d+)$/);
+    const match = ctx.callbackQuery?.data?.match(BUTTON_DATA);
     if (!match || !ctx.chat || !ctx.from) {
       return;
     }
+    const chatId = ctx.chat.id;
     const action = match[1] as PetInput;
-    const result = await this.storage.interactWithPet(ctx.chat.id, {
-      petId: Number(match[2]),
-      action,
-      userId: ctx.from.id,
-      firstName: ctx.from.first_name,
-    });
+    const petId = Number(match[2]);
+    const fishFeeding = await this.feedsOnFish(chatId);
+
+    let fish: HeldFish | null = null;
+    if (action === "feed" && fishFeeding) {
+      fish = await this.storage.takeFish(chatId, ctx.from.id, FISH_SIZES[match[3] ?? "m"] ?? "medium", `pet:${petId}`);
+      if (!fish) {
+        const pet = await this.storage.peekPet(chatId);
+        await ctx.answerCallbackQuery({ text: emptyBucketMessage(pet?.name ?? "The pet"), show_alert: true });
+        return;
+      }
+    }
+
+    let result: Awaited<ReturnType<StorageService["interactWithPet"]>>;
+    try {
+      result = await this.storage.interactWithPet(chatId, {
+        petId,
+        action,
+        userId: ctx.from.id,
+        firstName: ctx.from.first_name,
+        feedAmount: fish ? foodForFish(fish.weight) : PET_CONFIG.FEED_AMOUNT,
+      });
+    } catch (err) {
+      if (fish) {
+        await this.refundFish(chatId, fish);
+      }
+      throw err;
+    }
+    if (fish && result.result !== "OK" && result.result !== "OVERFED") {
+      await this.refundFish(chatId, fish);
+    }
 
     switch (result.result) {
       case "STALE":
@@ -177,7 +222,7 @@ export class PetComposer extends Composer<MyContext> {
         // can read it). The other order edits the card's buttons while the alert is open, and Telegram's
         // mobile apps then leave those buttons dead after the alert is dismissed.
         await ctx
-          .editMessageText(formatCard(result.pet), { parse_mode: "HTML", reply_markup: cardKeyboard(result.pet) })
+          .editMessageText(formatCard(result.pet), { parse_mode: "HTML", reply_markup: cardKeyboard(result.pet, fishFeeding) })
           .catch((err) => console.error(err)); // e.g. "message is not modified"
         await ctx.answerCallbackQuery({ text: actionPopup(result.pet), show_alert: true });
         // Everything else stays on the card, but throwing up, biting, and learning a trick go public.
@@ -196,6 +241,11 @@ export class PetComposer extends Composer<MyContext> {
         return;
       }
     }
+  }
+
+  // A lost fish is better than a broken tap, so a failed refund is only logged.
+  private async refundFish(chatId: number, fish: HeldFish) {
+    await this.storage.returnFish(chatId, fish.id).catch((err) => console.error("returnFish failed", fish, err));
   }
 
   // Replies to the card the button was on, quoting just the pet's title, so the reply preview shows
@@ -261,7 +311,7 @@ export class PetComposer extends Composer<MyContext> {
     }
     await ctx.reply(`⚡ ${petTitle(pet)} is back from the dead.\n\n${formatCard(pet)}`, {
       parse_mode: "HTML",
-      reply_markup: cardKeyboard(pet),
+      reply_markup: cardKeyboard(pet, await this.feedsOnFish(ctx.chat.id)),
       ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
     });
   }
@@ -276,7 +326,7 @@ export class PetComposer extends Composer<MyContext> {
   /** Driven by main.ts's scheduled() handler, every hour. */
 
   // Settles every chat's pet (catching deaths nobody's been around to notice), then posts whatever's due:
-  // a eulogy, or warnings (with Feed / Pet buttons attached). Chats with the feature switched off get
+  // a eulogy, or the "it's dying" warning (with the card's buttons attached). Chats with the feature switched off get
   // their pet frozen instead — see the Pet DO's freeze().
   async runHourlyCheck(api: Api): Promise<void> {
     const chatIds = await this.storage.listPetChats();
@@ -286,7 +336,8 @@ export class PetComposer extends Composer<MyContext> {
     for (const chatId of chatIds) {
       // One chat failing (e.g. the bot was removed from it) shouldn't skip every chat after it.
       try {
-        if (!(await this.storage.getChatFeatures(chatId)).pet.enabled) {
+        const features = await this.storage.getChatFeatures(chatId);
+        if (!features.pet.enabled) {
           await this.storage.freezePet(chatId);
           continue;
         }
@@ -298,7 +349,7 @@ export class PetComposer extends Composer<MyContext> {
           for (const warning of warnings) {
             await api.sendMessage(chatId, formatWarning(pet, warning), {
               parse_mode: "HTML",
-              reply_markup: cardKeyboard(pet),
+              reply_markup: cardKeyboard(pet, features.fishing.enabled),
               ...(pet.threadId !== null && { message_thread_id: pet.threadId }),
             });
           }
@@ -320,11 +371,20 @@ function petTitle(pet: { name: string; species: string; emoji: string }): string
   return `<b>${escapeHtml(pet.name)}</b> the ${pet.species} ${pet.emoji}`;
 }
 
-function cardKeyboard(pet: PetStatus): InlineKeyboard {
-  return new InlineKeyboard()
-    .text("🍖 Feed", `pet:feed:${pet.id}`)
-    .text("🤚 Pet", `pet:pet:${pet.id}`)
-    .text("🎾 Play", `pet:play:${pet.id}`);
+// With fishing on, Feed is three buttons on their own row — which size of fish to give it, from the
+// tapper's own bucket.
+function cardKeyboard(pet: PetStatus, fishFeeding: boolean): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  if (fishFeeding) {
+    keyboard
+      .text("🐟 Small", `pet:feed:${pet.id}:s`)
+      .text("🐟 Medium", `pet:feed:${pet.id}:m`)
+      .text("🐟 Large", `pet:feed:${pet.id}:l`)
+      .row();
+  } else {
+    keyboard.text("🍖 Feed", `pet:feed:${pet.id}`);
+  }
+  return keyboard.text("🤚 Pet", `pet:pet:${pet.id}`).text("🎾 Play", `pet:play:${pet.id}`);
 }
 
 // The tapper's own pop-up, in second person. Plain text: Telegram pop-ups don't render HTML.
@@ -451,17 +511,45 @@ function moodLine(pet: PetStatus): string {
 }
 
 function formatWarning(pet: PetStatus, warning: PetWarning): string {
-  const title = petTitle(pet);
-  switch (warning.type) {
-    case "hungry":
-      return `🍖 ${title} is getting hungry.`;
-    case "starving":
-      return `😫 ${title} is starving! Somebody feed it.`;
-    case "dying":
-      return `☠️ ${title} hasn't eaten in a long time. It has about ${warning.hoursLeft} hour${warning.hoursLeft === 1 ? "" : "s"} left.`;
-    case "miserable":
-      return `💔 ${title} seems miserable. Nobody's paid it any attention lately.`;
+  return `☠️ ${petTitle(pet)} hasn't eaten in a long time. It has about ${warning.hoursLeft} hour${warning.hoursLeft === 1 ? "" : "s"} left.`;
+}
+
+// The pet begging in someone's /fish reply (see fishing.ts), when it's hungry or lonely — the only nudge
+// before it's dying, and it lands on the one person holding a fresh fish. Plain text, like the rest of
+// that reply. null when the pet's fine.
+export function petDesireLine(pet: PetPeek, caught: "fish" | "trash"): string | null {
+  const name = pet.name;
+  const lead = `${pet.emoji} ${name}`;
+  if (pet.food <= PET_CONFIG.STARVING_WARNING_AT) {
+    return random(
+      caught === "fish"
+        ? [`${lead} is trying to climb into your bucket. Feed it from /pet.`, `${lead} hasn't eaten in ages and is staring at your fish. /pet`]
+        : [`${lead} tried to eat that anyway. It's starving. /pet`, `${lead} is so hungry it's licking the bucket. /pet`]
+    );
   }
+  if (pet.food <= PET_CONFIG.HUNGRY_WARNING_AT) {
+    return random(
+      caught === "fish"
+        ? [`${lead} smells your catch and drools.`, `${lead} followed you down to the dock. It looks hungry.`, `${lead} is eyeing your fish.`]
+        : [`${lead} sniffs it hopefully. It's hungry.`, `${lead} looks at your catch, then at you. It was hoping for a fish.`]
+    );
+  }
+  if (pet.mood <= PET_CONFIG.MISERABLE_WARNING_AT) {
+    return random([
+      `${lead} watches you fish from a distance. It looks lonely.`,
+      `${lead} sat next to you on the dock and sighed. Nobody's played with it in a while.`,
+    ]);
+  }
+  return null;
+}
+
+// Feeding with an empty bucket: in-character, and a pointer to where fish come from. Plain text (pop-up).
+function emptyBucketMessage(name: string): string {
+  return random([
+    `🪣 Your bucket's empty. ${name} sniffs your hands and looks away. Go /fish first.`,
+    `🪣 ${name} stares at your empty hands. No fish, no food. Try /fish.`,
+    `🪣 You don't have any fish. ${name} has standards. /fish`,
+  ]);
 }
 
 function formatEulogy(e: PetEulogy): string {

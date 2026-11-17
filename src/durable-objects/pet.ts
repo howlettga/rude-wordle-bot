@@ -44,7 +44,18 @@ export interface PetEulogy {
   tricksKnown: number;
 }
 
-export type PetWarning = { type: "hungry" } | { type: "starving" } | { type: "dying"; hoursLeft: number } | { type: "miserable" };
+// The only warning the hourly check posts on its own: food has hit 0 and the clock is running. Hunger and
+// loneliness show up as the pet begging in /fish replies instead (see peek).
+export type PetWarning = { type: "dying"; hoursLeft: number };
+
+// How the living pet is doing right now, for the begging line in /fish replies (see peek).
+export interface PetPeek {
+  name: string;
+  species: string;
+  emoji: string;
+  food: number;
+  mood: number;
+}
 
 // Anything that settles the pet can discover it died since the last look (the meters are lazy — see
 // pet-math.ts). That call returns the eulogy exactly once, and whoever made it posts it.
@@ -99,8 +110,9 @@ type PetRow = {
   cause: PetDeathCause | null;
 };
 
-// Warning levels, in order of urgency. warn_level remembers the highest one already posted for the
-// current hunger spell, so each posts once; feeding resets it.
+// Hunger levels, in order of urgency. Only WARN_DYING is ever posted now (see tick); warn_level remembers
+// whether it has been for the current hunger spell, so it posts once. Feeding resets it to wherever food
+// lands. (The lower levels used to be posted too; they're kept so the stored values still mean the same.)
 const WARN_NONE = 0;
 const WARN_HUNGRY = 1;
 const WARN_STARVING = 2;
@@ -247,7 +259,15 @@ export class Pet extends DurableObject<Env> {
     return { ok: true, pet: this.status(inserted), ...(eulogy && { eulogy }) };
   }
 
-  async interact(input: { petId: number; action: PetInput; userId: number; firstName: string }): Promise<PetInteractResult> {
+  // feedAmount: how much food a feed adds — set by the caller, since it depends on the fish being fed
+  // (see foodForFish), or PET_CONFIG.FEED_AMOUNT when the chat has fishing switched off.
+  async interact(input: {
+    petId: number;
+    action: PetInput;
+    userId: number;
+    firstName: string;
+    feedAmount: number;
+  }): Promise<PetInteractResult> {
     const now = nowSec();
     const { row, eulogy } = this.settle(now);
     if (eulogy) {
@@ -284,7 +304,7 @@ export class Pet extends DurableObject<Env> {
         mood -= PET_CONFIG.OVERFED_MOOD_PENALTY;
       } else {
         kind = "fed";
-        food += PET_CONFIG.FEED_AMOUNT;
+        food += input.feedAmount;
       }
     } else if (input.action === "pet") {
       kind = "petted";
@@ -367,8 +387,9 @@ export class Pet extends DurableObject<Env> {
   }
 
   // The hourly check (see PetComposer.runHourlyCheck). Settles the pet — which is where deaths get
-  // noticed if nobody's looked in a while — and returns any warnings that are newly due. awake is
-  // whether warnings may post right now; one that comes due overnight just waits for the morning.
+  // noticed if nobody's looked in a while — and returns the "dying" warning if it's newly due (once per
+  // hunger spell; a feed resets it). awake is whether it may post right now; one that comes due overnight
+  // just waits for the morning.
   async tick(awake: boolean): Promise<{ pet: PetStatus | null; eulogy?: PetEulogy; warnings: PetWarning[] }> {
     const now = nowSec();
     const { row, eulogy } = this.settle(now);
@@ -377,28 +398,38 @@ export class Pet extends DurableObject<Env> {
     }
 
     const warnings: PetWarning[] = [];
-    let warnLevel = row.warn_level;
-    let moodWarned = row.mood_warned;
-    if (awake) {
-      const level = warnLevelFor(row.food);
-      if (level > warnLevel) {
-        if (level === WARN_DYING) {
-          const starveAt = (row.food_empty_since ?? now) + PET_CONFIG.STARVE_AFTER_EMPTY_HOURS * 3600;
-          warnings.push({ type: "dying", hoursLeft: Math.max(1, Math.round((starveAt - now) / 3600)) });
-        } else {
-          warnings.push({ type: level === WARN_STARVING ? "starving" : "hungry" });
-        }
-        warnLevel = level;
-      }
-      if (row.mood <= PET_CONFIG.MISERABLE_WARNING_AT && !moodWarned) {
-        warnings.push({ type: "miserable" });
-        moodWarned = 1;
-      }
-    }
-    if (warnLevel !== row.warn_level || moodWarned !== row.mood_warned) {
-      this.ctx.storage.sql.exec(`UPDATE pets SET warn_level = ?, mood_warned = ? WHERE id = ?`, warnLevel, moodWarned, row.id);
+    if (awake && warnLevelFor(row.food) === WARN_DYING && row.warn_level < WARN_DYING) {
+      const starveAt = (row.food_empty_since ?? now) + PET_CONFIG.STARVE_AFTER_EMPTY_HOURS * 3600;
+      warnings.push({ type: "dying", hoursLeft: Math.max(1, Math.round((starveAt - now) / 3600)) });
+      this.ctx.storage.sql.exec(`UPDATE pets SET warn_level = ? WHERE id = ?`, WARN_DYING, row.id);
     }
     return { pet: this.status(row), warnings };
+  }
+
+  // A read-only look at the living pet as of now. Changes nothing: if it has died since anyone last
+  // looked, this returns null and leaves the death for the next real lookup (or the hourly check) to
+  // record and announce, so the eulogy is never lost.
+  async peek(): Promise<PetPeek | null> {
+    const row = this.ctx.storage.sql.exec<PetRow>(`SELECT * FROM pets WHERE died_at IS NULL LIMIT 1`).toArray()[0];
+    if (!row) {
+      return null;
+    }
+    const now = nowSec();
+    const shift = row.frozen_at !== null ? now - row.frozen_at : 0;
+    const meters = advanceMeters(
+      {
+        food: row.food,
+        mood: row.mood,
+        at: row.updated_at + shift,
+        foodEmptySince: row.food_empty_since !== null ? row.food_empty_since + shift : null,
+        moodEmptySince: row.mood_empty_since !== null ? row.mood_empty_since + shift : null,
+      },
+      now
+    );
+    if (petFate(meters)) {
+      return null;
+    }
+    return { name: row.name, species: row.species, emoji: row.emoji, food: meters.food, mood: meters.mood };
   }
 
   // Called by the hourly check while the "pet" feature is switched off in this chat: stops the clock, so

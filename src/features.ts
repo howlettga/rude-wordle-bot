@@ -13,9 +13,10 @@ export const FEATURES = [
   { key: "wordle", label: "Wordle Golf", defaultEnabled: true },
   // Every market command, price tracking, and the market's scheduled jobs
   { key: "market", label: "Stock market", defaultEnabled: true },
-  // /fish once a day, /fishing leaderboard
+  // /fish once a day, /fishing leaderboard, everyone's bucket of caught fish (what the pet eats)
   { key: "fishing", label: "Fishing", defaultEnabled: true },
-  // One shared pet per chat: /adopt, /pet, /graveyard, plus hourly hunger/mood warnings and deaths
+  // One shared pet per chat: /adopt, /pet, /graveyard, begging in /fish replies, plus scheduled dying
+  // warnings and deaths
   { key: "pet", label: "Group pet", defaultEnabled: true },
   // Counts "been", posts the tally on "bean", reports the bean tally to a question replying to that post
   { key: "beans", label: "Been/bean counter", defaultEnabled: true },

@@ -2,24 +2,32 @@ import { Composer } from "grammy";
 import { type MyContext, replyToMessage, replyHTML } from "./context.js";
 import type { StorageService } from "./storage-service.js";
 import type { FishingLeaderboardEntry } from "./durable-objects/fishing.js";
-import { escapeHtml } from "./util.js";
+import type { FeatureFlags } from "./features.js";
+import type { CatchHint, LakeTier } from "./fishing-math.js";
+import { petDesireLine } from "./pet.js";
+import { escapeHtml, random } from "./util.js";
 
 // The "fishing" feature (see features.ts):
 //   /fish                         -> one cast per day; reports the catch, plus personal best / rank / chat
-//                                    record lines when they apply — or, now and then, worthless junk. The
-//                                    roll math (fishing-math.ts) is deliberately never shown.
+//                                    record lines when they apply — or, now and then, worthless junk. Then
+//                                    a line on how busy the lake is today, a hint about a poor catch, and
+//                                    the pet begging when it's hungry. The roll math (fishing-math.ts) is
+//                                    deliberately never shown, and neither is anyone's bucket.
 //   /fishing                      -> leaderboard: everyone's heaviest catch, ranked by weight
 //   /fishingwindow <days>|forever -> owner-only: how far back the leaderboard looks (default forever)
 //   /resetfishing                 -> owner-only: leaderboard starts over; nothing is deleted
 // Owner-only commands ignore anyone else silently, same as the other owner commands.
-const LEADERBOARD_SIZE = 10;
 const MAX_WINDOW_DAYS = 36500;
+// Telegram rejects messages over 4096 characters; the leaderboard stops a little short and says how many
+// it left off.
+const MAX_MESSAGE_CHARS = 3900;
 const MEDALS = ["🥇", "🥈", "🥉"];
 
 export class FishingComposer extends Composer<MyContext> {
   constructor(
     private storage: StorageService,
-    private ownerChatId: number | undefined
+    private ownerChatId: number | undefined,
+    private features: (ctx: MyContext) => Promise<FeatureFlags>
   ) {
     super();
     this.command("fish", (ctx) => this.handleFish(ctx));
@@ -46,24 +54,46 @@ export class FishingComposer extends Composer<MyContext> {
       await replyToMessage(ctx, "You already fished today. Come back tomorrow.");
       return;
     }
+    const lines: string[] = [];
     if (result.kind === "trash") {
-      const tagline = result.overfished ? "Nothing good comes from overfished waters." : "Worthless.";
-      await replyToMessage(ctx, [`You reeled in ${result.item}! ${result.emoji}`, tagline, ...tideLine(result.highTide)].join("\n"));
-      return;
+      lines.push(`You reeled in ${result.item}! ${result.emoji}`, `Worthless.`);
+    } else {
+      const { species, emoji, weight } = result.catch;
+      const weightText = weight.toFixed(1);
+      lines.push(`You caught ${article(weightText)} ${weightText} lbs ${species}! ${emoji}`);
+      if (result.chatRecord) {
+        lines.push(`🏆 New chat record!`);
+      } else if (result.previousBest === null) {
+        lines.push(`You're #${result.rank} on the leaderboard.`);
+      } else if (weight > result.previousBest) {
+        lines.push(`New personal best! You're #${result.rank} on the leaderboard.`);
+      }
     }
-
-    const { species, emoji, weight } = result.catch;
-    const weightText = weight.toFixed(1);
-    const lines = [`You caught ${article(weightText)} ${weightText} lbs ${species}! ${emoji}`];
-    if (result.chatRecord) {
-      lines.push(`🏆 New chat record!`);
-    } else if (result.previousBest === null) {
-      lines.push(`You're #${result.rank} on the leaderboard.`);
-    } else if (weight > result.previousBest) {
-      lines.push(`New personal best! You're #${result.rank} on the leaderboard.`);
+    lines.push(random(LAKE_LINES[result.lake]));
+    if (result.hint) {
+      lines.push(random(HINT_LINES[result.hint]));
     }
     lines.push(...tideLine(result.highTide));
+    const begging = await this.petBegging(ctx, result.kind);
+    if (begging) {
+      lines.push(begging);
+    }
     await replyToMessage(ctx, lines.join("\n"));
+  }
+
+  // The chat's pet, if it's hungry or lonely, begging at the end of the reply (see petDesireLine). A pet
+  // problem never costs anyone their catch reply.
+  private async petBegging(ctx: MyContext, caught: "fish" | "trash"): Promise<string | null> {
+    try {
+      if (!ctx.chat || !(await this.features(ctx)).pet.enabled) {
+        return null;
+      }
+      const pet = await this.storage.peekPet(ctx.chat.id);
+      return pet ? petDesireLine(pet, caught) : null;
+    } catch (err) {
+      console.error(err);
+      return null;
+    }
   }
 
   private async sendLeaderboard(ctx: MyContext) {
@@ -78,8 +108,21 @@ export class FishingComposer extends Composer<MyContext> {
       return;
     }
 
-    const lines = entries.slice(0, LEADERBOARD_SIZE).map((entry, index) => formatEntry(entry, index));
-    await replyHTML(ctx, [title, ``, ...lines].join("\n"));
+    // Everyone who's caught something, as far as fits in one message.
+    let text = `${title}\n`;
+    let shown = 0;
+    for (const [index, entry] of entries.entries()) {
+      const line = `\n${formatEntry(entry, index)}`;
+      if (text.length + line.length > MAX_MESSAGE_CHARS) {
+        break;
+      }
+      text += line;
+      shown++;
+    }
+    if (shown < entries.length) {
+      text += `\n…and ${entries.length - shown} more`;
+    }
+    await replyHTML(ctx, text);
   }
 
   private async handleSetWindow(ctx: MyContext) {
@@ -111,6 +154,43 @@ export class FishingComposer extends Composer<MyContext> {
     await replyToMessage(ctx, "Fishing leaderboard reset. Earlier catches no longer count.");
   }
 }
+
+// How busy the lake is today, on every cast (see lakeTier) — the only sign that everyone shares one lake,
+// and that the first casts of the day do best.
+const LAKE_LINES: Record<LakeTier, string[]> = {
+  fresh: [
+    "First line in the water today. Glassy and quiet.",
+    "Nobody's been out yet. The fish don't know what's coming.",
+    "Fresh water. You're the first one out.",
+  ],
+  calm: ["Quiet on the lake today.", "A couple of boats out. The fish don't mind.", "Only a few lines in the water so far."],
+  busy: [
+    "Lots of lines in the water today. The fish are getting skittish.",
+    "The dock's getting crowded.",
+    "Word's out about the lake today. The fish have noticed.",
+  ],
+  crowded: [
+    "The lake's been hammered today. Everything's spooked.",
+    "Boats everywhere. The fish are hiding.",
+    "Half the chat's out here. The fish are not impressed.",
+  ],
+  fished_out: [
+    "There's more bait in the water than fish.",
+    "The lake's tapped out. Try tomorrow.",
+    "Everyone's fished this lake dry today.",
+  ],
+};
+
+// On a poor catch, what dragged it down (see hintFor). "Your spot" is the angler's own casting too often;
+// the lake lines above are everyone's.
+const HINT_LINES: Record<CatchHint, string[]> = {
+  spot: [
+    "Your usual spot hasn't recovered since last time.",
+    "You fished this spot too recently. Give it a few days.",
+    "Nothing good comes from overfishing your spot.",
+  ],
+  low_tide: ["The water's low today.", "Low tide. Everything's down deep."],
+};
 
 // The only hint tides exist at all. King tides read the same, so they stay a surprise.
 function tideLine(highTide: boolean): string[] {

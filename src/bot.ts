@@ -37,7 +37,7 @@ export class RudeBot {
     // never swallows a mention forward or a count.
     this.gate("wordle", new WordleGolfComposer(this.storage), /^wordle_/);
     this.gate("market", new StockMarketComposer(this.storage, ownerChatId), /^(buy|sell|delist|reset|option_\w+):/);
-    this.gate("fishing", new FishingComposer(this.storage, ownerChatId));
+    this.gate("fishing", new FishingComposer(this.storage, ownerChatId, (ctx) => this.features(ctx)));
     this.gate("pet", new PetComposer(this.storage, ownerChatId), /^pet:/);
 
     this.registerStart();

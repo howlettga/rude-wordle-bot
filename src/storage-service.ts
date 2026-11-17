@@ -3,13 +3,14 @@ import type { BeanCounter } from "./durable-objects/bean-counter.js";
 import type { SpankChain } from "./durable-objects/spank-chain.js";
 import type { ChatPause } from "./durable-objects/chat-pause.js";
 import type { RudeMessages } from "./durable-objects/rude-messages.js";
-import type { Fishing, FishingCastResult, FishingLeaderboard } from "./durable-objects/fishing.js";
+import type { FishSize, Fishing, FishingCastResult, FishingLeaderboard, HeldFish } from "./durable-objects/fishing.js";
 import type {
   Pet,
   PetAdoptResult,
   PetGraveyardEntry,
   PetInteractResult,
   PetLookup,
+  PetPeek,
   PetStatus,
   PetWarning,
   PetEulogy,
@@ -359,6 +360,14 @@ export class StorageService {
     return this.fishingStub(chatId).reset();
   }
 
+  takeFish(chatId: number, userId: number, size: FishSize, usedFor: string): Promise<HeldFish | null> {
+    return this.fishingStub(chatId).takeFish(userId, size, usedFor);
+  }
+
+  returnFish(chatId: number, fishId: number): Promise<void> {
+    return this.fishingStub(chatId).returnFish(fishId);
+  }
+
   private fishingStub(chatId: number) {
     return this.fishingNs.get(this.fishingNs.idFromName(`fishing_${chatId}`));
   }
@@ -369,6 +378,10 @@ export class StorageService {
 
   adoptPet(chatId: number, input: Parameters<Pet["adopt"]>[0]): Promise<PetAdoptResult> {
     return this.petStub(chatId).adopt(input);
+  }
+
+  peekPet(chatId: number): Promise<PetPeek | null> {
+    return this.petStub(chatId).peek();
   }
 
   interactWithPet(chatId: number, input: Parameters<Pet["interact"]>[0]): Promise<PetInteractResult> {

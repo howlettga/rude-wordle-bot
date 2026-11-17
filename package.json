@@ -6,7 +6,8 @@
   "version": "2.1.0",
   "scripts": {
     "dev": "wrangler dev --tunnel",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "sim:fishing": "node scripts/sim-fishing.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260723.1",

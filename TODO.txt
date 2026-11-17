@@ -2,7 +2,6 @@ Bugfixes
 
 Cleanup
 
-- Remove the TIDES_START_DATE check in src/durable-objects/fishing.ts (and its constant). It's always true from 2026-11-14 on, so removing it changes nothing — but only ship that in a deploy AFTER midnight ET, Nov 14.
 
 Features
 

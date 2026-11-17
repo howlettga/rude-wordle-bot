@@ -2,14 +2,16 @@ import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../main.js";
 import { easternParts } from "../eastern-time.js";
 import {
-  FIRST_CAST_WAIT_DAYS,
-  OVERFISHED_WITHIN_DAYS,
-  rollsForWait,
+  FISHING_CONFIG,
+  castFactors,
+  hintFor,
+  lakeTier,
   rollTrash,
   rollWeight,
   speciesForWeight,
   tideFor,
-  tideMultiplier,
+  type CatchHint,
+  type LakeTier,
 } from "../fishing-math.js";
 
 export interface FishingCatch {
@@ -18,24 +20,35 @@ export interface FishingCatch {
   weight: number;
 }
 
-// highTide: today's tide in this chat is high or king (see tideFor) — reported as just "high tide", so a
-// king tide stays a surprise.
+// Every cast also reports:
+//   highTide: today's tide in this chat is high or king (see tideFor) — reported as just "high tide", so a
+//             king tide stays a surprise.
+//   lake:     how busy the lake was when this cast went in (see lakeTier).
+//   hint:     on a poor catch, what dragged it down most, if anything worth naming (see hintFor).
+type CastReport = { highTide: boolean; lake: LakeTier; hint: CatchHint | null };
+
 export type FishingCastResult =
   | { ok: false; type: "ALREADY_FISHED" }
   // Junk instead of a fish (see rollTrash): not recorded anywhere, but the cast is still used up.
-  // overfished: caught within OVERFISHED_WITHIN_DAYS of the angler's last cast.
-  | { ok: true; kind: "trash"; item: string; emoji: string; overfished: boolean; highTide: boolean }
-  | {
+  | ({ ok: true; kind: "trash"; item: string; emoji: string } & CastReport)
+  | ({
       ok: true;
       kind: "fish";
-      highTide: boolean;
       catch: FishingCatch;
       // All three are judged within the current leaderboard (window + last reset), same as /fishing.
       // previousBest is null when this is the angler's first catch on the current leaderboard.
       previousBest: number | null;
       chatRecord: boolean;
       rank: number;
-    };
+    } & CastReport);
+
+// Which of an angler's held fish to take: their lightest, their heaviest, or the one in the middle. Relative
+// to their own bucket, so nobody has to see what's in it.
+export type FishSize = "small" | "medium" | "large";
+
+export interface HeldFish extends FishingCatch {
+  id: number;
+}
 
 export interface FishingLeaderboardEntry extends FishingCatch {
   userId: number;
@@ -47,9 +60,6 @@ export interface FishingLeaderboard {
   windowDays: number | null; // null = forever
 }
 
-// Eastern date tides take effect (see cast). "YYYY-MM-DD" compares correctly as a plain string.
-const TIDES_START_DATE = "2026-11-14";
-
 type LeaderboardRow = {
   [column: string]: SqlStorageValue;
   user_id: number;
@@ -60,55 +70,106 @@ type LeaderboardRow = {
 };
 
 // One per chat (idFromName(`fishing_${chatId}`)). Every catch is kept, not just each angler's best, so
-// changing the leaderboard window applies retroactively in both directions. /resetfishing is a soft reset:
+// changing the leaderboard window applies retroactively in both directions — and every catch is also an
+// item in its owner's bucket (see the version 2 migration), which the leaderboard ignores. /resetfishing is a soft reset:
 // it records the newest catch id at reset time, and the leaderboard only counts catches after it — so it
 // never deletes anything, and catches made in the same second as the reset can't land on the wrong side.
 export class Fishing extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS anglers (
-        user_id INTEGER PRIMARY KEY,
-        username TEXT,
-        first_name TEXT NOT NULL,
-        last_cast_date TEXT NOT NULL
-      )
-    `);
-    this.ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS catches (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL REFERENCES anglers(user_id),
-        species TEXT NOT NULL,
-        emoji TEXT NOT NULL,
-        weight REAL NOT NULL,
-        caught_at TEXT NOT NULL DEFAULT (datetime('now'))
-      )
-    `);
-    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_catches_user_weight ON catches(user_id, weight)`);
-    this.ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS settings (
-        id INTEGER PRIMARY KEY,
-        window_days INTEGER,
-        reset_after_catch_id INTEGER NOT NULL DEFAULT 0
-      )
-    `);
-    this.ctx.storage.sql.exec(`INSERT INTO settings (id) VALUES (1) ON CONFLICT(id) DO NOTHING`);
+    this.migrate();
   }
 
-  // One cast per Eastern calendar day (midnight ET, same as Wordle). Days waited since the last cast feed
-  // the roll and the junk chance (see fishing-math.ts); a first-ever cast counts as FIRST_CAST_WAIT_DAYS,
-  // a medium start. No await between the "already fished today?" check and the write, so two /fish sent
-  // at once can't both get through.
+  // Same _schema_migrations approach as the Pet DO: CREATE TABLE IF NOT EXISTS is a no-op against an
+  // already-existing table, so later columns need real migrations. Version 1 is the original schema, which
+  // every chat that has fished already has.
+  private migrate(): void {
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS _schema_migrations (
+        id INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    const version = this.ctx.storage.sql
+      .exec<{ version: number }>(`SELECT COALESCE(MAX(id), 0) as version FROM _schema_migrations`)
+      .one().version;
+
+    if (version < 1) {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS anglers (
+          user_id INTEGER PRIMARY KEY,
+          username TEXT,
+          first_name TEXT NOT NULL,
+          last_cast_date TEXT NOT NULL
+        )
+      `);
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS catches (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL REFERENCES anglers(user_id),
+          species TEXT NOT NULL,
+          emoji TEXT NOT NULL,
+          weight REAL NOT NULL,
+          caught_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+      `);
+      this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_catches_user_weight ON catches(user_id, weight)`);
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS settings (
+          id INTEGER PRIMARY KEY,
+          window_days INTEGER,
+          reset_after_catch_id INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+      this.ctx.storage.sql.exec(`INSERT INTO settings (id) VALUES (1) ON CONFLICT(id) DO NOTHING`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (1)`);
+    }
+
+    if (version < 2) {
+      // Every catch becomes an inventory item. user_id stays "who caught it" forever, so the leaderboard
+      // never changes when a fish is eaten, gifted, or sold; owner_id is who holds it now, and status says
+      // whether it's still in their bucket. Everything caught before this goes into its catcher's bucket.
+      // The cast context columns are for tuning (and maybe a future sell price); NULL on older catches.
+      this.ctx.storage.sql.exec(`ALTER TABLE catches ADD COLUMN owner_id INTEGER`);
+      this.ctx.storage.sql.exec(`ALTER TABLE catches ADD COLUMN status TEXT NOT NULL DEFAULT 'held'`); // 'held' | 'eaten'
+      this.ctx.storage.sql.exec(`ALTER TABLE catches ADD COLUMN used_at TEXT`);
+      this.ctx.storage.sql.exec(`ALTER TABLE catches ADD COLUMN used_for TEXT`); // e.g. 'pet:3'
+      this.ctx.storage.sql.exec(`ALTER TABLE catches ADD COLUMN quality REAL`);
+      this.ctx.storage.sql.exec(`ALTER TABLE catches ADD COLUMN tide TEXT`);
+      this.ctx.storage.sql.exec(`ALTER TABLE catches ADD COLUMN days_waited INTEGER`);
+      this.ctx.storage.sql.exec(`ALTER TABLE catches ADD COLUMN lake_casts INTEGER`);
+      this.ctx.storage.sql.exec(`UPDATE catches SET owner_id = user_id`);
+      this.ctx.storage.sql.exec(`CREATE INDEX idx_catches_owner ON catches(owner_id, status, weight)`);
+      // The lake: how many casts the whole chat has made each Eastern day. A new day is just a new row.
+      // Seeded with today's casts so far (one per angler who's cast today), so a deploy mid-day doesn't
+      // hand out first-cast bonuses to people casting after it.
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE lake_days (
+          date TEXT PRIMARY KEY,
+          casts INTEGER NOT NULL
+        )
+      `);
+      const today = easternDate(new Date());
+      this.ctx.storage.sql.exec(
+        `INSERT INTO lake_days (date, casts) SELECT ?, COUNT(*) FROM anglers WHERE last_cast_date = ?`,
+        today,
+        today
+      );
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (2)`);
+    }
+  }
+
+  // One cast per Eastern calendar day (midnight ET, same as Wordle). Days waited since the angler's last
+  // cast, today's tide, and how many casts the chat has already made today set the cast's quality (see
+  // fishing-math.ts); a first-ever cast counts as FIRST_CAST_WAIT_DAYS. No await anywhere in here, so two
+  // /fish sent at once can't both get through, or both see the same lake count.
   async cast(input: { chatId: number; userId: number; username?: string; firstName: string }): Promise<FishingCastResult> {
     const p = easternParts(new Date());
-    const today = `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
+    const today = easternDate(new Date());
     // Without the secret, tides just stay normal rather than becoming predictable from the source code.
-    // Same before TIDES_START_DATE, so nobody fishing on the day tides shipped got a different tide from
-    // the people who'd already fished that day.
-    const tide =
-      this.env.TIDE_SECRET && today >= TIDES_START_DATE
-        ? tideFor(this.env.TIDE_SECRET, input.chatId, Date.UTC(p.year, p.month - 1, p.day) / 86_400_000)
-        : "normal";
+    const tide = this.env.TIDE_SECRET
+      ? tideFor(this.env.TIDE_SECRET, input.chatId, Date.UTC(p.year, p.month - 1, p.day) / 86_400_000)
+      : "normal";
     const highTide = tide === "high" || tide === "king";
 
     const angler = this.ctx.storage.sql
@@ -117,7 +178,9 @@ export class Fishing extends DurableObject<Env> {
     if (angler?.last_cast_date === today) {
       return { ok: false, type: "ALREADY_FISHED" };
     }
-    const daysWaited = angler ? daysBetween(angler.last_cast_date, today) : FIRST_CAST_WAIT_DAYS;
+    const daysWaited = angler ? daysBetween(angler.last_cast_date, today) : FISHING_CONFIG.FIRST_CAST_WAIT_DAYS;
+    const castsToday =
+      this.ctx.storage.sql.exec<{ casts: number }>(`SELECT casts FROM lake_days WHERE date = ?`, today).toArray()[0]?.casts ?? 0;
 
     this.ctx.storage.sql.exec(
       `INSERT INTO anglers (user_id, username, first_name, last_cast_date) VALUES (?, ?, ?, ?)
@@ -127,13 +190,19 @@ export class Fishing extends DurableObject<Env> {
       input.firstName,
       today
     );
+    this.ctx.storage.sql.exec(
+      `INSERT INTO lake_days (date, casts) VALUES (?, 1) ON CONFLICT(date) DO UPDATE SET casts = casts + 1`,
+      today
+    );
 
-    const trash = rollTrash(daysWaited);
+    const factors = castFactors({ daysWaited, tide, castsToday });
+    const lake = lakeTier(castsToday);
+    const trash = rollTrash(factors.quality);
     if (trash) {
-      return { ok: true, kind: "trash", ...trash, overfished: daysWaited <= OVERFISHED_WITHIN_DAYS, highTide };
+      return { ok: true, kind: "trash", ...trash, highTide, lake, hint: hintFor(factors) };
     }
 
-    const weight = rollWeight(rollsForWait(daysWaited) * tideMultiplier(tide));
+    const weight = rollWeight(factors.quality);
     const { species, emoji } = speciesForWeight(weight);
 
     // Judged against the leaderboard as it stood before this catch.
@@ -151,11 +220,17 @@ export class Fishing extends DurableObject<Env> {
       .one().best;
 
     this.ctx.storage.sql.exec(
-      `INSERT INTO catches (user_id, species, emoji, weight) VALUES (?, ?, ?, ?)`,
+      `INSERT INTO catches (user_id, owner_id, species, emoji, weight, quality, tide, days_waited, lake_casts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      input.userId,
       input.userId,
       species,
       emoji,
-      weight
+      weight,
+      factors.quality,
+      tide,
+      daysWaited,
+      castsToday
     );
 
     const rank = this.leaderboardRows().findIndex((row) => row.user_id === input.userId) + 1;
@@ -163,6 +238,8 @@ export class Fishing extends DurableObject<Env> {
       ok: true,
       kind: "fish",
       highTide,
+      lake,
+      hint: weight < FISHING_CONFIG.POOR_CATCH_LB ? hintFor(factors) : null,
       catch: { species, emoji, weight },
       previousBest,
       chatRecord: weight > (previousRecord ?? 0),
@@ -181,6 +258,42 @@ export class Fishing extends DurableObject<Env> {
       })),
       windowDays: this.settings().window_days,
     };
+  }
+
+  // Takes one of the angler's held fish out of their bucket (marks it used, with usedFor saying what for,
+  // e.g. "pet:3"), or null if their bucket is empty. Single-statement reads and writes with no await, so
+  // two taps at once each get a different fish.
+  async takeFish(userId: number, size: FishSize, usedFor: string): Promise<HeldFish | null> {
+    const held = this.ctx.storage.sql
+      .exec<{ count: number }>(`SELECT COUNT(*) as count FROM catches WHERE owner_id = ? AND status = 'held'`, userId)
+      .one().count;
+    if (held === 0) {
+      return null;
+    }
+    const offset = size === "small" ? 0 : size === "large" ? held - 1 : Math.floor((held - 1) / 2);
+    const fish = this.ctx.storage.sql
+      .exec<{ id: number; species: string; emoji: string; weight: number }>(
+        `SELECT id, species, emoji, weight FROM catches WHERE owner_id = ? AND status = 'held'
+         ORDER BY weight ASC, id ASC LIMIT 1 OFFSET ?`,
+        userId,
+        offset
+      )
+      .one();
+    this.ctx.storage.sql.exec(
+      `UPDATE catches SET status = 'eaten', used_at = datetime('now'), used_for = ? WHERE id = ?`,
+      usedFor,
+      fish.id
+    );
+    return fish;
+  }
+
+  // Puts a fish taken by takeFish back, when whatever it was for didn't happen (e.g. the pet was on
+  // cooldown).
+  async returnFish(id: number): Promise<void> {
+    this.ctx.storage.sql.exec(
+      `UPDATE catches SET status = 'held', used_at = NULL, used_for = NULL WHERE id = ? AND status = 'eaten'`,
+      id
+    );
   }
 
   async setWindow(days: number | null): Promise<void> {
@@ -234,6 +347,12 @@ export class Fishing extends DurableObject<Env> {
       )
       .one();
   }
+}
+
+// The Eastern calendar date as "YYYY-MM-DD", which compares correctly as a plain string.
+function easternDate(date: Date): string {
+  const p = easternParts(date);
+  return `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
 }
 
 // Whole calendar days between two "YYYY-MM-DD" dates.
