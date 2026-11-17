@@ -94,8 +94,8 @@ export type PetRarity = "common" | "rare" | "ultra";
 
 // Rolled at adoption. weight is relative: commons 10 each, rares 2, ultras 0.5 — about 95% / 5% / 1%.
 export const PET_SPECIES: { species: string; emoji: string; rarity: PetRarity; weight: number }[] = [
-  { species: "dog", emoji: "🐕", rarity: "common", weight: 10 },
-  { species: "cat", emoji: "🐈", rarity: "common", weight: 10 },
+  { species: "dog", emoji: "🐕", rarity: "common", weight: 15 },
+  { species: "cat", emoji: "🐈", rarity: "common", weight: 15 },
   { species: "hamster", emoji: "🐹", rarity: "common", weight: 10 },
   { species: "goldfish", emoji: "🐠", rarity: "common", weight: 10 },
   { species: "raccoon", emoji: "🦝", rarity: "common", weight: 10 },
