@@ -3,9 +3,10 @@ import { type MyContext, replyToMessage, replyHTML } from "./context.js";
 import type { StorageService } from "./storage-service.js";
 import type { FishingLeaderboardEntry } from "./durable-objects/fishing.js";
 import type { FeatureFlags } from "./features.js";
-import type { CatchHint, LakeTier } from "./fishing-math.js";
+import { rotatingLine } from "./fishing-math.js";
+import { HIGH_TIDE_LINES, HINT_LINES, JUNK_LINES, LAKE_LINES } from "./fishing-lines.js";
 import { petDesireLine } from "./pet.js";
-import { escapeHtml, random } from "./util.js";
+import { escapeHtml } from "./util.js";
 
 // The "fishing" feature (see features.ts):
 //   /fish                         -> one cast per day; reports the catch, plus personal best / rank / chat
@@ -45,7 +46,8 @@ export class FishingComposer extends Composer<MyContext> {
       return;
     }
 
-    const result = await this.storage.castFishing(ctx.chat.id, {
+    const chatId = ctx.chat.id;
+    const result = await this.storage.castFishing(chatId, {
       userId: ctx.from.id,
       ...(ctx.from.username !== undefined && { username: ctx.from.username }),
       firstName: ctx.from.first_name,
@@ -54,9 +56,13 @@ export class FishingComposer extends Composer<MyContext> {
       await replyToMessage(ctx, "You already fished today. Come back tomorrow.");
       return;
     }
+    // Every flavor line rotates through its set (see fishing-lines.ts), keyed to this chat's day and
+    // stepped by the cast count, so two casts the same day don't get the same line.
+    const pick = (lines: readonly string[], set: string) =>
+      rotatingLine(lines, `${chatId}:${result.date}:${set}`, result.castsToday);
     const lines: string[] = [];
     if (result.kind === "trash") {
-      lines.push(`You reeled in ${result.item}! ${result.emoji}`, `Worthless.`);
+      lines.push(`You reeled in ${result.item}! ${result.emoji}`, pick(JUNK_LINES, "junk"));
     } else {
       const { species, emoji, weight } = result.catch;
       const weightText = weight.toFixed(1);
@@ -69,11 +75,13 @@ export class FishingComposer extends Composer<MyContext> {
         lines.push(`New personal best! You're #${result.rank} on the leaderboard.`);
       }
     }
-    lines.push(random(LAKE_LINES[result.lake]));
+    lines.push(pick(LAKE_LINES[result.lake], `lake:${result.lake}`));
     if (result.hint) {
-      lines.push(random(HINT_LINES[result.hint]));
+      lines.push(pick(HINT_LINES[result.hint], `hint:${result.hint}`));
     }
-    lines.push(...tideLine(result.highTide));
+    if (result.highTide) {
+      lines.push(pick(HIGH_TIDE_LINES, "tide"));
+    }
     const begging = await this.petBegging(ctx, result.kind);
     if (begging) {
       lines.push(begging);
@@ -153,48 +161,6 @@ export class FishingComposer extends Composer<MyContext> {
     await this.storage.resetFishing(ctx.chat.id);
     await replyToMessage(ctx, "Fishing leaderboard reset. Earlier catches no longer count.");
   }
-}
-
-// How busy the lake is today, on every cast (see lakeTier) — the only sign that everyone shares one lake,
-// and that the first casts of the day do best.
-const LAKE_LINES: Record<LakeTier, string[]> = {
-  fresh: [
-    "First line in the water today. Glassy and quiet.",
-    "Nobody's been out yet. The fish don't know what's coming.",
-    "Fresh water. You're the first one out.",
-  ],
-  calm: ["Quiet on the lake today.", "A couple of boats out. The fish don't mind.", "Only a few lines in the water so far."],
-  busy: [
-    "Lots of lines in the water today. The fish are getting skittish.",
-    "The dock's getting crowded.",
-    "Word's out about the lake today. The fish have noticed.",
-  ],
-  crowded: [
-    "The lake's been hammered today. Everything's spooked.",
-    "Boats everywhere. The fish are hiding.",
-    "Half the chat's out here. The fish are not impressed.",
-  ],
-  fished_out: [
-    "There's more bait in the water than fish.",
-    "The lake's tapped out. Try tomorrow.",
-    "Everyone's fished this lake dry today.",
-  ],
-};
-
-// On a poor catch, what dragged it down (see hintFor). "Your spot" is the angler's own casting too often;
-// the lake lines above are everyone's.
-const HINT_LINES: Record<CatchHint, string[]> = {
-  spot: [
-    "Your usual spot hasn't recovered since last time.",
-    "You fished this spot too recently. Give it a few days.",
-    "Nothing good comes from overfishing your spot.",
-  ],
-  low_tide: ["The water's low today.", "Low tide. Everything's down deep."],
-};
-
-// The only hint tides exist at all. King tides read the same, so they stay a surprise.
-function tideLine(highTide: boolean): string[] {
-  return highTide ? ["🌊 High tide today!"] : [];
 }
 
 function formatEntry(entry: FishingLeaderboardEntry, index: number): string {

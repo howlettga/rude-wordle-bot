@@ -25,7 +25,9 @@ export interface FishingCatch {
 //             king tide stays a surprise.
 //   lake:     how busy the lake was when this cast went in (see lakeTier).
 //   hint:     on a poor catch, what dragged it down most, if anything worth naming (see hintFor).
-type CastReport = { highTide: boolean; lake: LakeTier; hint: CatchHint | null };
+//   date / castsToday: the Eastern date and how many casts the chat made before this one, so the reply's
+//             flavor lines can rotate (see rotatingLine).
+type CastReport = { highTide: boolean; lake: LakeTier; hint: CatchHint | null; date: string; castsToday: number };
 
 export type FishingCastResult =
   | { ok: false; type: "ALREADY_FISHED" }
@@ -199,7 +201,7 @@ export class Fishing extends DurableObject<Env> {
     const lake = lakeTier(castsToday);
     const trash = rollTrash(factors.quality);
     if (trash) {
-      return { ok: true, kind: "trash", ...trash, highTide, lake, hint: hintFor(factors) };
+      return { ok: true, kind: "trash", ...trash, highTide, lake, hint: hintFor(factors), date: today, castsToday };
     }
 
     const weight = rollWeight(factors.quality);
@@ -240,6 +242,8 @@ export class Fishing extends DurableObject<Env> {
       highTide,
       lake,
       hint: weight < FISHING_CONFIG.POOR_CATCH_LB ? hintFor(factors) : null,
+      date: today,
+      castsToday,
       catch: { species, emoji, weight },
       previousBest,
       chatRecord: weight > (previousRecord ?? 0),

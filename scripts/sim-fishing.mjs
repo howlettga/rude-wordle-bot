@@ -1,7 +1,8 @@
 // Simulates /fish with the real math in src/fishing-math.ts (Node 24+ runs the .ts import directly), prints
 // the odds tables, and checks them against the tuning targets. Run after changing FISHING_CONFIG, the tide
 // multipliers, or the pet's fish food: `npm run sim:fishing`. Exits non-zero if a target is missed.
-import { FISHING_CONFIG, castFactors, junkChance, rollWeight } from "../src/fishing-math.ts";
+import { FISHING_CONFIG, castFactors, junkChance, lakeTier, rollWeight, rotatingLine } from "../src/fishing-math.ts";
+import { HIGH_TIDE_LINES, HINT_LINES, JUNK_LINES, LAKE_LINES } from "../src/fishing-lines.ts";
 import { PET_CONFIG, foodForFish } from "../src/pet-config.ts";
 
 const pct = (values, p) => {
@@ -122,6 +123,32 @@ check(yearlyBest[1] < yearlyBest[4], `casting daily isn't the best trophy strate
 check(pct(daysToBeat, 0.5) <= 10, `the old ${OLD_RECORD} lb record usually falls within 10 days (day ${pct(daysToBeat, 0.5)})`);
 check(pct(record365, 0.5) <= 175, `records don't run away: a year in, the record is at most 175 lb (${pct(record365, 0.5).toFixed(0)})`);
 check(pct(fishPerDay, 0.5) >= 1.5 * (foodPerDay / meanFood), `the chat catches at least 1.5x the fish the pet needs`);
+
+// Flavor-line rotation (fishing-lines.ts): over a busy day, the lake line never repeats until the day has
+// been through every tier's whole set, and the order changes from day to day.
+const allSets = { ...Object.fromEntries(Object.entries(LAKE_LINES).map(([k, v]) => [`lake:${k}`, v])), ...Object.fromEntries(Object.entries(HINT_LINES).map(([k, v]) => [`hint:${k}`, v])), tide: HIGH_TIDE_LINES, junk: JUNK_LINES };
+let permutationsOk = true;
+let ordersVary = false;
+for (const [set, lines] of Object.entries(allSets)) {
+  for (let day = 0; day < 50; day++) {
+    const picked = lines.map((_, step) => rotatingLine(lines, `-100:day${day}:${set}`, step));
+    if (new Set(picked).size !== lines.length) permutationsOk = false;
+    if (day > 0 && picked[0] !== rotatingLine(lines, `-100:day0:${set}`, 0)) ordersVary = true;
+  }
+}
+check(permutationsOk, `every line set rotates through all its lines before repeating`);
+check(ordersVary, `the rotation order changes from day to day`);
+let lakeRepeats = 0;
+for (let day = 0; day < 200; day++) {
+  const seen = new Set();
+  for (let n = 0; n < 9 + LAKE_LINES.fished_out.length; n++) {
+    const tier = lakeTier(n);
+    const line = rotatingLine(LAKE_LINES[tier], `-100:day${day}:lake:${tier}`, n);
+    if (seen.has(line)) lakeRepeats++;
+    seen.add(line);
+  }
+}
+check(lakeRepeats === 0, `no lake line repeats within a day, even ${9 + LAKE_LINES.fished_out.length} casts in (${lakeRepeats} repeats)`);
 
 if (failures.length > 0) {
   console.log(`\n${failures.length} target(s) missed.`);
