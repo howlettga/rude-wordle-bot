@@ -11,8 +11,9 @@ import { escapeHtml } from "./util.js";
 // The "fishing" feature (see features.ts):
 //   /fish                         -> one cast per day; reports the catch, plus personal best / rank / chat
 //                                    record lines when they apply — or, now and then, worthless junk. Then
-//                                    a line on how busy the lake is today, a hint about a poor catch, and
-//                                    the pet begging when it's hungry. The roll math (fishing-math.ts) is
+//                                    one flavor line: the pet begging when it's hungry or lonely, else a
+//                                    high tide, else a hint about a poor catch, else how busy the lake is
+//                                    today. The roll math (fishing-math.ts) is
 //                                    deliberately never shown, and neither is anyone's bucket.
 //   /fishing                      -> leaderboard: everyone's heaviest catch, ranked by weight
 //   /fishingwindow <days>|forever -> owner-only: how far back the leaderboard looks (default forever)
@@ -75,17 +76,17 @@ export class FishingComposer extends Composer<MyContext> {
         lines.push(`New personal best! You're #${result.rank} on the leaderboard.`);
       }
     }
-    lines.push(pick(LAKE_LINES[result.lake], `lake:${result.lake}`));
+    // Exactly one flavor line, so the reply never runs on. Each kind supersedes the ones before it: the
+    // lake line is the fallback, a poor-catch hint beats it, a high tide beats that, and a hungry or
+    // lonely pet beats everything.
+    let flavor = pick(LAKE_LINES[result.lake], `lake:${result.lake}`);
     if (result.hint) {
-      lines.push(pick(HINT_LINES[result.hint], `hint:${result.hint}`));
+      flavor = pick(HINT_LINES[result.hint], `hint:${result.hint}`);
     }
     if (result.highTide) {
-      lines.push(pick(HIGH_TIDE_LINES, "tide"));
+      flavor = pick(HIGH_TIDE_LINES, "tide");
     }
-    const begging = await this.petBegging(ctx, result.kind);
-    if (begging) {
-      lines.push(begging);
-    }
+    lines.push((await this.petBegging(ctx, result.kind)) ?? flavor);
     await replyToMessage(ctx, lines.join("\n"));
   }
 
