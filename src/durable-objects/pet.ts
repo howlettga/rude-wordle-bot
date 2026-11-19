@@ -1,0 +1,611 @@
+import { DurableObject } from "cloudflare:workers";
+import type { Env } from "../main.js";
+import { PET_CONFIG, PET_FOODS, PET_TRICKS, rollPlayOutcome, type PetRarity, type PlayOutcome } from "../pet-config.js";
+import { advanceMeters, petFate, type PetMeters } from "../pet-math.js";
+
+export type PetDeathCause = "starved" | "ran_away" | "put_down";
+
+export interface PetStatus {
+  id: number;
+  name: string;
+  species: string;
+  emoji: string;
+  rarity: PetRarity;
+  adoptedByName: string;
+  adoptedAt: number; // epoch seconds
+  food: number;
+  mood: number;
+  threadId: number | null;
+  // The most recent feed, pet, or play outcome, for the card's "who did what" line. food is the random
+  // PET_FOODS emoji a feed turned out to be, and trick the PET_TRICKS name a play learned or showed off —
+  // both stored so the card shows the same thing every time.
+  lastAction: { kind: PetAction; by: string; food: string | null; trick: string | null } | null;
+  tricksKnown: number;
+}
+
+// What a button press turned into: a feed (or an overfeed), a pet, or one of the random Play outcomes.
+export type PetAction = "fed" | "petted" | "overfed" | PlayOutcome;
+export type PetInput = "feed" | "pet" | "play";
+
+export interface PetEulogy {
+  name: string;
+  species: string;
+  emoji: string;
+  adoptedAt: number;
+  diedAt: number;
+  cause: PetDeathCause;
+  threadId: number | null;
+  lastFedBy: string | null;
+  lastFedAt: number | null;
+  lastPettedBy: string | null;
+  lastPettedAt: number | null;
+  onlyPetted: string[]; // petted it, never fed it
+  onlyFed: string[]; // fed it, never petted it
+  tricksKnown: number;
+}
+
+// The only warning the hourly check posts on its own: food has hit 0 and the clock is running. Hunger and
+// loneliness show up as the pet begging in /fish replies instead (see peek).
+export type PetWarning = { type: "dying"; hoursLeft: number };
+
+// How the living pet is doing right now, for the begging line in /fish replies (see peek).
+export interface PetPeek {
+  name: string;
+  species: string;
+  emoji: string;
+  food: number;
+  mood: number;
+}
+
+// Anything that settles the pet can discover it died since the last look (the meters are lazy — see
+// pet-math.ts). That call returns the eulogy exactly once, and whoever made it posts it.
+export type PetLookup = { pet: PetStatus | null; eulogy?: PetEulogy };
+
+export type PetAdoptResult = { ok: true; pet: PetStatus; eulogy?: PetEulogy } | { ok: false; type: "ALREADY_HAS_PET"; pet: PetStatus };
+
+export type PetInteractResult =
+  | { result: "OK" | "OVERFED"; pet: PetStatus }
+  | { result: "COOLDOWN"; pet: PetStatus; retryInSeconds: number }
+  | { result: "GONE"; eulogy: PetEulogy } // died right before this tap
+  | { result: "STALE" }; // button from a card for a pet that's no longer around
+
+export interface PetGraveyardEntry {
+  name: string;
+  species: string;
+  emoji: string;
+  adoptedAt: number;
+  diedAt: number;
+  cause: PetDeathCause;
+  tricksKnown: number;
+}
+
+type PetRow = {
+  [column: string]: SqlStorageValue;
+  id: number;
+  name: string;
+  species: string;
+  emoji: string;
+  rarity: PetRarity;
+  adopted_by_id: number;
+  adopted_by_name: string;
+  adopted_at: number;
+  thread_id: number | null;
+  food: number;
+  mood: number;
+  updated_at: number;
+  food_empty_since: number | null;
+  mood_empty_since: number | null;
+  frozen_at: number | null;
+  warn_level: number;
+  mood_warned: number;
+  last_fed_by: string | null;
+  last_fed_at: number | null;
+  last_petted_by: string | null;
+  last_petted_at: number | null;
+  last_action: PetAction | null;
+  last_action_by: string | null;
+  last_action_food: string | null;
+  last_action_trick: string | null;
+  died_at: number | null;
+  cause: PetDeathCause | null;
+};
+
+// Hunger levels, in order of urgency. Only WARN_DYING is ever posted now (see tick); warn_level remembers
+// whether it has been for the current hunger spell, so it posts once. Feeding resets it to wherever food
+// lands. (The lower levels used to be posted too; they're kept so the stored values still mean the same.)
+const WARN_NONE = 0;
+const WARN_HUNGRY = 1;
+const WARN_STARVING = 2;
+const WARN_DYING = 3;
+
+const nowSec = () => Math.floor(Date.now() / 1000);
+
+// One per chat (idFromName(`pet_${chatId}`)): the living pet (at most one — rows with died_at NULL),
+// every past pet for /graveyard, and per-person caretaking history for cooldowns and eulogy blame.
+export class Pet extends DurableObject<Env> {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.migrate();
+  }
+
+  // Same _schema_migrations approach as the StockMarket DO: CREATE TABLE IF NOT EXISTS is a no-op against
+  // an already-existing table, so later columns need real migrations.
+  private migrate(): void {
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS _schema_migrations (
+        id INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    const version = this.ctx.storage.sql
+      .exec<{ version: number }>(`SELECT COALESCE(MAX(id), 0) as version FROM _schema_migrations`)
+      .one().version;
+
+    if (version < 1) {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS pets (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          species TEXT NOT NULL,
+          emoji TEXT NOT NULL,
+          rarity TEXT NOT NULL,
+          adopted_by_id INTEGER NOT NULL,
+          adopted_by_name TEXT NOT NULL,
+          adopted_at INTEGER NOT NULL,
+          thread_id INTEGER,
+          food REAL NOT NULL,
+          mood REAL NOT NULL,
+          updated_at INTEGER NOT NULL,
+          food_empty_since INTEGER,
+          mood_empty_since INTEGER,
+          frozen_at INTEGER,
+          warn_level INTEGER NOT NULL DEFAULT 0,
+          mood_warned INTEGER NOT NULL DEFAULT 0,
+          last_fed_by TEXT,
+          last_fed_at INTEGER,
+          last_petted_by TEXT,
+          last_petted_at INTEGER,
+          died_at INTEGER,
+          cause TEXT
+        )
+      `);
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS caretakers (
+          pet_id INTEGER NOT NULL REFERENCES pets(id),
+          user_id INTEGER NOT NULL,
+          first_name TEXT NOT NULL,
+          feeds INTEGER NOT NULL DEFAULT 0,
+          pets INTEGER NOT NULL DEFAULT 0,
+          last_fed_at INTEGER,
+          last_petted_at INTEGER,
+          PRIMARY KEY (pet_id, user_id)
+        )
+      `);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (1)`);
+    }
+
+    if (version < 2) {
+      // The most recent feed/pet, shown on the card so everyone can see who did what.
+      this.ctx.storage.sql.exec(`ALTER TABLE pets ADD COLUMN last_action TEXT`);
+      this.ctx.storage.sql.exec(`ALTER TABLE pets ADD COLUMN last_action_by TEXT`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (2)`);
+    }
+
+    if (version < 3) {
+      this.ctx.storage.sql.exec(`ALTER TABLE pets ADD COLUMN last_action_food TEXT`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (3)`);
+    }
+
+    if (version < 4) {
+      // 🎾 Play: its own per-person cooldown and count.
+      this.ctx.storage.sql.exec(`ALTER TABLE caretakers ADD COLUMN plays INTEGER NOT NULL DEFAULT 0`);
+      this.ctx.storage.sql.exec(`ALTER TABLE caretakers ADD COLUMN last_played_at INTEGER`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (4)`);
+    }
+
+    if (version < 5) {
+      // Tricks learned through 🎾 Play (see PET_TRICKS).
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE pet_tricks (
+          pet_id INTEGER NOT NULL REFERENCES pets(id),
+          trick TEXT NOT NULL,
+          taught_by TEXT NOT NULL,
+          learned_at INTEGER NOT NULL,
+          PRIMARY KEY (pet_id, trick)
+        )
+      `);
+      this.ctx.storage.sql.exec(`ALTER TABLE pets ADD COLUMN last_action_trick TEXT`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (5)`);
+    }
+  }
+
+  async lookup(): Promise<PetLookup> {
+    const { row, eulogy } = this.settle(nowSec());
+    return { pet: row ? this.status(row) : null, ...(eulogy && { eulogy }) };
+  }
+
+  // Fails if a living pet already exists — two people finishing /adopt at once can't both get one.
+  async adopt(input: {
+    name: string;
+    species: string;
+    emoji: string;
+    rarity: PetRarity;
+    adoptedById: number;
+    adoptedByName: string;
+    threadId: number | null;
+  }): Promise<PetAdoptResult> {
+    const now = nowSec();
+    const { row, eulogy } = this.settle(now);
+    if (row) {
+      return { ok: false, type: "ALREADY_HAS_PET", pet: this.status(row) };
+    }
+
+    const inserted = this.ctx.storage.sql
+      .exec<PetRow>(
+        `INSERT INTO pets (name, species, emoji, rarity, adopted_by_id, adopted_by_name, adopted_at, thread_id, food, mood, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 100, 100, ?)
+         RETURNING *`,
+        input.name,
+        input.species,
+        input.emoji,
+        input.rarity,
+        input.adoptedById,
+        input.adoptedByName,
+        now,
+        input.threadId,
+        now
+      )
+      .one();
+    return { ok: true, pet: this.status(inserted), ...(eulogy && { eulogy }) };
+  }
+
+  // feedAmount: how much food a feed adds — set by the caller, since it depends on the fish being fed
+  // (see foodForFish), or PET_CONFIG.FEED_AMOUNT when the chat has fishing switched off.
+  async interact(input: {
+    petId: number;
+    action: PetInput;
+    userId: number;
+    firstName: string;
+    feedAmount: number;
+  }): Promise<PetInteractResult> {
+    const now = nowSec();
+    const { row, eulogy } = this.settle(now);
+    if (eulogy) {
+      return { result: "GONE", eulogy };
+    }
+    if (!row || row.id !== input.petId) {
+      return { result: "STALE" };
+    }
+
+    const caretaker = this.ctx.storage.sql
+      .exec<{ last_fed_at: number | null; last_petted_at: number | null; last_played_at: number | null }>(
+        `SELECT last_fed_at, last_petted_at, last_played_at FROM caretakers WHERE pet_id = ? AND user_id = ?`,
+        row.id,
+        input.userId
+      )
+      .toArray()[0];
+    const last = { feed: caretaker?.last_fed_at, pet: caretaker?.last_petted_at, play: caretaker?.last_played_at }[input.action];
+    const cooldownHours = {
+      feed: PET_CONFIG.FEED_COOLDOWN_HOURS,
+      pet: PET_CONFIG.PET_COOLDOWN_HOURS,
+      play: PET_CONFIG.PLAY_COOLDOWN_HOURS,
+    }[input.action];
+    if (last != null && now - last < cooldownHours * 3600) {
+      return { result: "COOLDOWN", pet: this.status(row), retryInSeconds: last + cooldownHours * 3600 - now };
+    }
+
+    let food = row.food;
+    let mood = row.mood;
+    let kind: PetAction;
+    let trick: string | null = null;
+    if (input.action === "feed") {
+      if (food >= PET_CONFIG.OVERFED_AT) {
+        kind = "overfed";
+        mood -= PET_CONFIG.OVERFED_MOOD_PENALTY;
+      } else {
+        kind = "fed";
+        food += input.feedAmount;
+      }
+    } else if (input.action === "pet") {
+      kind = "petted";
+      mood += PET_CONFIG.PET_AMOUNT;
+    } else {
+      const known = this.knownTricks(row.id);
+      const outcome = rollPlayOutcome({ learn: known.length < PET_TRICKS.length, showOff: known.length > 0 });
+      kind = outcome.kind;
+      food += outcome.food;
+      mood += outcome.mood;
+      if (kind === "learned") {
+        const unknown = PET_TRICKS.map((t) => t.name).filter((name) => !known.includes(name));
+        trick = unknown[Math.floor(Math.random() * unknown.length)]!;
+        this.ctx.storage.sql.exec(
+          `INSERT INTO pet_tricks (pet_id, trick, taught_by, learned_at) VALUES (?, ?, ?, ?)`,
+          row.id,
+          trick,
+          input.firstName,
+          now
+        );
+      } else if (kind === "trick") {
+        trick = known[Math.floor(Math.random() * known.length)]!;
+      }
+    }
+    food = Math.max(0, Math.min(100, food));
+    mood = Math.max(0, Math.min(100, mood));
+
+    const fed = input.action === "feed";
+    const petted = input.action === "pet";
+    const updated = this.ctx.storage.sql
+      .exec<PetRow>(
+        `UPDATE pets SET food = ?, mood = ?, updated_at = ?, food_empty_since = ?, mood_empty_since = ?, warn_level = ?,
+           mood_warned = ?, last_fed_by = ?, last_fed_at = ?, last_petted_by = ?, last_petted_at = ?, last_action = ?,
+           last_action_by = ?, last_action_food = ?, last_action_trick = ?
+         WHERE id = ?
+         RETURNING *`,
+        food,
+        mood,
+        now,
+        food > 0 ? null : (row.food_empty_since ?? now),
+        mood > 0 ? null : (row.mood_empty_since ?? now),
+        // A feed resets the warnings to wherever food now sits, so the next hunger spell warns again.
+        fed ? warnLevelFor(food) : row.warn_level,
+        mood > PET_CONFIG.MISERABLE_WARNING_AT ? 0 : row.mood_warned,
+        fed ? input.firstName : row.last_fed_by,
+        fed ? now : row.last_fed_at,
+        petted ? input.firstName : row.last_petted_by,
+        petted ? now : row.last_petted_at,
+        kind,
+        input.firstName,
+        fed ? PET_FOODS[Math.floor(Math.random() * PET_FOODS.length)]! : null,
+        trick,
+        row.id
+      )
+      .one();
+
+    this.ctx.storage.sql.exec(
+      `INSERT INTO caretakers (pet_id, user_id, first_name, feeds, pets, plays, last_fed_at, last_petted_at, last_played_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(pet_id, user_id) DO UPDATE SET
+         first_name = excluded.first_name,
+         feeds = feeds + excluded.feeds,
+         pets = pets + excluded.pets,
+         plays = plays + excluded.plays,
+         last_fed_at = COALESCE(excluded.last_fed_at, last_fed_at),
+         last_petted_at = COALESCE(excluded.last_petted_at, last_petted_at),
+         last_played_at = COALESCE(excluded.last_played_at, last_played_at)`,
+      row.id,
+      input.userId,
+      input.firstName,
+      fed ? 1 : 0,
+      petted ? 1 : 0,
+      input.action === "play" ? 1 : 0,
+      fed ? now : null,
+      petted ? now : null,
+      input.action === "play" ? now : null
+    );
+
+    return { result: kind === "overfed" ? "OVERFED" : "OK", pet: this.status(updated) };
+  }
+
+  // The hourly check (see PetComposer.runHourlyCheck). Settles the pet — which is where deaths get
+  // noticed if nobody's looked in a while — and returns the "dying" warning if it's newly due (once per
+  // hunger spell; a feed resets it). awake is whether it may post right now; one that comes due overnight
+  // just waits for the morning.
+  async tick(awake: boolean): Promise<{ pet: PetStatus | null; eulogy?: PetEulogy; warnings: PetWarning[] }> {
+    const now = nowSec();
+    const { row, eulogy } = this.settle(now);
+    if (!row) {
+      return { pet: null, ...(eulogy && { eulogy }), warnings: [] };
+    }
+
+    const warnings: PetWarning[] = [];
+    if (awake && warnLevelFor(row.food) === WARN_DYING && row.warn_level < WARN_DYING) {
+      const starveAt = (row.food_empty_since ?? now) + PET_CONFIG.STARVE_AFTER_EMPTY_HOURS * 3600;
+      warnings.push({ type: "dying", hoursLeft: Math.max(1, Math.round((starveAt - now) / 3600)) });
+      this.ctx.storage.sql.exec(`UPDATE pets SET warn_level = ? WHERE id = ?`, WARN_DYING, row.id);
+    }
+    return { pet: this.status(row), warnings };
+  }
+
+  // A read-only look at the living pet as of now. Changes nothing: if it has died since anyone last
+  // looked, this returns null and leaves the death for the next real lookup (or the hourly check) to
+  // record and announce, so the eulogy is never lost.
+  async peek(): Promise<PetPeek | null> {
+    const row = this.ctx.storage.sql.exec<PetRow>(`SELECT * FROM pets WHERE died_at IS NULL LIMIT 1`).toArray()[0];
+    if (!row) {
+      return null;
+    }
+    const now = nowSec();
+    const shift = row.frozen_at !== null ? now - row.frozen_at : 0;
+    const meters = advanceMeters(
+      {
+        food: row.food,
+        mood: row.mood,
+        at: row.updated_at + shift,
+        foodEmptySince: row.food_empty_since !== null ? row.food_empty_since + shift : null,
+        moodEmptySince: row.mood_empty_since !== null ? row.mood_empty_since + shift : null,
+      },
+      now
+    );
+    if (petFate(meters)) {
+      return null;
+    }
+    return { name: row.name, species: row.species, emoji: row.emoji, food: meters.food, mood: meters.mood };
+  }
+
+  // Called by the hourly check while the "pet" feature is switched off in this chat: stops the clock, so
+  // switching a feature off never quietly kills anything. The next settle (with the feature back on)
+  // shifts every timestamp forward by however long it was frozen. Hourly granularity means up to an hour
+  // of decay can slip in around the switch — not worth more machinery.
+  async freeze(): Promise<void> {
+    this.ctx.storage.sql.exec(`UPDATE pets SET frozen_at = ? WHERE died_at IS NULL AND frozen_at IS NULL`, nowSec());
+  }
+
+  async graveyard(limit: number): Promise<PetGraveyardEntry[]> {
+    this.settle(nowSec());
+    return this.ctx.storage.sql
+      .exec<PetRow>(`SELECT * FROM pets WHERE died_at IS NOT NULL ORDER BY died_at DESC LIMIT ?`, limit)
+      .toArray()
+      .map((row) => ({
+        name: row.name,
+        species: row.species,
+        emoji: row.emoji,
+        adoptedAt: row.adopted_at,
+        diedAt: row.died_at!,
+        cause: row.cause!,
+        tricksKnown: this.knownTricks(row.id).length,
+      }));
+  }
+
+  // Owner-only (see PetComposer): mercy, or testing.
+  async kill(): Promise<PetLookup> {
+    const now = nowSec();
+    const { row, eulogy } = this.settle(now);
+    if (eulogy || !row) {
+      return { pet: null, ...(eulogy && { eulogy }) };
+    }
+    this.ctx.storage.sql.exec(`UPDATE pets SET died_at = ?, cause = 'put_down' WHERE id = ?`, now, row.id);
+    return { pet: null, eulogy: this.eulogy(row.id) };
+  }
+
+  // Owner-only: brings the most recent dead pet back at full meters, in case a bug killed it. No-op if a
+  // pet is alive.
+  async revive(): Promise<PetStatus | null> {
+    const now = nowSec();
+    if (this.settle(now).row) {
+      return null;
+    }
+    const revived = this.ctx.storage.sql
+      .exec<PetRow>(
+        `UPDATE pets SET died_at = NULL, cause = NULL, food = 100, mood = 100, updated_at = ?, food_empty_since = NULL,
+           mood_empty_since = NULL, frozen_at = NULL, warn_level = 0, mood_warned = 0, last_action = NULL, last_action_by = NULL,
+           last_action_food = NULL, last_action_trick = NULL
+         WHERE id = (SELECT id FROM pets WHERE died_at IS NOT NULL ORDER BY died_at DESC LIMIT 1)
+         RETURNING *`,
+        now
+      )
+      .toArray()[0];
+    return revived ? this.status(revived) : null;
+  }
+
+  // Brings the living pet's meters up to `now`, thawing it first if the hourly check froze it. If it
+  // died in the meantime, records that (at the moment it actually happened, not now) and returns the
+  // eulogy — this is the only place a pet dies on its own.
+  private settle(now: number): { row: PetRow | null; eulogy?: PetEulogy } {
+    let row = this.ctx.storage.sql.exec<PetRow>(`SELECT * FROM pets WHERE died_at IS NULL LIMIT 1`).toArray()[0];
+    if (!row) {
+      return { row: null };
+    }
+
+    if (row.frozen_at !== null) {
+      const shift = now - row.frozen_at;
+      row = {
+        ...row,
+        updated_at: row.updated_at + shift,
+        food_empty_since: row.food_empty_since !== null ? row.food_empty_since + shift : null,
+        mood_empty_since: row.mood_empty_since !== null ? row.mood_empty_since + shift : null,
+        frozen_at: null,
+      };
+    }
+
+    const meters: PetMeters = advanceMeters(
+      { food: row.food, mood: row.mood, at: row.updated_at, foodEmptySince: row.food_empty_since, moodEmptySince: row.mood_empty_since },
+      now
+    );
+    const fate = petFate(meters);
+
+    this.ctx.storage.sql.exec(
+      `UPDATE pets SET food = ?, mood = ?, updated_at = ?, food_empty_since = ?, mood_empty_since = ?, frozen_at = NULL,
+         died_at = ?, cause = ?
+       WHERE id = ?`,
+      meters.food,
+      meters.mood,
+      meters.at,
+      meters.foodEmptySince,
+      meters.moodEmptySince,
+      fate?.at ?? null,
+      fate?.cause ?? null,
+      row.id
+    );
+
+    if (fate) {
+      return { row: null, eulogy: this.eulogy(row.id) };
+    }
+    return {
+      row: {
+        ...row,
+        food: meters.food,
+        mood: meters.mood,
+        updated_at: meters.at,
+        food_empty_since: meters.foodEmptySince,
+        mood_empty_since: meters.moodEmptySince,
+      },
+    };
+  }
+
+  private eulogy(petId: number): PetEulogy {
+    const row = this.ctx.storage.sql.exec<PetRow>(`SELECT * FROM pets WHERE id = ?`, petId).one();
+    const caretakers = this.ctx.storage.sql
+      .exec<{ first_name: string; feeds: number; pets: number }>(`SELECT first_name, feeds, pets FROM caretakers WHERE pet_id = ?`, petId)
+      .toArray();
+    return {
+      name: row.name,
+      species: row.species,
+      emoji: row.emoji,
+      adoptedAt: row.adopted_at,
+      diedAt: row.died_at!,
+      cause: row.cause!,
+      threadId: row.thread_id,
+      lastFedBy: row.last_fed_by,
+      lastFedAt: row.last_fed_at,
+      lastPettedBy: row.last_petted_by,
+      lastPettedAt: row.last_petted_at,
+      onlyPetted: caretakers.filter((c) => c.feeds === 0 && c.pets > 0).map((c) => c.first_name),
+      onlyFed: caretakers.filter((c) => c.pets === 0 && c.feeds > 0).map((c) => c.first_name),
+      tricksKnown: this.knownTricks(petId).length,
+    };
+  }
+
+  private knownTricks(petId: number): string[] {
+    return this.ctx.storage.sql
+      .exec<{ trick: string }>(`SELECT trick FROM pet_tricks WHERE pet_id = ?`, petId)
+      .toArray()
+      .map((row) => row.trick);
+  }
+
+  private status(row: PetRow): PetStatus {
+    return toStatusRow(row, this.knownTricks(row.id).length);
+  }
+}
+
+function warnLevelFor(food: number): number {
+  if (food <= 0) {
+    return WARN_DYING;
+  }
+  if (food <= PET_CONFIG.STARVING_WARNING_AT) {
+    return WARN_STARVING;
+  }
+  if (food <= PET_CONFIG.HUNGRY_WARNING_AT) {
+    return WARN_HUNGRY;
+  }
+  return WARN_NONE;
+}
+
+function toStatusRow(row: PetRow, tricksKnown: number): PetStatus {
+  return {
+    id: row.id,
+    name: row.name,
+    species: row.species,
+    emoji: row.emoji,
+    rarity: row.rarity,
+    adoptedByName: row.adopted_by_name,
+    adoptedAt: row.adopted_at,
+    food: row.food,
+    mood: row.mood,
+    threadId: row.thread_id,
+    lastAction:
+      row.last_action && row.last_action_by
+        ? { kind: row.last_action, by: row.last_action_by, food: row.last_action_food, trick: row.last_action_trick }
+        : null,
+    tricksKnown,
+  };
+}

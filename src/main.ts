@@ -10,17 +10,20 @@ import { StockMarketRegistry } from "./durable-objects/stock-market-registry.js"
 import { ChatPause } from "./durable-objects/chat-pause.js";
 import { RudeMessages } from "./durable-objects/rude-messages.js";
 import { Fishing } from "./durable-objects/fishing.js";
+import { Pet } from "./durable-objects/pet.js";
+import { PetRegistry } from "./durable-objects/pet-registry.js";
 import { StorageService } from "./storage-service.js";
 import { WordleGolfComposer } from "./wordle-golf.js";
 import { StockMarketComposer } from "./stock-market.js";
+import { PetComposer } from "./pet.js";
 import { easternParts } from "./eastern-time.js";
 
-export { BeenCounter, BeanCounter, SpankChain, WordleGolf, WordleGolfRegistry, StockMarket, StockMarketRegistry, ChatPause, RudeMessages, Fishing };
+export { BeenCounter, BeanCounter, SpankChain, WordleGolf, WordleGolfRegistry, StockMarket, StockMarketRegistry, ChatPause, RudeMessages, Fishing, Pet, PetRegistry };
 
 // Cron Triggers are UTC-only, and every job here is scheduled in Eastern time, which shifts an hour
 // against UTC across DST. So wrangler.jsonc runs a single hourly trigger, and scheduled() below works out
-// the Eastern hour itself and runs whichever jobs are due. The 20-odd idle runs a day exit before touching
-// any storage.
+// the Eastern hour itself and runs whichever jobs are due. Apart from the pet check, which runs every
+// hour, the 20-odd other runs a day exit before touching any storage.
 const MIDNIGHT_ET = 0;
 // Split out from midnight — nobody's awake to see a halt announcement land at midnight.
 const MORNING_ET = 8;
@@ -41,6 +44,8 @@ export interface Env {
   CHAT_PAUSE: DurableObjectNamespace<ChatPause>;
   RUDE_MESSAGES: DurableObjectNamespace<RudeMessages>;
   FISHING: DurableObjectNamespace<Fishing>;
+  PET: DurableObjectNamespace<Pet>;
+  PET_REGISTRY: DurableObjectNamespace<PetRegistry>;
   OWNER_CHAT_ID?: string;
   // Seeds fishing tides (see tideFor in fishing-math.ts). Unset means tides stay normal.
   TIDE_SECRET?: string;
@@ -57,7 +62,9 @@ function buildStorage(env: Env): StorageService {
     env.STOCK_MARKET_REGISTRY,
     env.CHAT_PAUSE,
     env.RUDE_MESSAGES,
-    env.FISHING
+    env.FISHING,
+    env.PET,
+    env.PET_REGISTRY
   );
 }
 
@@ -73,13 +80,19 @@ export default {
   // scheduledTime (not the current time) so a trigger delivered a few seconds late still reads as the
   // hour it was scheduled for.
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+    const storage = buildStorage(env);
+    const api = new Api(env.BOT_TOKEN);
+
+    // The only every-hour job: pet warnings and deaths (see PetComposer.runHourlyCheck). Chats that have
+    // never adopted a pet aren't touched, so this is a no-op until someone runs /adopt. Caught so a pet
+    // failure can never stop the Wordle and market jobs below.
+    await new PetComposer(storage, undefined).runHourlyCheck(api).catch((err) => console.error(err));
+
     const { hour, weekday } = easternParts(new Date(controller.scheduledTime));
     if (hour !== MIDNIGHT_ET && hour !== MORNING_ET && hour !== OPTIONS_SETTLEMENT_ET) {
       return;
     }
 
-    const storage = buildStorage(env);
-    const api = new Api(env.BOT_TOKEN);
     const composer = new StockMarketComposer(storage);
 
     if (hour === MIDNIGHT_ET) {

@@ -3,7 +3,19 @@ import type { BeanCounter } from "./durable-objects/bean-counter.js";
 import type { SpankChain } from "./durable-objects/spank-chain.js";
 import type { ChatPause } from "./durable-objects/chat-pause.js";
 import type { RudeMessages } from "./durable-objects/rude-messages.js";
-import type { Fishing, FishingCastResult, FishingLeaderboard } from "./durable-objects/fishing.js";
+import type { FishSize, Fishing, FishingCastResult, FishingLeaderboard, HeldFish } from "./durable-objects/fishing.js";
+import type {
+  Pet,
+  PetAdoptResult,
+  PetGraveyardEntry,
+  PetInteractResult,
+  PetLookup,
+  PetPeek,
+  PetStatus,
+  PetWarning,
+  PetEulogy,
+} from "./durable-objects/pet.js";
+import type { PetRegistry } from "./durable-objects/pet-registry.js";
 import { type FeatureKey, type FeatureFlags, resolveFeatures } from "./features.js";
 import type {
   WordleGolf,
@@ -38,7 +50,9 @@ export class StorageService {
     private stockMarketRegistryNs: DurableObjectNamespace<StockMarketRegistry>,
     private chatPauseNs: DurableObjectNamespace<ChatPause>,
     private rudeMessagesNs: DurableObjectNamespace<RudeMessages>,
-    private fishingNs: DurableObjectNamespace<Fishing>
+    private fishingNs: DurableObjectNamespace<Fishing>,
+    private petNs: DurableObjectNamespace<Pet>,
+    private petRegistryNs: DurableObjectNamespace<PetRegistry>
   ) {}
 
   incrementBeenCounter(name: string, by: number = 1): Promise<number> {
@@ -346,7 +360,63 @@ export class StorageService {
     return this.fishingStub(chatId).reset();
   }
 
+  takeFish(chatId: number, userId: number, size: FishSize, usedFor: string): Promise<HeldFish | null> {
+    return this.fishingStub(chatId).takeFish(userId, size, usedFor);
+  }
+
+  returnFish(chatId: number, fishId: number): Promise<void> {
+    return this.fishingStub(chatId).returnFish(fishId);
+  }
+
   private fishingStub(chatId: number) {
     return this.fishingNs.get(this.fishingNs.idFromName(`fishing_${chatId}`));
+  }
+
+  getPet(chatId: number): Promise<PetLookup> {
+    return this.petStub(chatId).lookup();
+  }
+
+  adoptPet(chatId: number, input: Parameters<Pet["adopt"]>[0]): Promise<PetAdoptResult> {
+    return this.petStub(chatId).adopt(input);
+  }
+
+  peekPet(chatId: number): Promise<PetPeek | null> {
+    return this.petStub(chatId).peek();
+  }
+
+  interactWithPet(chatId: number, input: Parameters<Pet["interact"]>[0]): Promise<PetInteractResult> {
+    return this.petStub(chatId).interact(input);
+  }
+
+  tickPet(chatId: number, awake: boolean): Promise<{ pet: PetStatus | null; eulogy?: PetEulogy; warnings: PetWarning[] }> {
+    return this.petStub(chatId).tick(awake);
+  }
+
+  freezePet(chatId: number): Promise<void> {
+    return this.petStub(chatId).freeze();
+  }
+
+  getPetGraveyard(chatId: number, limit: number): Promise<PetGraveyardEntry[]> {
+    return this.petStub(chatId).graveyard(limit);
+  }
+
+  killPet(chatId: number): Promise<PetLookup> {
+    return this.petStub(chatId).kill();
+  }
+
+  revivePet(chatId: number): Promise<PetStatus | null> {
+    return this.petStub(chatId).revive();
+  }
+
+  private petStub(chatId: number) {
+    return this.petNs.get(this.petNs.idFromName(`pet_${chatId}`));
+  }
+
+  registerPetChat(chatId: number): Promise<void> {
+    return this.petRegistryNs.get(this.petRegistryNs.idFromName("global")).register(chatId);
+  }
+
+  listPetChats(): Promise<number[]> {
+    return this.petRegistryNs.get(this.petRegistryNs.idFromName("global")).list();
   }
 }

@@ -1,58 +1,123 @@
 // The /fish roll (see fishing.ts and the Fishing DO). Pure functions, no storage, so the odds can be
-// checked statistically in isolation.
+// checked statistically in isolation (scripts/sim-fishing.mjs).
 //
-// Every roll is a log-normal weight: median MEDIAN_LB, spread SIGMA — mostly small fish, with a long
-// tail of rare monsters. A cast keeps the best of several rolls, and waiting between casts earns more
-// of them (rollsForWait). The odds are identical for everyone; the only lever anyone has is how long
-// they wait, capped at MAX_WAIT_DAYS.
+// Every cast has a quality q, a plain multiplier on the typical fish, built from three things:
+//   wait  - how long since this angler last cast (WAIT_FACTOR): casting every day is a mild penalty, and
+//           anything from 4 days on is full strength. Waiting longer gains nothing more.
+//   tide  - the chat's hidden tide today (see tideFor).
+//   lake  - how many casts the whole chat has already made today (lakeFactor): the first few are a bonus,
+//           and it turns into a penalty around the 5th, so the lake is a shared resource.
+// q = max(Q_FLOOR, wait * tide * lake). The weight is log-normal with median MEDIAN_LB * q and spread
+// SIGMA, so q = 0.5 means a half-size typical fish; the species is picked from that final weight. Lower q
+// also means more junk (junkChance).
 //
-// Built so people fish when they happen to remember, not on a schedule — and so spamming /fish is
-// pointless. Reference odds per cast, as tuned here:
-//   1 day waited:   60% junk, typical 0.5 lb
-//   7 days waited:  12% junk, typical 12.8 lb, 1 in 10 beats 31.3 lb
-//   14 days waited:  6% junk, typical 20.5 lb, 1 in 10 beats 44.5 lb
-//   30+ days waited: 5% junk, typical 29.5 lb, 1 in 10 beats 59.2 lb, >100 lb is 2%
-// Casting on any fixed schedule for a year, after junk: every 14/21/30 days lands within 7% of each other
-// on total rolls (323/341/346 — typical best of the year 69.6/70.8/71.1 lb), so there's no rhythm worth
-// optimizing; weekly gets 70% of that, daily 8%, and waiting past a month only loses rolls.
+// Reference odds per cast, as tuned here (normal tide):
+//   daily, 1st cast of the day:  q 0.68, 16% junk, median  9.5 lb, 1 in 10 beats 25 lb
+//   4+ days, 3rd cast:           q 1.15,  5% junk, median 16 lb,   1 in 10 beats 42 lb
+//   4+ days, 8th cast:           q 0.65, 17% junk, median  9.1 lb, 1 in 10 beats 24 lb
+//   4+ days, 1st cast, king tide: q 2.70,  5% junk, median 38 lb,   1 in 100 beats 216 lb
+// Over a year, the best trophy odds come from casting every 3-5 days; casting daily lands the most fish
+// (handy for feeding the pet), just smaller ones.
+export const FISHING_CONFIG = {
+  MEDIAN_LB: 14,
+  SIGMA: 0.75,
+  MIN_LB: 0.3,
 
-const MEDIAN_LB = 4;
-const SIGMA = 1.0;
-export const MAX_WAIT_DAYS = 30;
-// A first-ever cast counts as this many days waited — a medium start, the same as someone who fishes weekly.
-export const FIRST_CAST_WAIT_DAYS = 7;
-// Junk caught within this many days of the last cast gets the "overfished waters" line (see fishing.ts),
-// so people can work out that they're casting too often without the math ever being shown.
-export const OVERFISHED_WITHIN_DAYS = 3;
+  // By days since the angler's last cast: 1, 2, 3, 4+.
+  WAIT_FACTOR: [0.5, 0.7, 0.88, 1.0],
+  // A first-ever cast counts as this many days waited: full strength.
+  FIRST_CAST_WAIT_DAYS: 7,
 
-// days * (1 - e^(-days/5)), capped at MAX_WAIT_DAYS: 1 day -> 0.18 rolls, 7 -> 5.3, 14 -> 13.2,
-// 30 -> 29.9. Rolls per day waited starts tiny and climbs over the first two weeks (0.18, 0.45 at 3 days,
-// 0.75 at 7, 0.94 at 14), then flattens out (0.99 at 21, 1.00 at 30) — so short waits are clearly worse,
-// but nothing between ~2 and 4 weeks is meaningfully better than anything else. Fewer than 1 roll is
-// fine (see rollWeight): it just means smaller than a single normal roll.
-export function rollsForWait(daysWaited: number): number {
-  const days = Math.min(MAX_WAIT_DAYS, Math.max(1, daysWaited));
-  return days * (1 - Math.exp(-days / 5));
+  // lake = max(LAKE_FLOOR, LAKE_START - LAKE_STEP * castsAlreadyToday): 1.35, 1.25, 1.15, 1.05, 0.95, ...
+  // 0.65 on the 8th cast, LAKE_FLOOR from the 11th.
+  LAKE_START: 1.35,
+  LAKE_STEP: 0.1,
+  LAKE_FLOOR: 0.4,
+
+  // However bad wait, tide, and lake stack up, a cast is never worse than this.
+  Q_FLOOR: 0.3,
+
+  // junk = JUNK_BASE + JUNK_SLOPE * (1 - q), between JUNK_BASE and JUNK_MAX: 5% at q >= 1, 30% at worst.
+  JUNK_BASE: 0.05,
+  JUNK_SLOPE: 0.35,
+  JUNK_MAX: 0.3,
+
+  // A catch under this many pounds (or junk) can get a hint about what dragged it down (see hintFor)...
+  POOR_CATCH_LB: 6,
+  // ...naming the worst factor below this, unless the lake was even worse (its line already says so).
+  HINT_BELOW_FACTOR: 0.75,
+} as const;
+
+export interface CastFactors {
+  wait: number;
+  tide: number;
+  lake: number;
+  quality: number;
 }
 
-// The best of `rolls` independent weights, sampled directly rather than rolling each one: if one roll's
-// CDF is F, the best of r rolls has CDF F^r, so F(best) = U^(1/r) for a uniform U. That also makes
-// fractional r well-defined. Rounded to 0.1 lb, never below 0.1.
-export function rollWeight(rolls: number, random: () => number = Math.random): number {
-  const u = Math.pow(random(), 1 / rolls);
-  if (u <= 0) {
-    return 0.1;
+export function waitFactor(daysWaited: number): number {
+  const table = FISHING_CONFIG.WAIT_FACTOR;
+  const index = Math.min(table.length, Math.max(1, Math.floor(daysWaited))) - 1;
+  return table[index]!;
+}
+
+// castsToday: casts anyone in the chat made today before this one.
+export function lakeFactor(castsToday: number): number {
+  const { LAKE_START, LAKE_STEP, LAKE_FLOOR } = FISHING_CONFIG;
+  return Math.max(LAKE_FLOOR, LAKE_START - LAKE_STEP * Math.max(0, castsToday));
+}
+
+export function castFactors(input: { daysWaited: number; tide: Tide; castsToday: number }): CastFactors {
+  const wait = waitFactor(input.daysWaited);
+  const tide = tideMultiplier(input.tide);
+  const lake = lakeFactor(input.castsToday);
+  return { wait, tide, lake, quality: Math.max(FISHING_CONFIG.Q_FLOOR, wait * tide * lake) };
+}
+
+export function junkChance(quality: number): number {
+  const { JUNK_BASE, JUNK_SLOPE, JUNK_MAX } = FISHING_CONFIG;
+  return Math.min(JUNK_MAX, Math.max(JUNK_BASE, JUNK_BASE + JUNK_SLOPE * (1 - quality)));
+}
+
+// Log-normal around MEDIAN_LB * quality. Rounded to 0.1 lb, never below MIN_LB.
+export function rollWeight(quality: number, random: () => number = Math.random): number {
+  const { MEDIAN_LB, SIGMA, MIN_LB } = FISHING_CONFIG;
+  const u = Math.min(1 - 1e-12, Math.max(1e-12, random()));
+  const weight = MEDIAN_LB * quality * Math.exp(SIGMA * inverseNormalCdf(u));
+  return Math.max(MIN_LB, Math.round(weight * 10) / 10);
+}
+
+// How busy the lake is today, for the catch reply's flavor line. Keyed off lakeFactor rather than the raw
+// count, so retuning LAKE_START / LAKE_STEP keeps the words in step with the odds.
+export type LakeTier = "fresh" | "calm" | "busy" | "crowded" | "fished_out";
+const LAKE_TIERS: { tier: LakeTier; atLeast: number }[] = [
+  { tier: "fresh", atLeast: 1.3 }, // nobody's cast yet (at the defaults)
+  { tier: "calm", atLeast: 1.1 }, // 1-2 casts before this one
+  { tier: "busy", atLeast: 0.8 }, // 3-5
+  { tier: "crowded", atLeast: 0.55 }, // 6-8
+  { tier: "fished_out", atLeast: -Infinity }, // 9+
+];
+
+export function lakeTier(castsToday: number): LakeTier {
+  const factor = lakeFactor(castsToday);
+  return LAKE_TIERS.find((t) => factor >= t.atLeast)!.tier;
+}
+
+// What to blame a poor catch on: the angler's own spot (they cast too recently) or a low tide —
+// whichever dragged harder. Nothing when neither was much of a drag, or when the lake was the worst
+// factor, since the lake line already covers that.
+export type CatchHint = "spot" | "low_tide";
+
+export function hintFor(factors: CastFactors): CatchHint | null {
+  const causes: { hint: CatchHint; factor: number }[] = [
+    { hint: "spot", factor: factors.wait },
+    { hint: "low_tide", factor: factors.tide },
+  ];
+  const worst = causes.filter((c) => c.factor < FISHING_CONFIG.HINT_BELOW_FACTOR).sort((a, b) => a.factor - b.factor)[0];
+  if (!worst || factors.lake < worst.factor) {
+    return null;
   }
-  const weight = MEDIAN_LB * Math.exp(SIGMA * inverseNormalCdf(u));
-  return Math.max(0.1, Math.round(weight * 10) / 10);
-}
-
-// Any cast can reel in junk instead of a fish: no weight, never on the leaderboard, and it still uses up
-// the day's cast and the waiting bonus. 5% + 55% * e^(-(days - 1)/3): 60% the day after a cast, 33% at 3
-// days, 12% at 7, settling to the base 5% after about two weeks — overfished waters are mostly junk.
-function trashChance(daysWaited: number): number {
-  const days = Math.min(MAX_WAIT_DAYS, Math.max(1, daysWaited));
-  return 0.05 + 0.55 * Math.exp(-(days - 1) / 3);
+  return worst.hint;
 }
 
 const TRASH: [item: string, emoji: string][] = [
@@ -73,16 +138,18 @@ const TRASH: [item: string, emoji: string][] = [
   ["a traffic cone", "🚧"],
 ];
 
-export function rollTrash(daysWaited: number, random: () => number = Math.random): { item: string; emoji: string } | null {
-  if (random() >= trashChance(daysWaited)) {
+// Junk instead of a fish: no weight, never on the leaderboard or in anyone's bucket, and it still uses
+// up the day's cast.
+export function rollTrash(quality: number, random: () => number = Math.random): { item: string; emoji: string } | null {
+  if (random() >= junkChance(quality)) {
     return null;
   }
   const [item, emoji] = TRASH[Math.floor(random() * TRASH.length)]!;
   return { item, emoji };
 }
 
-// Tides: each chat's water has a hidden tide that multiplies everyone's rolls that day (see rollsForWait,
-// which it scales — so a king tide two days after your last cast is still a bad cast). It comes in
+// Tides: each chat's water has a hidden tide that multiplies everyone's cast quality that day (see
+// castFactors — so a king tide the day after your last cast is still only a decent cast). It comes in
 // streaks, like real weather, without following any real-world cycle anyone could plan around:
 //   1. Every chat/day gets a "swell": a standard normal value derived from a hash of the secret, the chat,
 //      and the day. Unpredictable without the secret (TIDE_SECRET), and the same every time it's computed.
@@ -91,17 +158,17 @@ export function rollTrash(daysWaited: number, random: () => number = Math.random
 //   3. That average maps onto fixed tiers at N(0, 1) quantiles, so over time the split is exactly
 //      25% low / 50% normal / 20% high / 5% king.
 // With a 4-day window, high-or-better stretches last ~2.8 days on average and come around every ~8 days;
-// a high day is followed by another 64% of the time. The multipliers average exactly 1
-// (.25 * .44 + .5 * 1 + .2 * 1.4 + .05 * 2.2), so tides add swing without shifting long-run odds.
+// a high day is followed by another 64% of the time. The multipliers average about 1
+// (.25 * .6 + .5 * 1 + .2 * 1.4 + .05 * 2 = 1.03), so tides add swing without shifting long-run odds.
 // Nothing is stored and nothing is scheduled — a day's tide is just TIDE_WINDOW_DAYS hashes.
 export type Tide = "low" | "normal" | "high" | "king";
 
 const TIDE_WINDOW_DAYS = 4;
 const TIDE_TIERS: { tide: Tide; below: number; multiplier: number }[] = [
-  { tide: "low", below: -0.6745, multiplier: 0.44 }, // N(0, 1) 25th percentile
+  { tide: "low", below: -0.6745, multiplier: 0.6 }, // N(0, 1) 25th percentile
   { tide: "normal", below: 0.6745, multiplier: 1 }, // 75th
   { tide: "high", below: 1.6449, multiplier: 1.4 }, // 95th
-  { tide: "king", below: Infinity, multiplier: 2.2 },
+  { tide: "king", below: Infinity, multiplier: 2.0 },
 ];
 
 // dayNumber: whole days since the Unix epoch, for the Eastern calendar date (so the tide turns at
@@ -118,6 +185,27 @@ export function tideFor(secret: string, chatId: number, dayNumber: number): Tide
 
 export function tideMultiplier(tide: Tide): number {
   return TIDE_TIERS.find((tier) => tier.tide === tide)!.multiplier;
+}
+
+// A line from `lines` for the step-th use under `key` (e.g. chat + date + which set). Each key gets its own
+// fixed shuffle, and consecutive steps walk through it, so nothing repeats until the whole set has been
+// used, and a different key (tomorrow) gets a different order. Deterministic: no state to store.
+export function rotatingLine(lines: readonly string[], key: string, step: number): string {
+  let seed = cyrb53(key) % 2 ** 32;
+  const next = () => {
+    // mulberry32
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const order = lines.map((_, i) => i);
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(next() * (i + 1));
+    [order[i], order[j]] = [order[j]!, order[i]!];
+  }
+  const index = ((step % lines.length) + lines.length) % lines.length;
+  return lines[order[index]!]!;
 }
 
 // cyrb53 (bryc, public domain): a fast, well-mixed 53-bit string hash. Not cryptographic, but with a
