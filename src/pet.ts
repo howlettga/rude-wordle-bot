@@ -537,7 +537,7 @@ export function petDesireLine(pet: PetPeek, caught: "fish" | "trash"): string | 
   if (pet.mood <= PET_CONFIG.MISERABLE_WARNING_AT) {
     return random([
       `${lead} watches you fish from a distance. It looks lonely.`,
-      `${lead} sat next to you on the dock and sighed. Nobody's played with it in a while.`,
+      `${lead} sat next to you on the dock and sighed. Nobody's played with it lately.`,
     ]);
   }
   return null;

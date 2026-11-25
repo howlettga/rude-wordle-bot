@@ -7,7 +7,8 @@
 // mornings don't always open the same way. Nothing is stored for it.
 import type { CatchHint, LakeTier } from "./fishing-math.js";
 
-// One on every cast, by how many casts the chat has already made today (see lakeTier).
+// The fallback flavor line when nothing more specific applies (see handleFish for which line wins), by how
+// many casts the chat has already made today (see lakeTier).
 export const LAKE_LINES: Record<LakeTier, string[]> = {
   fresh: [
     "The water's so still it's a little unsettling.",
@@ -17,7 +18,7 @@ export const LAKE_LINES: Record<LakeTier, string[]> = {
     "A heron nods at you. Professional courtesy.",
     "Not even the regulars are up.",
     "The lake doesn't know your name yet.",
-    "You're the first one here. The lake seems almost happy to see you.",
+    "First one here. The lake seems almost happy to see you.",
   ],
   calm: [
     "Someone left a thermos on the dock. Still warm.",
@@ -51,7 +52,7 @@ export const LAKE_LINES: Record<LakeTier, string[]> = {
   ],
   fished_out: [
     "The lake is mostly hooks now.",
-    "A single minnow is hiding behind a rock, refusing to make eye contact.",
+    "One minnow is left, and it won't make eye contact.",
     "You're pretty sure that splash was a tear.",
     "The fish have filed a restraining order against the entire chat.",
     "The lake has gone to its happy place. You're not invited.",
