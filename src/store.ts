@@ -3,7 +3,7 @@ import type { MyContext } from "./context.js";
 import type { StorageService } from "./storage-service.js";
 import type { HeldFish } from "./durable-objects/fishing.js";
 import type { StoreCard } from "./durable-objects/store.js";
-import { formatBeans } from "./store-math.js";
+import { formatBeanPrice, formatBeans } from "./store-math.js";
 import { escapeHtml, weightArticle } from "./util.js";
 
 // The "store" feature (see features.ts): a shared General Store card, built like the pet card, so the
@@ -14,12 +14,12 @@ import { escapeHtml, weightArticle } from "./util.js";
 //             buy (coming soon)
 // /fish replies also get a Sell button for that exact fish (see fishingSellButton), which only its catcher
 // can use. Selling needs fishing on too; with it off, the card has nothing to sell. Prices live in
-// store-math.ts, and the money is beans.
+// store-math.ts, and the money is beans, always written with 🫘 as the currency sign (see formatBeans).
 const SELL_CAUGHT = /^store:sell:fish:(\d+)$/;
 
 // The button under a /fish reply, for selling that catch on the spot.
 export function fishingSellButton(catchId: number, quote: number): InlineKeyboard {
-  return new InlineKeyboard().text(`🫘 Sell for ${formatBeans(quote)}`, `store:sell:fish:${catchId}`);
+  return new InlineKeyboard().text(`💰 Sell for ${formatBeans(quote)}`, `store:sell:fish:${catchId}`);
 }
 
 export class StoreComposer extends Composer<MyContext> {
@@ -76,7 +76,7 @@ export class StoreComposer extends Composer<MyContext> {
 
     const sale = await this.sell(chatId, ctx.from, taken.fish);
     const original = ctx.callbackQuery?.message?.text;
-    const sold = `🫘 Sold for ${formatBeans(sale.amount)}.`;
+    const sold = `💰 Sold for ${formatBeans(sale.amount)}.`;
     // Edit first, then the pop-up, same order as the pet card (see PetComposer.handleButton).
     await (original !== undefined ? ctx.editMessageText(`${original}\n${sold}`) : ctx.editMessageReplyMarkup()).catch((err) =>
       console.error(err)
@@ -147,13 +147,13 @@ function formatCard(card: StoreCard, fishing: boolean): string {
   const lines = [`🏪 <b>General Store</b>`];
   if (fishing) {
     const { perLb, yesterdayPerLb } = card.fish;
-    lines.push(`🐟 Fish: ${perLb.toFixed(2)} beans/lb${priceChange(perLb, yesterdayPerLb)}`);
+    lines.push(`🐟 Fish: ${formatBeanPrice(perLb)}/lb${priceChange(perLb, yesterdayPerLb)}`);
   } else {
     lines.push(`Nothing to sell right now.`);
   }
   if (card.lastSale) {
     const { firstName, label, amount } = card.lastSale;
-    lines.push(`<i>🫘 ${escapeHtml(firstName)} sold ${weightArticle(label)} ${escapeHtml(label)} for ${formatBeans(amount)}.</i>`);
+    lines.push(`<i>💰 ${escapeHtml(firstName)} sold ${weightArticle(label)} ${escapeHtml(label)} for ${formatBeans(amount)}.</i>`);
   }
   return lines.join("\n");
 }

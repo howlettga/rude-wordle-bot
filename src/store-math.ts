@@ -41,7 +41,15 @@ export function fishSalePrice(weight: number, tier: FishTier, perLb: number): nu
   return Math.max(STORE_CONFIG.MIN_SALE, Math.round(weight * perLb * STORE_CONFIG.TIER_MULTIPLIER[tier]));
 }
 
-// "1 bean", "18 beans", "1,204 beans".
+// The bean is the currency sign, like a dollar sign: "🫘18", "🫘1,204". Everywhere money shows up, so
+// people get used to reading it.
+export const BEAN = "🫘";
+
 export function formatBeans(amount: number): string {
-  return `${amount.toLocaleString("en-US")} bean${amount === 1 ? "" : "s"}`;
+  return `${BEAN}${amount.toLocaleString("en-US")}`;
+}
+
+// A price per lb, to the cent: "🫘0.38".
+export function formatBeanPrice(amount: number): string {
+  return `${BEAN}${amount.toFixed(2)}`;
 }
