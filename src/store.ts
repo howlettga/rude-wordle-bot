@@ -336,11 +336,12 @@ function priceChange(today: number, yesterday: number): string {
   return ` · ${pct > 0 ? "▲" : "▼"} ${Math.abs(pct)}%`;
 }
 
-// One row: Sell a fish (needs fishing on) and Open store (needs a link). Buying and the wallet live in the store page.
+// Sell a fish (needs fishing on) and Open store (needs a link), each a full-width row. Buying and the wallet live in
+// the store page.
 function cardKeyboard(fishing: boolean, storeUrl: string | null): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   if (fishing) {
-    keyboard.text("🐟 Sell a fish", "store:sellrandom");
+    keyboard.text("🐟 Sell a fish", "store:sellrandom").row();
   }
   if (storeUrl !== null) {
     keyboard.url("🛒 Open store", storeUrl);
