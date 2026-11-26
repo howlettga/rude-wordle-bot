@@ -63,6 +63,7 @@ Create a `.dev.vars` file (gitignored, never commit this) with your **test bot's
 BOT_TOKEN=<test bot token>
 BOT_INFO=<test bot getMe result, from step 2>
 TIDE_SECRET=<any long random string>
+OWNER_CHAT_ID=<your own Telegram user id (optional): owner-only commands, and where @-mentions are forwarded>
 ```
 
 Start the dev server with a public tunnel (Cloudflare manages `cloudflared` for you — no separate install):
@@ -105,6 +106,9 @@ npx wrangler secret put BOT_TOKEN
 curl -s "https://api.telegram.org/bot<TOKEN>/getMe" | jq -c '.result' | npx wrangler secret put BOT_INFO
 
 openssl rand -hex 32 | npx wrangler secret put TIDE_SECRET
+
+npx wrangler secret put OWNER_CHAT_ID
+# your own Telegram user id: unlocks the owner-only commands, and @-mentions get forwarded there
 ```
 
 `TIDE_SECRET` seeds the hidden daily fishing tides and the store's daily fish prices. Without it, tides stay normal and prices stay flat. Never commit it or change it casually: changing it reshuffles every chat's tides and prices.
@@ -112,10 +116,12 @@ openssl rand -hex 32 | npx wrangler secret put TIDE_SECRET
 Deploy:
 
 ```sh
-npx wrangler deploy
+npm run deploy
 ```
 
-This prints the live `https://rude-bot.<subdomain>.workers.dev` URL (here, `https://rude-bot.howlettga.workers.dev`). Register it with Telegram as in step 4, using the real bot's token.
+(That's `wrangler deploy --env=""`: with a `dev` environment defined, the empty `--env` says "the top-level Worker" explicitly, which is prod, and keeps wrangler from warning.)
+
+This prints the live `https://rude-bot.<subdomain>.workers.dev` URL (here, `https://rude-bot.howlettga.workers.dev`). Register it with Telegram as in step 4, using the real bot's token, then register the bot's store Mini App (see [Store Mini App](#store-mini-app)) and its command menu (step 6).
 
 ## Dev deployment
 
@@ -157,9 +163,15 @@ The `/store` card has a `🛒 Open store` button that opens a page over the chat
 
 Each bot needs its own app registered with [@BotFather](https://t.me/BotFather), once (test bot with the dev URL, real bot with the prod URL):
 
-1. `/newapp`, pick the bot, and follow the prompts.
-2. Short name: `store` (the code builds links as `https://t.me/<bot username>/store?startapp=...`, so it has to be exactly this).
-3. URL: `https://<worker host>/app/`, so `https://rude-bot-dev.howlettga.workers.dev/app/` for the test bot and `https://rude-bot.howlettga.workers.dev/app/` for the real one.
+1. `/newapp`, then pick the bot.
+2. **Title:** `General Store`. **Description:** anything short, e.g. `Sell your fish and buy gear.`
+3. **Photo:** a 640×360 image. Use `assets/general_store.png`. If it asks for a GIF too, send `/empty` to skip.
+4. **Web App URL:** `https://<worker host>/app/`, so `https://rude-bot-dev.howlettga.workers.dev/app/` for the test bot and `https://rude-bot.howlettga.workers.dev/app/` for the real one.
+5. **Short name:** `store`. The code builds links as `https://t.me/<bot username>/store?startapp=...`, so it has to be exactly this.
+
+To change any of it later (say, the URL), use `/myapps` in BotFather.
+
+Until a bot has its `store` app, its card's 🛒 Open store button leads to a Telegram "app not found" error, so register it right after the first deploy that includes the page.
 
 How it knows which group you're in: Telegram doesn't tell a Mini App which chat it was opened from, so the card's button link carries the group's chat id, signed with the bot token. The API checks Telegram's signature on the page's `initData` (who you are), checks our signature on the link (which group), and then checks you're a member of that group and the store is on there. A link is good for 24 hours from when the card was posted or last edited, and every card edit puts a fresh link on the button, so an old card's button stops working after a day. Send `/store` for a fresh one. Separately, the page asks you to reopen it once it's been open for an hour.
 
@@ -168,6 +180,13 @@ How it knows which group you're in: Telegram doesn't tell a Mini App which chat 
 To look at the page's layout without Telegram, open `/app/?mock=1` (for example under `npm run dev`). It uses built-in sample data. `npm run test:webapp` checks the link signing and `initData` validation.
 
 `npm run dev` with the tunnel is still fine for anything that isn't the page. The page itself needs a fixed URL registered with BotFather, which the tunnel doesn't have, so test it on `rude-bot-dev`.
+
+**Going live in prod with the page for the first time:**
+
+1. `npm run deploy`.
+2. Register the real bot's `store` app with BotFather (above), with the prod URL.
+3. Update the real bot's command menu (step 6), since the `store` description changed.
+4. In the group, send `/store` and open the page to check it. Cards posted before this deploy still have the old Rod / Boat / Worms / Wallet buttons. Those keep working, and each card switches to the new layout the next time it's edited.
 
 ## 6. Set the command menu (optional)
 
@@ -195,7 +214,7 @@ Registering a command with `bot.command()` in `src/bot.ts` only wires up the han
 | `instructions` | how's this work? |
 | `fish` | cast a line |
 | `fishing` | biggest catches |
-| `store` | sell ya fish |
+| `store` | spend ya beans |
 | `adopt` | get a group pet |
 | `pet` | check on the pet |
 | `graveyard` | pets we've lost |
@@ -222,7 +241,7 @@ curl "https://api.telegram.org/bot<TOKEN>/setMyCommands" \
   {"command":"instructions","description":"how's this work?"},
   {"command":"fish","description":"cast a line"},
   {"command":"fishing","description":"biggest catches"},
-  {"command":"store","description":"sell ya fish"},
+  {"command":"store","description":"spend ya beans"},
   {"command":"adopt","description":"get a group pet"},
   {"command":"pet","description":"check on the pet"},
   {"command":"graveyard","description":"pets we've lost"}
@@ -250,7 +269,7 @@ marketrules - how to win
 instructions - how's this work?
 fish - cast a line
 fishing - biggest catches
-store - sell ya fish
+store - spend ya beans
 adopt - get a group pet
 pet - check on the pet
 graveyard - pets we've lost
@@ -308,11 +327,12 @@ Only switches the owner has flipped are stored; everything else uses its default
 | Task | Command |
 |---|---|
 | Local dev with public tunnel | `npx wrangler dev --tunnel` |
-| Deploy | `npx wrangler deploy` |
+| Deploy to prod | `npm run deploy` |
 | Deploy the dev Worker | `npm run deploy:dev` |
 | Live production logs | `npx wrangler tail rude-bot` |
 | Live dev logs | `npx wrangler tail rude-bot-dev` |
 | Store Mini App tests | `npm run test:webapp` |
+| Fishing, store, and bottle odds | `npm run sim:fishing` |
 | List/update secrets | `npx wrangler secret list` / `npx wrangler secret put <NAME>` |
 | Check webhook status | `curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"` |
 
