@@ -128,7 +128,7 @@ Registering a command with `bot.command()` in `src/bot.ts` only wires up the han
 | `sell` | dump that fool |
 | `value` | we all wanna know |
 | `options` | to the moon |
-| `setticker` | what ya called? |
+| `setticker` | what ya called |
 | `marketrules` | how to win |
 | `instructions` | how's this work? |
 | `fish` | cast a line |
@@ -155,7 +155,7 @@ curl "https://api.telegram.org/bot<TOKEN>/setMyCommands" \
   {"command":"sell","description":"dump that fool"},
   {"command":"value","description":"we all wanna know"},
   {"command":"options","description":"to the moon"},
-  {"command":"setticker","description":"what ya called?"},
+  {"command":"setticker","description":"what ya called"},
   {"command":"marketrules","description":"how to win"},
   {"command":"instructions","description":"how's this work?"},
   {"command":"fish","description":"cast a line"},
@@ -183,7 +183,7 @@ buy - get em hot
 sell - dump that fool
 value - we all wanna know
 options - to the moon
-setticker - what ya called?
+setticker - what ya called
 marketrules - how to win
 instructions - how's this work?
 fish - cast a line
