@@ -53,6 +53,9 @@ export interface Env {
   // Seeds fishing tides (see tideFor in fishing-math.ts) and the store's daily fish prices (see
   // Store.fishPriceIndex). Unset means tides stay normal and prices stay flat.
   TIDE_SECRET?: string;
+  // This Worker's own public address (a plain var in wrangler.jsonc, different for dev and prod), for links back to
+  // itself, like the store card's banner image. Unset (e.g. under npm run dev) just means no banner.
+  PUBLIC_URL?: string;
 }
 
 export default {
@@ -64,7 +67,7 @@ export default {
       return handleStoreApi(request, env, ctx);
     }
     const ownerChatId = env.OWNER_CHAT_ID ? Number(env.OWNER_CHAT_ID) : undefined;
-    const bot = new RudeBot(env.BOT_TOKEN, JSON.parse(env.BOT_INFO), buildStorage(env), ownerChatId);
+    const bot = new RudeBot(env.BOT_TOKEN, JSON.parse(env.BOT_INFO), buildStorage(env), ownerChatId, env.PUBLIC_URL);
     return bot.handleUpdate(request);
   },
 

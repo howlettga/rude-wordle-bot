@@ -6,7 +6,7 @@ import type { StoreBuyResult, StoreItem } from "../durable-objects/store.js";
 import { GEAR_LINES, WORMS, type GearLine } from "../gear.js";
 import { BOTTLE_CONFIG, BOTTLE_DISTANCES, LITTER_LINES, cleanBottleText, isBottleDistance } from "../bottles.js";
 import { formatBeans } from "../store-math.js";
-import { renderStoreCard, storeUrlFor, type StoreLinks } from "../store.js";
+import { renderStoreCard, storeBannerUrl, storeUrlFor, type StoreLinks } from "../store.js";
 import { random } from "../util.js";
 import { validateInitData } from "./init-data.js";
 import { signStoreLink, verifyStoreLink } from "./store-link.js";
@@ -334,8 +334,9 @@ function refreshLatestCard(session: Session) {
       return;
     }
     const [card, storeUrl] = await Promise.all([storage.getStoreCard(chatId), storeUrlFor(chatId, storeLinks(env))]);
-    const { text, reply_markup } = renderStoreCard(card, true, storeUrl);
-    await new Api(env.BOT_TOKEN).editMessageText(chatId, latest.messageId, text, { parse_mode: "HTML", reply_markup });
+    const links = storeLinks(env);
+    const { text, reply_markup, link_preview_options } = renderStoreCard(card, true, storeUrl, links.bannerUrl);
+    await new Api(env.BOT_TOKEN).editMessageText(chatId, latest.messageId, text, { parse_mode: "HTML", reply_markup, link_preview_options });
   };
   ctx.waitUntil(refresh().catch((err) => console.error("store card refresh failed", chatId, err)));
 }
@@ -350,5 +351,9 @@ function storeLinks(env: Env): StoreLinks {
   } catch (err) {
     console.error("BOT_INFO is not valid JSON", err);
   }
-  return { botUsername, signLink: (chatId) => signStoreLink(chatId, Math.floor(Date.now() / 1000), env.BOT_TOKEN) };
+  return {
+    botUsername,
+    signLink: (chatId) => signStoreLink(chatId, Math.floor(Date.now() / 1000), env.BOT_TOKEN),
+    bannerUrl: storeBannerUrl(env.PUBLIC_URL),
+  };
 }
