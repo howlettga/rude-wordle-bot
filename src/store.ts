@@ -182,7 +182,11 @@ export class StoreComposer extends Composer<MyContext> {
     ]);
     const lines = [`👛 You have ${formatBeans(wallet.balance)}.`];
     if (fishing) {
-      lines.push(bucket.length === 0 ? `🪣 Your bucket's empty.` : `🪣 ${bucket.length} fish in your bucket.`, gearLine(wallet.gear));
+      lines.push(
+        bucket.length === 0 ? `🪣 Your bucket's empty.` : `🪣 ${bucket.length} fish in your bucket.`,
+        gearLine(wallet.gear),
+        wormsLine(wallet.gear.worms)
+      );
       if (bucket.some((fish) => fish.daysHeld >= OLD_FISH_DAYS)) {
         lines.push(`Some of those fish have been in there a while.`);
       }
@@ -214,8 +218,11 @@ function gearPopup(result: StoreTapResult): string {
 function gearLine(gear: AnglerGear): string {
   const rod = GEAR_LINES.rod.tiers[gear.rod]?.name ?? GEAR_LINES.rod.tiers[0]!.name;
   const boat = GEAR_LINES.boat.tiers[gear.boat]?.name ?? GEAR_LINES.boat.tiers[0]!.name;
-  const worms = gear.worms > 0 ? ` · ${WORMS.emoji} ${gear.worms} worm${gear.worms === 1 ? "" : "s"}` : "";
-  return `${GEAR_LINES.rod.emoji} ${rod} · ${GEAR_LINES.boat.emoji} ${boat}${worms}`;
+  return `${GEAR_LINES.rod.emoji} ${rod} · ${GEAR_LINES.boat.emoji} ${boat}`;
+}
+
+function wormsLine(worms: number): string {
+  return worms === 0 ? `${WORMS.emoji} No worms.` : `${WORMS.emoji} ${worms} worm${worms === 1 ? "" : "s"}.`;
 }
 
 // Now and then, the shopkeeper hints that fish might not keep (see FRESHNESS_LINES), if it fits.
