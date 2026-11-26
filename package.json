@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "wrangler dev --tunnel",
     "deploy": "wrangler deploy",
-    "sim:fishing": "node scripts/sim-fishing.mjs"
+    "deploy:dev": "wrangler deploy --env dev",
+    "sim:fishing": "node scripts/sim-fishing.mjs",
+    "test:webapp": "node scripts/test-webapp.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260723.1",

@@ -33,6 +33,9 @@ export type StoreTapResult =
   | { kind: "MAXED"; item: StoreItem; name: string } // already has the top tier, or a full worm can
   | { kind: "FULL"; item: "worms"; worms: number };
 
+// A buy from the store page (see buyGear), which has its own confirm step, so it never asks for a second tap.
+export type StoreBuyResult = Exclude<StoreTapResult, { kind: "CONFIRM" }>;
+
 export const BUY_CONFIRM_SECONDS = 15;
 
 export interface StoreSaleResult {
@@ -110,6 +113,20 @@ export class Store extends DurableObject<Env> {
       `);
       this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (2)`);
     }
+
+    if (version < 3) {
+      // The chat's most recent /store card (one row, replaced by each new card), so a sale or upgrade made in
+      // the store page can update that card's activity line. thread_id is NULL outside forum topics.
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE cards (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          message_id INTEGER NOT NULL,
+          thread_id INTEGER,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+      `);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (3)`);
+    }
   }
 
   async card(chatId: number): Promise<StoreCard> {
@@ -126,6 +143,24 @@ export class Store extends DurableObject<Env> {
         ? { kind: "sale", firstName: row.first_name, label: row.label, amount: row.delta }
         : { kind: "upgrade", firstName: row.first_name, label: row.label, line: row.source as GearLine };
     return { fish: this.fishPrice(chatId), lastActivity };
+  }
+
+  // Remembers a newly posted /store card, replacing the last one (older cards are left as they are).
+  async recordCard(messageId: number, threadId: number | null): Promise<void> {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO cards (id, message_id, thread_id) VALUES (1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET message_id = excluded.message_id, thread_id = excluded.thread_id, updated_at = datetime('now')`,
+      messageId,
+      threadId
+    );
+  }
+
+  // The chat's most recent /store card, or null if none has been posted since cards were recorded.
+  async latestCard(): Promise<{ messageId: number; threadId: number | null } | null> {
+    const row = this.ctx.storage.sql
+      .exec<{ message_id: number; thread_id: number | null }>(`SELECT message_id, thread_id FROM cards WHERE id = 1`)
+      .toArray()[0];
+    return row ? { messageId: row.message_id, threadId: row.thread_id } : null;
   }
 
   async gear(userId: number): Promise<AnglerGear> {
@@ -146,51 +181,77 @@ export class Store extends DurableObject<Env> {
   }
 
   // A tap on a gear button (see StoreTapResult). No await in here, so a double tap can't buy twice or
-  // spend beans it doesn't have.
+  // spend beans it doesn't have. A rod or boat tap that isn't confirming a recent first tap only quotes;
+  // everything else goes to purchase, which checks the price and balance again, still with no await between.
   async tapGear(input: { userId: number; firstName: string; item: StoreItem }): Promise<StoreTapResult> {
     const now = Math.floor(Date.now() / 1000);
     const { userId, item } = input;
-    const gear = this.gearOf(userId);
 
-    let name: string;
-    let price: number;
-    if (item === "worms") {
-      if (gear.worms >= WORMS.maxHeld) {
-        return { kind: "FULL", item, worms: gear.worms };
+    if (item !== "worms") {
+      const offer = this.offer(this.gearOf(userId), item);
+      if (offer.kind !== "OFFER") {
+        return offer;
       }
-      name = "Worm";
-      price = WORMS.price;
-    } else {
-      const tiers = GEAR_LINES[item].tiers;
-      const next = tiers[gear[item] + 1];
-      if (!next) {
-        return { kind: "MAXED", item, name: tiers[gear[item]]!.name };
+      const { name, price } = offer;
+      const balance = this.balance(userId);
+      if (balance < price) {
+        this.ctx.storage.sql.exec(`DELETE FROM pending_buys WHERE user_id = ?`, userId);
+        return { kind: "CANT_AFFORD", item, name, price, balance };
       }
-      name = next.name;
-      price = next.price;
+      const pending = this.ctx.storage.sql
+        .exec<{ item: string; tapped_at: number }>(`SELECT item, tapped_at FROM pending_buys WHERE user_id = ?`, userId)
+        .toArray()[0];
+      if (!(pending?.item === item && now - pending.tapped_at <= BUY_CONFIRM_SECONDS)) {
+        this.ctx.storage.sql.exec(
+          `INSERT INTO pending_buys (user_id, item, tapped_at) VALUES (?, ?, ?)
+           ON CONFLICT(user_id) DO UPDATE SET item = excluded.item, tapped_at = excluded.tapped_at`,
+          userId,
+          item,
+          now
+        );
+        return { kind: "CONFIRM", item, name, price, balance };
+      }
     }
+
+    return this.purchase(input);
+  }
+
+  // A buy from the store page: no second tap, since the page asks before it calls this.
+  async buyGear(input: { userId: number; firstName: string; item: StoreItem }): Promise<StoreBuyResult> {
+    return this.purchase(input);
+  }
+
+  // What the next one of item costs this angler, or why there isn't one (top tier, or a full worm can).
+  private offer(
+    gear: AnglerGear,
+    item: StoreItem
+  ): { kind: "OFFER"; name: string; price: number } | Extract<StoreTapResult, { kind: "MAXED" | "FULL" }> {
+    if (item === "worms") {
+      return gear.worms >= WORMS.maxHeld
+        ? { kind: "FULL", item, worms: gear.worms }
+        : { kind: "OFFER", name: "Worm", price: WORMS.price };
+    }
+    const tiers = GEAR_LINES[item].tiers;
+    const next = tiers[gear[item] + 1];
+    return next ? { kind: "OFFER", name: next.name, price: next.price } : { kind: "MAXED", item, name: tiers[gear[item]]!.name };
+  }
+
+  // Buys item now, for tapGear (once confirmed) and buyGear. Synchronous, so nothing can run between reading
+  // the gear and balance and writing the purchase. Any half-finished tap on the card is cleared either way.
+  private purchase(input: { userId: number; firstName: string; item: StoreItem }): StoreBuyResult {
+    const { userId, item } = input;
+    const gear = this.gearOf(userId);
+    const offer = this.offer(gear, item);
+    if (offer.kind !== "OFFER") {
+      return offer;
+    }
+    const { name, price } = offer;
 
     const balance = this.balance(userId);
-    const pending = this.ctx.storage.sql
-      .exec<{ item: string; tapped_at: number }>(`SELECT item, tapped_at FROM pending_buys WHERE user_id = ?`, userId)
-      .toArray()[0];
-    const confirming = item === "worms" || (pending?.item === item && now - pending.tapped_at <= BUY_CONFIRM_SECONDS);
+    this.ctx.storage.sql.exec(`DELETE FROM pending_buys WHERE user_id = ?`, userId);
     if (balance < price) {
-      this.ctx.storage.sql.exec(`DELETE FROM pending_buys WHERE user_id = ?`, userId);
       return { kind: "CANT_AFFORD", item, name, price, balance };
     }
-    if (!confirming) {
-      this.ctx.storage.sql.exec(
-        `INSERT INTO pending_buys (user_id, item, tapped_at) VALUES (?, ?, ?)
-         ON CONFLICT(user_id) DO UPDATE SET item = excluded.item, tapped_at = excluded.tapped_at`,
-        userId,
-        item,
-        now
-      );
-      return { kind: "CONFIRM", item, name, price, balance };
-    }
-
-    this.ctx.storage.sql.exec(`DELETE FROM pending_buys WHERE user_id = ?`, userId);
     const newBalance = this.ctx.storage.sql
       .exec<{ balance: number }>(
         `UPDATE wallets SET balance = balance - ?, first_name = ?, updated_at = datetime('now') WHERE user_id = ? RETURNING balance`,
@@ -223,6 +284,12 @@ export class Store extends DurableObject<Env> {
   // What this fish would sell for right now (the label on a /fish reply's Sell button).
   async quoteFish(chatId: number, fish: { species: string; weight: number }): Promise<number> {
     return fishSalePrice(fish.weight, speciesTier(fish.species), this.fishPrice(chatId).perLb);
+  }
+
+  // quoteFish for a whole bucket (the store page), in the same order, from one look at today's price.
+  async quoteFishes(chatId: number, fish: { species: string; weight: number }[]): Promise<number[]> {
+    const { perLb } = this.fishPrice(chatId);
+    return fish.map((one) => fishSalePrice(one.weight, speciesTier(one.species), perLb));
   }
 
   // Pays for a fish the Fishing DO has already marked sold. No await in here, so the ledger check and the

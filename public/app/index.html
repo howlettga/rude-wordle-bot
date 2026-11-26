@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <title>General Store</title>
+    <!-- Telegram's Mini App script: sets window.Telegram.WebApp and the --tg-theme-* CSS variables. -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <main id="app" class="app">
+      <header class="header">
+        <h1 class="title">🏪 General Store <span class="mock-tag" id="mock-tag" hidden>Mock data</span></h1>
+        <p class="who" id="who" hidden></p>
+        <div class="stats" id="stats" hidden>
+          <div class="stat">
+            <span class="stat-label">Your beans</span>
+            <span class="stat-value" id="balance"></span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Fish today</span>
+            <span class="stat-value" id="price"></span>
+            <span class="stat-note" id="price-change"></span>
+          </div>
+        </div>
+      </header>
+
+      <!-- Loading, error, and "fishing is off" messages. -->
+      <section class="message" id="message" hidden>
+        <p class="message-text" id="message-text"></p>
+        <button type="button" class="retry" id="retry" hidden>Try again</button>
+      </section>
+
+      <div id="store" hidden>
+        <section class="section" aria-labelledby="bucket-heading">
+          <h2 class="section-title" id="bucket-heading">🪣 Bucket <span class="count" id="bucket-count"></span></h2>
+          <ul class="list" id="bucket"></ul>
+          <p class="empty" id="bucket-empty" hidden>Your bucket's empty. Go /fish.</p>
+        </section>
+
+        <section class="section" aria-labelledby="gear-heading">
+          <h2 class="section-title" id="gear-heading">🧰 Gear</h2>
+          <ul class="list" id="gear"></ul>
+        </section>
+
+        <section class="section" aria-labelledby="worms-heading">
+          <h2 class="section-title" id="worms-heading">🪱 Worms <span class="count" id="worms-count"></span></h2>
+          <ul class="list" id="worms"></ul>
+        </section>
+      </div>
+    </main>
+
+    <!-- Short confirmations and errors after a sale or purchase. -->
+    <div class="notice" id="notice" role="status" aria-live="polite" hidden></div>
+
+    <!-- Mock mode only: a stand-in for Telegram's bottom button, which doesn't render outside Telegram. -->
+    <div class="mock-bar" id="mock-bar" hidden>
+      <button type="button" class="mock-main" id="mock-main"></button>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
