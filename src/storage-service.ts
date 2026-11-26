@@ -4,6 +4,7 @@ import type { SpankChain } from "./durable-objects/spank-chain.js";
 import type { ChatPause } from "./durable-objects/chat-pause.js";
 import type { RudeMessages } from "./durable-objects/rude-messages.js";
 import type {
+  BottleListing,
   FishPick,
   FishUse,
   Fishing,
@@ -12,8 +13,18 @@ import type {
   FishingLeaderboard,
   HeldFish,
   TakeFishByIdResult,
+  ThrowBottleResult,
 } from "./durable-objects/fishing.js";
-import type { Store, StoreBuyResult, StoreCard, StoreItem, StoreSaleResult, StoreTapResult } from "./durable-objects/store.js";
+import type {
+  Store,
+  StoreBuyResult,
+  StoreCard,
+  StoreChargeResult,
+  StoreItem,
+  StoreSaleResult,
+  StoreTapResult,
+} from "./durable-objects/store.js";
+import type { BottleDistance } from "./bottles.js";
 import type { AnglerGear } from "./gear.js";
 import type { CastGear } from "./fishing-math.js";
 import type {
@@ -389,6 +400,29 @@ export class StorageService {
     return this.fishingStub(chatId).returnFish(fishId);
   }
 
+  throwBottle(
+    chatId: number,
+    input: { authorId: number; authorName: string; text: string; distance: BottleDistance }
+  ): Promise<ThrowBottleResult> {
+    return this.fishingStub(chatId).throwBottle(input);
+  }
+
+  countBottlesInWater(chatId: number, authorId: number): Promise<number> {
+    return this.fishingStub(chatId).bottlesInWater(authorId);
+  }
+
+  listBottles(chatId: number): Promise<BottleListing> {
+    return this.fishingStub(chatId).listBottles();
+  }
+
+  removeBottle(chatId: number, bottleId: number): Promise<boolean> {
+    return this.fishingStub(chatId).removeBottle(bottleId);
+  }
+
+  getBottleAuthor(chatId: number, bottleId: number): Promise<{ authorName: string; authorId: number } | null> {
+    return this.fishingStub(chatId).bottleAuthor(bottleId);
+  }
+
   private fishingStub(chatId: number) {
     return this.fishingNs.get(this.fishingNs.idFromName(`fishing_${chatId}`));
   }
@@ -427,6 +461,17 @@ export class StorageService {
 
   buyStoreGear(chatId: number, input: { userId: number; firstName: string; item: StoreItem }): Promise<StoreBuyResult> {
     return this.storeStub(chatId).buyGear(input);
+  }
+
+  chargeWallet(
+    chatId: number,
+    input: { userId: number; firstName: string; amount: number; source: string; label: string }
+  ): Promise<StoreChargeResult> {
+    return this.storeStub(chatId).charge(input);
+  }
+
+  refundWallet(chatId: number, input: { userId: number; firstName: string; amount: number; source: string; label: string }): Promise<number> {
+    return this.storeStub(chatId).refund(input);
   }
 
   recordStoreCard(chatId: number, messageId: number, threadId: number | null): Promise<void> {

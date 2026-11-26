@@ -11,10 +11,12 @@ export interface StoreFishPrice {
   yesterdayPerLb: number;
 }
 
-// The card's latest-activity line: a sale, or someone upgrading their gear (worms aren't news).
+// The card's latest-activity line: a sale, someone upgrading their gear (worms aren't news), or a message in a
+// bottle going out to sea, which stays anonymous, so it carries no name.
 export type StoreActivity =
   | { kind: "sale"; firstName: string; label: string; amount: number } // label e.g. "14.2 lb carp"
-  | { kind: "upgrade"; firstName: string; label: string; line: GearLine }; // label e.g. "Carbon rod"
+  | { kind: "upgrade"; firstName: string; label: string; line: GearLine } // label e.g. "Carbon rod"
+  | { kind: "bottle" };
 
 export interface StoreCard {
   fish: StoreFishPrice;
@@ -37,6 +39,9 @@ export type StoreTapResult =
 export type StoreBuyResult = Exclude<StoreTapResult, { kind: "CONFIRM" }>;
 
 export const BUY_CONFIRM_SECONDS = 15;
+
+// A flat-price purchase that isn't gear (a message in a bottle), from charge.
+export type StoreChargeResult = { ok: true; balance: number } | { ok: false; balance: number };
 
 export interface StoreSaleResult {
   amount: number;
@@ -75,7 +80,8 @@ export class Store extends DurableObject<Env> {
           updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
       `);
-      // reason: 'sale' for now ('buy' next). source + item_id say what was sold: ('fish', catch id).
+      // reason: 'sale', 'buy', or 'refund'. source + item_id say what was sold: ('fish', catch id). A refund's
+      // item_id is the ledger id of the buy it gives back (see refund).
       this.ctx.storage.sql.exec(`
         CREATE TABLE ledger (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,11 +135,15 @@ export class Store extends DurableObject<Env> {
     }
   }
 
+  // A bottle that was refunded (it never went in the water; see refund) isn't news.
   async card(chatId: number): Promise<StoreCard> {
     const row = this.ctx.storage.sql
       .exec<{ first_name: string; label: string; delta: number; reason: string; source: string }>(
-        `SELECT first_name, label, delta, reason, source FROM ledger
-         WHERE reason = 'sale' OR (reason = 'buy' AND source IN ('rod', 'boat'))
+        `SELECT first_name, label, delta, reason, source FROM ledger l
+         WHERE reason = 'sale'
+            OR (reason = 'buy' AND source IN ('rod', 'boat'))
+            OR (reason = 'buy' AND source = 'bottle'
+                AND NOT EXISTS (SELECT 1 FROM ledger r WHERE r.reason = 'refund' AND r.item_id = l.id))
          ORDER BY id DESC LIMIT 1`
       )
       .toArray()[0];
@@ -141,7 +151,9 @@ export class Store extends DurableObject<Env> {
       ? null
       : row.reason === "sale"
         ? { kind: "sale", firstName: row.first_name, label: row.label, amount: row.delta }
-        : { kind: "upgrade", firstName: row.first_name, label: row.label, line: row.source as GearLine };
+        : row.source === "bottle"
+          ? { kind: "bottle" }
+          : { kind: "upgrade", firstName: row.first_name, label: row.label, line: row.source as GearLine };
     return { fish: this.fishPrice(chatId), lastActivity };
   }
 
@@ -279,6 +291,74 @@ export class Store extends DurableObject<Env> {
       updated.worms
     );
     return { kind: "BOUGHT", item, name, price, balance: newBalance, gear: updated };
+  }
+
+  // Takes amount out of the wallet for something that isn't gear (source says what, e.g. 'bottle'), or refuses if
+  // the balance is short. Synchronous inside, so nothing can spend the same beans between the check and the debit.
+  async charge(input: { userId: number; firstName: string; amount: number; source: string; label: string }): Promise<StoreChargeResult> {
+    const { userId, amount } = input;
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      throw new Error(`charge amount must be a positive integer, got ${amount}`);
+    }
+    const balance = this.balance(userId);
+    if (balance < amount) {
+      return { ok: false, balance };
+    }
+    const newBalance = this.ctx.storage.sql
+      .exec<{ balance: number }>(
+        `UPDATE wallets SET balance = balance - ?, first_name = ?, updated_at = datetime('now') WHERE user_id = ? RETURNING balance`,
+        amount,
+        input.firstName,
+        userId
+      )
+      .one().balance;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO ledger (user_id, first_name, delta, reason, source, label) VALUES (?, ?, ?, 'buy', ?, ?)`,
+      userId,
+      input.firstName,
+      -amount,
+      input.source,
+      input.label
+    );
+    return { ok: true, balance: newBalance };
+  }
+
+  // Gives back a charge whose purchase didn't go through (e.g. the bottle limit was hit after paying). The refund's
+  // item_id points at the most recent matching buy that hasn't been refunded yet, so the card can tell that buy never
+  // really happened. Returns the new balance.
+  async refund(input: { userId: number; firstName: string; amount: number; source: string; label: string }): Promise<number> {
+    const { userId, amount } = input;
+    const buy = this.ctx.storage.sql
+      .exec<{ id: number }>(
+        `SELECT id FROM ledger l
+         WHERE user_id = ? AND reason = 'buy' AND source = ? AND delta = ?
+           AND NOT EXISTS (SELECT 1 FROM ledger r WHERE r.reason = 'refund' AND r.item_id = l.id)
+         ORDER BY id DESC LIMIT 1`,
+        userId,
+        input.source,
+        -amount
+      )
+      .toArray()[0];
+    this.ctx.storage.sql.exec(
+      `INSERT INTO ledger (user_id, first_name, delta, reason, source, item_id, label) VALUES (?, ?, ?, 'refund', ?, ?, ?)`,
+      userId,
+      input.firstName,
+      amount,
+      input.source,
+      buy?.id ?? null,
+      input.label
+    );
+    return this.ctx.storage.sql
+      .exec<{ balance: number }>(
+        `INSERT INTO wallets (user_id, first_name, balance) VALUES (?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET first_name = excluded.first_name, balance = balance + excluded.balance,
+           updated_at = datetime('now')
+         RETURNING balance`,
+        userId,
+        input.firstName,
+        amount
+      )
+      .one().balance;
   }
 
   // What this fish would sell for right now (the label on a /fish reply's Sell button).
