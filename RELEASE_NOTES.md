@@ -2,7 +2,7 @@
 
 ## Unreleased - General Store
 
-- New `/store` card: one shared message with buttons, like `/pet`. Sell your small / medium / large fish for beans, or check your wallet in a private pop-up. Buying is coming soon.
+- New `/store` card: one shared message with buttons, like `/pet`. Sell a random fish from your bucket for beans (the pop-up tells you which one), or check your wallet in a private pop-up. Buying is coming soon.
 - Every fish reply from `/fish` gets a Sell button that only the catcher can use. Selling edits the reply in place.
 - Fish prices change day to day (turning over at 5am ET with the fishing day), and rare species pay more.
 - One new rare species per weight band, about 1 catch in 10: goldfish, blobfish, koi, electric eel, alligator gar, and coelacanth. Anything from 40 lb up can very occasionally be a megalodon (about 1 fish in 1,500), the rarest and most valuable catch.

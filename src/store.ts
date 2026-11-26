@@ -1,22 +1,21 @@
 import { Composer, InlineKeyboard } from "grammy";
 import type { MyContext } from "./context.js";
 import type { StorageService } from "./storage-service.js";
-import type { FishSize, HeldFish } from "./durable-objects/fishing.js";
+import type { HeldFish } from "./durable-objects/fishing.js";
 import type { StoreCard } from "./durable-objects/store.js";
 import { formatBeans } from "./store-math.js";
-import { escapeHtml } from "./util.js";
+import { escapeHtml, weightArticle } from "./util.js";
 
 // The "store" feature (see features.ts): a shared General Store card, built like the pet card, so the
 // chat only ever sees one message whose buttons update it in place. Everything personal (what you sold,
 // your wallet) comes back as a pop-up only the tapper sees.
-//   /store -> the card: today's fish price, the latest sale, and buttons to sell your small / medium /
-//             large fish (same picks as feeding the pet), check your wallet, or buy (coming soon)
+//   /store -> the card: today's fish price, the latest sale, and buttons to sell a fish (a random one
+//             from your bucket, so it's one button: the pop-up says which it was), check your wallet, or
+//             buy (coming soon)
 // /fish replies also get a Sell button for that exact fish (see fishingSellButton), which only its catcher
 // can use. Selling needs fishing on too; with it off, the card has nothing to sell. Prices live in
 // store-math.ts, and the money is beans.
 const SELL_CAUGHT = /^store:sell:fish:(\d+)$/;
-const SELL_SIZE = /^store:sellsize:([sml])$/;
-const FISH_SIZES: Record<string, FishSize> = { s: "small", m: "medium", l: "large" };
 
 // The button under a /fish reply, for selling that catch on the spot.
 export function fishingSellButton(catchId: number, quote: number): InlineKeyboard {
@@ -28,7 +27,7 @@ export class StoreComposer extends Composer<MyContext> {
     super();
     this.command("store", (ctx) => this.sendCard(ctx));
     this.callbackQuery(SELL_CAUGHT, (ctx) => this.sellCaught(ctx));
-    this.callbackQuery(SELL_SIZE, (ctx) => this.sellFromCard(ctx));
+    this.callbackQuery("store:sellrandom", (ctx) => this.sellFromCard(ctx));
     this.callbackQuery("store:wallet", (ctx) => this.showWallet(ctx));
     this.callbackQuery("store:buy", (ctx) =>
       ctx.answerCallbackQuery({ text: "🛒 Nothing for sale yet. Gear's coming soon, so hang on to your beans.", show_alert: true })
@@ -86,8 +85,7 @@ export class StoreComposer extends Composer<MyContext> {
   }
 
   private async sellFromCard(ctx: MyContext) {
-    const match = ctx.callbackQuery?.data?.match(SELL_SIZE);
-    if (!match || !ctx.chat || !ctx.from) {
+    if (!ctx.chat || !ctx.from) {
       return;
     }
     const chatId = ctx.chat.id;
@@ -95,7 +93,7 @@ export class StoreComposer extends Composer<MyContext> {
       await ctx.answerCallbackQuery({ text: "Fishing is turned off in this chat." });
       return;
     }
-    const fish = await this.storage.takeFish(chatId, ctx.from.id, FISH_SIZES[match[1]!]!, "store", "sold");
+    const fish = await this.storage.takeFish(chatId, ctx.from.id, "random", "store", "sold");
     if (!fish) {
       await ctx.answerCallbackQuery({ text: "🪣 Your bucket's empty. Go /fish first.", show_alert: true });
       return;
@@ -107,7 +105,9 @@ export class StoreComposer extends Composer<MyContext> {
       .editMessageText(formatCard(card, true), { parse_mode: "HTML", reply_markup: cardKeyboard(true) })
       .catch((err) => console.error(err)); // e.g. "message is not modified"
     await ctx.answerCallbackQuery({
-      text: `🫘 Sold your ${fish.weight.toFixed(1)} lb ${fish.species} for ${formatBeans(sale.amount)}. You have ${formatBeans(sale.balance)}.`,
+      text:
+        `${fish.emoji} The shopkeeper reached into your bucket and pulled out ${weightArticle(fish.weight.toFixed(1))} ${fish.weight.toFixed(1)} lb ${fish.species}. ` +
+        `Sold for ${formatBeans(sale.amount)}. You have ${formatBeans(sale.balance)}.`,
       show_alert: true,
     });
   }
@@ -153,7 +153,7 @@ function formatCard(card: StoreCard, fishing: boolean): string {
   }
   if (card.lastSale) {
     const { firstName, label, amount } = card.lastSale;
-    lines.push(`<i>🫘 ${escapeHtml(firstName)} sold a ${escapeHtml(label)} for ${formatBeans(amount)}.</i>`);
+    lines.push(`<i>🫘 ${escapeHtml(firstName)} sold ${weightArticle(label)} ${escapeHtml(label)} for ${formatBeans(amount)}.</i>`);
   }
   return lines.join("\n");
 }
@@ -170,11 +170,7 @@ function priceChange(today: number, yesterday: number): string {
 function cardKeyboard(fishing: boolean): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   if (fishing) {
-    keyboard
-      .text("🐟 Sell Small", "store:sellsize:s")
-      .text("🐟 Sell Medium", "store:sellsize:m")
-      .text("🐟 Sell Large", "store:sellsize:l")
-      .row();
+    keyboard.text("🐟 Sell a fish", "store:sellrandom").row();
   }
   return keyboard.text("👛 Wallet", "store:wallet").text("🛒 Buy", "store:buy");
 }

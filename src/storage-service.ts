@@ -4,7 +4,7 @@ import type { SpankChain } from "./durable-objects/spank-chain.js";
 import type { ChatPause } from "./durable-objects/chat-pause.js";
 import type { RudeMessages } from "./durable-objects/rude-messages.js";
 import type {
-  FishSize,
+  FishPick,
   FishUse,
   Fishing,
   FishingCastResult,
@@ -371,7 +371,7 @@ export class StorageService {
     return this.fishingStub(chatId).reset();
   }
 
-  takeFish(chatId: number, userId: number, size: FishSize, usedFor: string, use: FishUse = "eaten"): Promise<HeldFish | null> {
+  takeFish(chatId: number, userId: number, size: FishPick, usedFor: string, use: FishUse = "eaten"): Promise<HeldFish | null> {
     return this.fishingStub(chatId).takeFish(userId, size, usedFor, use);
   }
 

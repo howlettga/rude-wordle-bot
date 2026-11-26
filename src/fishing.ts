@@ -7,7 +7,7 @@ import { rotatingLine } from "./fishing-math.js";
 import { HIGH_TIDE_LINES, HINT_LINES, JUNK_LINES, LAKE_LINES } from "./fishing-lines.js";
 import { petDesireLine } from "./pet.js";
 import { fishingSellButton } from "./store.js";
-import { escapeHtml } from "./util.js";
+import { escapeHtml, weightArticle } from "./util.js";
 
 // The "fishing" feature (see features.ts):
 //   /fish                         -> one cast per day; reports the catch, plus personal best / rank / chat
@@ -71,7 +71,7 @@ export class FishingComposer extends Composer<MyContext> {
     } else {
       const { species, emoji, weight } = result.catch;
       const weightText = weight.toFixed(1);
-      lines.push(`You caught ${article(weightText)} ${weightText} lbs ${species}! ${emoji}`);
+      lines.push(`You caught ${weightArticle(weightText)} ${weightText} lbs ${species}! ${emoji}`);
       if (result.chatRecord) {
         lines.push(`🏆 New chat record!`);
       } else if (result.previousBest === null) {
@@ -190,10 +190,4 @@ export class FishingComposer extends Composer<MyContext> {
 function formatEntry(entry: FishingLeaderboardEntry, index: number): string {
   const place = MEDALS[index] ?? `${index + 1}.`;
   return `${place} ${escapeHtml(entry.firstName)} — ${entry.weight.toFixed(1)} lbs ${entry.species} ${entry.emoji}`;
-}
-
-// "an 8.2 lbs", "an 11.0 lbs", "an 18.4 lbs" — every other weight reads with "a".
-function article(weightText: string): string {
-  const whole = weightText.split(".")[0]!;
-  return whole.startsWith("8") || whole === "11" || whole === "18" ? "an" : "a";
 }

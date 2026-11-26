@@ -49,6 +49,8 @@ export type FishingCastResult =
 // Which of an angler's held fish to take: their lightest, their heaviest, or the one in the middle. Relative
 // to their own bucket, so nobody has to see what's in it.
 export type FishSize = "small" | "medium" | "large";
+// What takeFish can be asked for: a size, or any fish at all (the store's Sell button).
+export type FishPick = FishSize | "random";
 
 export interface HeldFish extends FishingCatch {
   id: number;
@@ -277,14 +279,21 @@ export class Fishing extends DurableObject<Env> {
   // Takes one of the angler's held fish out of their bucket (marks it eaten or sold, with usedFor saying
   // what for, e.g. "pet:3"), or null if their bucket is empty. Single-statement reads and writes with no
   // await, so two taps at once each get a different fish.
-  async takeFish(userId: number, size: FishSize, usedFor: string, use: FishUse = "eaten"): Promise<HeldFish | null> {
+  async takeFish(userId: number, size: FishPick, usedFor: string, use: FishUse = "eaten"): Promise<HeldFish | null> {
     const held = this.ctx.storage.sql
       .exec<{ count: number }>(`SELECT COUNT(*) as count FROM catches WHERE owner_id = ? AND status = 'held'`, userId)
       .one().count;
     if (held === 0) {
       return null;
     }
-    const offset = size === "small" ? 0 : size === "large" ? held - 1 : Math.floor((held - 1) / 2);
+    const offset =
+      size === "random"
+        ? Math.floor(Math.random() * held)
+        : size === "small"
+          ? 0
+          : size === "large"
+            ? held - 1
+            : Math.floor((held - 1) / 2);
     const fish = this.ctx.storage.sql
       .exec<{ id: number; species: string; emoji: string; weight: number }>(
         `SELECT id, species, emoji, weight FROM catches WHERE owner_id = ? AND status = 'held'
