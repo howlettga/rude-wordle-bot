@@ -6,6 +6,7 @@ import type { StoreCard, StoreItem, StoreTapResult } from "./durable-objects/sto
 import { GEAR_LINES, WORMS, type AnglerGear } from "./gear.js";
 import { formatBeanPrice, formatBeans } from "./store-math.js";
 import { escapeHtml, random, weightArticle } from "./util.js";
+import { storeAppUrl } from "./webapp/store-link.js";
 
 // The "store" feature (see features.ts): a shared General Store card, built like the pet card, so the
 // chat only ever sees one message whose buttons update it in place. Everything personal (what you sold,
@@ -16,6 +17,9 @@ import { escapeHtml, random, weightArticle } from "./util.js";
 //               and a second tap on the same button within BUY_CONFIRM_SECONDS buys it
 //             - buy a worm: one tap, no confirmation (they're cheap)
 //             - check your wallet: beans, how many fish you have, and your gear
+//             - open the store page (see webapp/api.ts): a URL button to the Mini App, whose link carries this
+//               chat's id signed with the bot's token (see webapp/store-link.ts). Re-signed on every card edit, so a
+//               link is good for a day from the card's last change.
 // /fish replies also get a Sell button for that exact fish (see fishingSellButton), which only its catcher
 // can use. Selling and gear need fishing on too; with it off, the card only has the wallet. Prices live in
 // store-math.ts and gear.ts, and the money is beans, always written with 🫘 as the currency sign.
@@ -41,8 +45,32 @@ export function fishingSellButton(catchId: number, quote: number): InlineKeyboar
   return new InlineKeyboard().text(`💰 Sell for ${formatBeans(quote)}`, `store:sell:fish:${catchId}`);
 }
 
+// What it takes to put the Open store button on a card: the bot's username (for the t.me link) and a way to sign
+// a fresh link for a chat. Built in bot.ts for the composer, and in webapp/api.ts for card edits made from the page.
+export interface StoreLinks {
+  botUsername: string | undefined;
+  signLink: (chatId: number) => Promise<string>;
+}
+
+// The Open store button's URL for this chat, or null (no button) if the bot has no username or signing fails, so
+// a broken link never stops the card itself from going out.
+export async function storeUrlFor(chatId: number, links: StoreLinks): Promise<string | null> {
+  if (!links.botUsername) {
+    return null;
+  }
+  try {
+    return storeAppUrl(links.botUsername, await links.signLink(chatId));
+  } catch (err) {
+    console.error("store link signing failed", chatId, err);
+    return null;
+  }
+}
+
 export class StoreComposer extends Composer<MyContext> {
-  constructor(private storage: StorageService) {
+  constructor(
+    private storage: StorageService,
+    private links: StoreLinks
+  ) {
     super();
     this.command("store", (ctx) => this.sendCard(ctx));
     this.callbackQuery(SELL_CAUGHT, (ctx) => this.sellCaught(ctx));
@@ -59,20 +87,32 @@ export class StoreComposer extends Composer<MyContext> {
     if (!ctx.chat) {
       return;
     }
-    const fishing = await this.fishingOn(ctx.chat.id);
-    const card = await this.storage.getStoreCard(ctx.chat.id);
-    await ctx.reply(formatCard(card, fishing), {
+    const chatId = ctx.chat.id;
+    const [fishing, card, storeUrl] = await Promise.all([
+      this.fishingOn(chatId),
+      this.storage.getStoreCard(chatId),
+      storeUrlFor(chatId, this.links),
+    ]);
+    const { text, reply_markup } = renderStoreCard(card, fishing, storeUrl);
+    const sent = await ctx.reply(text, {
       parse_mode: "HTML",
-      reply_markup: cardKeyboard(fishing),
+      reply_markup,
       ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
     });
+    // Remembered so a sale or upgrade made in the store page can update this card (see webapp/api.ts). The card is
+    // already out, so a failure here only costs that.
+    await this.storage
+      .recordStoreCard(chatId, sent.message_id, sent.message_thread_id ?? null)
+      .catch((err) => console.error("recordStoreCard failed", chatId, err));
   }
 
-  // Refreshes the card the tap came from (after a sale or an upgrade changes its activity line).
+  // Refreshes the card the tap came from (after a sale or an upgrade changes its activity line), with a freshly
+  // signed Open store link.
   private async refreshCard(ctx: MyContext, chatId: number) {
-    const card = await this.storage.getStoreCard(chatId);
+    const [card, storeUrl] = await Promise.all([this.storage.getStoreCard(chatId), storeUrlFor(chatId, this.links)]);
+    const { text, reply_markup } = renderStoreCard(card, true, storeUrl);
     await ctx
-      .editMessageText(formatCard(card, true), { parse_mode: "HTML", reply_markup: cardKeyboard(true) })
+      .editMessageText(text, { parse_mode: "HTML", reply_markup })
       .catch((err) => console.error(err)); // e.g. "message is not modified"
   }
 
@@ -254,6 +294,15 @@ function indefinite(name: string): string {
 function articled(name: string): string {
   const article = indefinite(name);
   return `${article.charAt(0).toUpperCase()}${article.slice(1)} ${name}`;
+}
+
+// The /store card's text (HTML) and keyboard. storeUrl null leaves out the Open store button.
+export function renderStoreCard(card: StoreCard, fishing: boolean, storeUrl: string | null): { text: string; reply_markup: InlineKeyboard } {
+  const reply_markup = cardKeyboard(fishing);
+  if (storeUrl !== null) {
+    reply_markup.row().url("🛒 Open store", storeUrl);
+  }
+  return { text: formatCard(card, fishing), reply_markup };
 }
 
 function formatCard(card: StoreCard, fishing: boolean): string {

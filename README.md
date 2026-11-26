@@ -4,10 +4,20 @@ A Telegram bot built with [grammY](https://grammy.dev), deployed as a Cloudflare
 
 ## How it's structured
 
-- `src/main.ts` — the Worker entrypoint (`fetch` handler). Builds the bot from env-provided secrets and hands the request to grammY's webhook adapter.
+- `src/main.ts` — the Worker entrypoint (`fetch` handler). Sends `/app/api/*` to the store Mini App's API, and everything else (Telegram's webhook `POST /`) to grammY's webhook adapter, with the bot built from env-provided secrets.
 - `src/bot.ts` — the `RudeBot` class. Wires every feature's handlers together, in order, each behind its feature switch.
 - `src/features.ts` — the list of switchable features and their defaults (see [Feature switches](#feature-switches)).
-- `wrangler.jsonc` — Worker config (name, entrypoint, compatibility date).
+- `src/webapp/` — the store Mini App's API (`/app/api/*`), `initData` validation, and signed store links (see [Store Mini App](#store-mini-app)).
+- `public/app/` — the store Mini App's page, served as static files at `/app/` without running the Worker.
+- `wrangler.jsonc` — Worker config (name, entrypoint, compatibility date, static assets, and the `dev` environment).
+
+Routes:
+
+| Path | What answers it |
+|---|---|
+| `POST /` | Telegram's webhook, handled by the bot |
+| `/app/` | The store Mini App's page, static files from `public/app/` |
+| `/app/api/*` | The store Mini App's API, in `src/webapp/api.ts` |
 
 This same setup can be reused as a template for any new bot — just swap the handler logic in `src/bot.ts`.
 
@@ -105,7 +115,57 @@ Deploy:
 npx wrangler deploy
 ```
 
-This prints the live `https://rude-bot.<subdomain>.workers.dev` URL. Register it with Telegram as in step 4, using the real bot's token.
+This prints the live `https://rude-bot.<subdomain>.workers.dev` URL (here, `https://rude-bot.howlettga.workers.dev`). Register it with Telegram as in step 4, using the real bot's token.
+
+## Dev deployment
+
+`rude-bot-dev` is a second, separate Worker for testing on real Cloudflare without a tunnel: same code, but its own Durable Objects (so its own wallets, fish, pets, and markets), its own secrets, and the test bot. Nothing done on it touches prod. It's the `dev` environment in `wrangler.jsonc`. If you add a Durable Object binding, add it to both lists there, since environments don't inherit them.
+
+Set the **test bot's** secrets on it (one-time):
+
+```sh
+npx wrangler secret put BOT_TOKEN --env dev
+# paste the test bot's token when prompted
+
+curl -s "https://api.telegram.org/bot<TEST TOKEN>/getMe" | jq -c '.result' | npx wrangler secret put BOT_INFO --env dev
+
+npx wrangler secret put OWNER_CHAT_ID --env dev
+# your own Telegram user id, same as prod's
+
+openssl rand -hex 32 | npx wrangler secret put TIDE_SECRET --env dev
+```
+
+Use a fresh `TIDE_SECRET` for dev, not prod's, so dev testing can't be used to preview prod's tides and prices.
+
+Deploy:
+
+```sh
+npm run deploy:dev
+```
+
+Then point the test bot's webhook at it, as in step 4:
+
+```sh
+curl "https://api.telegram.org/bot<TEST TOKEN>/setWebhook?url=https://rude-bot-dev.howlettga.workers.dev/"
+```
+
+The test bot can only have one webhook, so this replaces the `trycloudflare.com` one from step 3. To go back to local dev, re-register the tunnel URL. Logs: `npx wrangler tail rude-bot-dev`.
+
+## Store Mini App
+
+The `/store` card has a `🛒 Open store` button that opens a page over the chat, where a player sees their whole bucket, sells any fish, and buys gear without posting anything in the group. The page is static files in `public/app/` (served at `/app/`), and it talks to the Worker at `/app/api/*`.
+
+Each bot needs its own app registered with [@BotFather](https://t.me/BotFather), once (test bot with the dev URL, real bot with the prod URL):
+
+1. `/newapp`, pick the bot, and follow the prompts.
+2. Short name: `store` (the code builds links as `https://t.me/<bot username>/store?startapp=...`, so it has to be exactly this).
+3. URL: `https://<worker host>/app/`, so `https://rude-bot-dev.howlettga.workers.dev/app/` for the test bot and `https://rude-bot.howlettga.workers.dev/app/` for the real one.
+
+How it knows which group you're in: Telegram doesn't tell a Mini App which chat it was opened from, so the card's button link carries the group's chat id, signed with the bot token. The API checks Telegram's signature on the page's `initData` (who you are), checks our signature on the link (which group), and then checks you're a member of that group and the store is on there. A link is good for 24 hours from when the card was posted or last edited, and every card edit puts a fresh link on the button, so an old card's button stops working after a day. Send `/store` for a fresh one. Separately, the page asks you to reopen it once it's been open for an hour.
+
+To look at the page's layout without Telegram, open `/app/?mock=1` (for example under `npm run dev`). It uses built-in sample data. `npm run test:webapp` checks the link signing and `initData` validation.
+
+`npm run dev` with the tunnel is still fine for anything that isn't the page. The page itself needs a fixed URL registered with BotFather, which the tunnel doesn't have, so test it on `rude-bot-dev`.
 
 ## 6. Set the command menu (optional)
 
@@ -224,7 +284,7 @@ Every feature can be turned on or off per chat by the owner, with `/features` ru
 | `market` | Stock market | Every market command, price tracking, and the market's scheduled jobs | on |
 | `fishing` | Fishing | `/fish` (at most once a day; catches are best when you've waited 4+ days and the chat hasn't cast much yet today, since everyone shares one lake), the `/fishing` leaderboard (everyone's best catch), and the owner's fishing commands. Every fish caught goes into the catcher's hidden bucket, which is what the pet eats. Every tuning number is in `FISHING_CONFIG` in `src/fishing-math.ts`; `npm run sim:fishing` checks the odds after a change | on |
 | `pet` | Group pet | One shared pet per chat: `/adopt`, the `/pet` card with Feed / Pet / Play buttons, `/graveyard`, the pet begging in `/fish` replies when it's hungry or lonely, and a scheduled warning when it's dying and its eulogy when it dies. While fishing is on, feeding costs one of your own fish (small, medium, or large; bigger fish fill it more). Switching it off freezes the pet rather than letting it starve. Every tuning number (how fast it gets hungry, cooldowns, how long until it dies) is in `src/pet-config.ts` | on |
-| `store` | General store | The `/store` card: today's fish price, the latest sale or upgrade, and buttons to sell a random fish from your bucket (the pop-up says which), buy your next rod or boat tier (tap once for the price, again to buy) or a worm (one tap), and check your wallet, fish count and gear privately. Fish replies from `/fish` also get a Sell button that only the catcher can use. Rods mean bigger fish, boats soften the busy-lake penalty, and a worm halves the junk chance on your next cast. Gear only counts while the store is on. The money is beans, written with 🫘 as the currency sign (🫘18). A fish sells for its weight times the day's price per lb times a hidden multiplier for rare species. Selling and gear need `fishing` on too. Price numbers are in `STORE_CONFIG` in `src/store-math.ts`, gear in `src/gear.ts`, and `npm run sim:fishing` checks both | on |
+| `store` | General store | The `/store` card: today's fish price, the latest sale or upgrade, and buttons to sell a random fish from your bucket (the pop-up says which), buy your next rod or boat tier (tap once for the price, again to buy) or a worm (one tap), and check your wallet, fish count and gear privately, plus an Open store button for the [store Mini App](#store-mini-app), where you pick exactly which fish to sell. Fish replies from `/fish` also get a Sell button that only the catcher can use. Rods mean bigger fish, boats soften the busy-lake penalty, and a worm halves the junk chance on your next cast. Gear only counts while the store is on. The money is beans, written with 🫘 as the currency sign (🫘18). A fish sells for its weight times the day's price per lb times a hidden multiplier for rare species. Selling and gear need `fishing` on too. Price numbers are in `STORE_CONFIG` in `src/store-math.ts`, gear in `src/gear.ts`, and `npm run sim:fishing` checks both | on |
 | `beans` | Been/bean counter | Counts "been", posts the tally on "bean". Reply to that post with a question (anything with a "?") to get the bean count | on |
 | `replies` | Talk-back | Replies when someone names the bot, replies to one of its jokes, or says "galen" | on |
 | `eastereggs` | Easter eggs | Keyword jokes in normal conversation (gas, commute, raise, ...) | on |
@@ -244,7 +304,10 @@ Only switches the owner has flipped are stored; everything else uses its default
 |---|---|
 | Local dev with public tunnel | `npx wrangler dev --tunnel` |
 | Deploy | `npx wrangler deploy` |
+| Deploy the dev Worker | `npm run deploy:dev` |
 | Live production logs | `npx wrangler tail rude-bot` |
+| Live dev logs | `npx wrangler tail rude-bot-dev` |
+| Store Mini App tests | `npm run test:webapp` |
 | List/update secrets | `npx wrangler secret list` / `npx wrangler secret put <NAME>` |
 | Check webhook status | `curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"` |
 

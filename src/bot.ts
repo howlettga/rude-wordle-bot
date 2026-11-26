@@ -13,6 +13,7 @@ import { FishingComposer } from "./fishing.js";
 import { PetComposer } from "./pet.js";
 import { StoreComposer } from "./store.js";
 import { SpicyComposer, EasterEggComposer, RepliesComposer } from "./rude.js";
+import { signStoreLink } from "./webapp/store-link.js";
 
 export class RudeBot {
   private bot: Bot<MyContext>;
@@ -40,7 +41,13 @@ export class RudeBot {
     this.gate("market", new StockMarketComposer(this.storage, ownerChatId), /^(buy|sell|delist|reset|option_\w+):/);
     this.gate("fishing", new FishingComposer(this.storage, ownerChatId, (ctx) => this.features(ctx)));
     this.gate("pet", new PetComposer(this.storage, ownerChatId), /^pet:/);
-    this.gate("store", new StoreComposer(this.storage), /^store:/);
+    // The store card's Open store button needs the bot's username for its t.me link, and a link signed with the
+    // token at the moment the card is posted or edited (see webapp/store-link.ts).
+    const storeLinks = {
+      botUsername: botInfo.username,
+      signLink: (chatId: number) => signStoreLink(chatId, Math.floor(Date.now() / 1000), token),
+    };
+    this.gate("store", new StoreComposer(this.storage, storeLinks), /^store:/);
 
     this.registerStart();
     this.registerMentionForwarding();

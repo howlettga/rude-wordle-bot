@@ -60,8 +60,10 @@ export interface HeldFish extends FishingCatch {
 // What takeFish / takeFishById marks a fish as: eaten by the pet, or sold at the store.
 export type FishUse = "eaten" | "sold";
 
-// A fish still in its catcher's bucket, and how long it's been there (for the store's freshness hints).
+// A fish still in its catcher's bucket, and how long it's been there (for the store's freshness hints). id is
+// the catch id, so the store page can sell that exact fish (see takeFishById).
 export interface BucketFish extends FishingCatch {
+  id: number;
   daysHeld: number;
 }
 
@@ -350,16 +352,17 @@ export class Fishing extends DurableObject<Env> {
     );
   }
 
-  // Everything in this angler's bucket, for the store's private Wallet pop-up.
+  // Everything in this angler's bucket, heaviest first, for the store's private Wallet pop-up and the store page.
   async bucket(userId: number): Promise<BucketFish[]> {
     return this.ctx.storage.sql
-      .exec<{ species: string; emoji: string; weight: number; days_held: number }>(
-        `SELECT species, emoji, weight, julianday('now') - julianday(caught_at) AS days_held
-         FROM catches WHERE owner_id = ? AND status = 'held'`,
+      .exec<{ id: number; species: string; emoji: string; weight: number; days_held: number }>(
+        `SELECT id, species, emoji, weight, julianday('now') - julianday(caught_at) AS days_held
+         FROM catches WHERE owner_id = ? AND status = 'held'
+         ORDER BY weight DESC, id ASC`,
         userId
       )
       .toArray()
-      .map((row) => ({ species: row.species, emoji: row.emoji, weight: row.weight, daysHeld: row.days_held }));
+      .map((row) => ({ id: row.id, species: row.species, emoji: row.emoji, weight: row.weight, daysHeld: row.days_held }));
   }
 
   async setWindow(days: number | null): Promise<void> {

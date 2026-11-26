@@ -13,7 +13,7 @@ import type {
   HeldFish,
   TakeFishByIdResult,
 } from "./durable-objects/fishing.js";
-import type { Store, StoreCard, StoreItem, StoreSaleResult, StoreTapResult } from "./durable-objects/store.js";
+import type { Store, StoreBuyResult, StoreCard, StoreItem, StoreSaleResult, StoreTapResult } from "./durable-objects/store.js";
 import type { AnglerGear } from "./gear.js";
 import type { CastGear } from "./fishing-math.js";
 import type {
@@ -401,6 +401,10 @@ export class StorageService {
     return this.storeStub(chatId).quoteFish(chatId, fish);
   }
 
+  quoteFishes(chatId: number, fish: { species: string; weight: number }[]): Promise<number[]> {
+    return this.storeStub(chatId).quoteFishes(chatId, fish);
+  }
+
   sellFish(chatId: number, input: { userId: number; firstName: string; fish: HeldFish }): Promise<StoreSaleResult> {
     return this.storeStub(chatId).sellFish({ ...input, chatId });
   }
@@ -419,6 +423,18 @@ export class StorageService {
 
   tapStoreGear(chatId: number, input: { userId: number; firstName: string; item: StoreItem }): Promise<StoreTapResult> {
     return this.storeStub(chatId).tapGear(input);
+  }
+
+  buyStoreGear(chatId: number, input: { userId: number; firstName: string; item: StoreItem }): Promise<StoreBuyResult> {
+    return this.storeStub(chatId).buyGear(input);
+  }
+
+  recordStoreCard(chatId: number, messageId: number, threadId: number | null): Promise<void> {
+    return this.storeStub(chatId).recordCard(messageId, threadId);
+  }
+
+  getLatestStoreCard(chatId: number): Promise<{ messageId: number; threadId: number | null } | null> {
+    return this.storeStub(chatId).latestCard();
   }
 
   private storeStub(chatId: number) {
