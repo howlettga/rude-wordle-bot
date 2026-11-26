@@ -184,11 +184,11 @@ export class StoreComposer extends Composer<MyContext> {
     if (fishing) {
       lines.push(
         bucket.length === 0 ? `🪣 Your bucket's empty.` : `🪣 ${bucket.length} fish in your bucket.`,
-        gearLine(wallet.gear),
-        wormsLine(wallet.gear.worms)
+        wormsLine(wallet.gear.worms),
+        gearLine(wallet.gear)
       );
       if (bucket.some((fish) => fish.daysHeld >= OLD_FISH_DAYS)) {
-        lines.push(`Some of those fish have been in there a while.`);
+        lines.push(`\nSome of those fish have been in there a while.`); // after a blank line
       }
     }
     await ctx.answerCallbackQuery({ text: fitPopup(lines), show_alert: true });
