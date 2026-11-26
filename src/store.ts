@@ -147,7 +147,7 @@ function formatCard(card: StoreCard, fishing: boolean): string {
   const lines = [`🏪 <b>General Store</b>`];
   if (fishing) {
     const { perLb, yesterdayPerLb } = card.fish;
-    lines.push(`🐟 Fish: ${perLb.toFixed(1)} beans/lb${priceChange(perLb, yesterdayPerLb)}`);
+    lines.push(`🐟 Fish: ${perLb.toFixed(2)} beans/lb${priceChange(perLb, yesterdayPerLb)}`);
   } else {
     lines.push(`Nothing to sell right now.`);
   }

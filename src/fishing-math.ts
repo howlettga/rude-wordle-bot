@@ -229,27 +229,40 @@ function cyrb53(str: string): number {
 
 // Species are picked by weight, so the name tells you how good the catch was (a marlin is always huge).
 // Within a band, weight is each species' relative odds: the commons split most catches, and each band has
-// one rare species (about 1 in 10). The top band has a legendary instead. The catch reply never says which
+// one rare species (about 1 in 10). A species can show up in more than one band: the goldfish's own band
+// (under 1 lb) is so seldom caught that it also turns up among 1-5 lb fish, and the legendary megalodon
+// (a young one, below 300 lb) can surface from 40 lb up, so a chat sees one every year or two. The sim
+// (scripts/sim-fishing.mjs) checks that it stays the rarest of the rare and legendary fish. The catch reply never says which
 // is which; the only giveaway is what the store pays (see STORE_CONFIG.TIER_MULTIPLIER). Names are stored
 // with every catch and keyed on for prices, so never rename one; add new ones freely.
 export type FishTier = "common" | "rare" | "legendary";
 type SpeciesEntry = { name: string; emoji: string; tier: FishTier; weight: number };
 const common = (name: string, emoji: string): SpeciesEntry => ({ name, emoji, tier: "common", weight: 30 });
-const rare = (name: string, emoji: string): SpeciesEntry => ({ name, emoji, tier: "rare", weight: 10 });
+const rare = (name: string, emoji: string, weight = 10): SpeciesEntry => ({ name, emoji, tier: "rare", weight });
+const megalodon = (weight: number): SpeciesEntry => ({ name: "megalodon", emoji: "🦈", tier: "legendary", weight });
 
 const SPECIES_BANDS: { maxLb: number; species: SpeciesEntry[] }[] = [
   { maxLb: 1, species: [common("minnow", "🐟"), common("sunfish", "🐠"), common("perch", "🐟"), rare("goldfish", "🐠")] },
-  { maxLb: 5, species: [common("trout", "🐟"), common("bass", "🐟"), common("walleye", "🐟"), rare("blobfish", "🫠")] },
+  {
+    maxLb: 5,
+    species: [common("trout", "🐟"), common("bass", "🐟"), common("walleye", "🐟"), rare("blobfish", "🫠"), rare("goldfish", "🐠", 3)],
+  },
   { maxLb: 15, species: [common("salmon", "🐟"), common("catfish", "🐟"), common("carp", "🐟"), rare("koi", "🎏")] },
   { maxLb: 40, species: [common("pike", "🐟"), common("striped bass", "🐟"), common("mahi-mahi", "🐠"), rare("electric eel", "⚡")] },
-  { maxLb: 100, species: [common("muskie", "🐟"), common("halibut", "🐟"), common("tarpon", "🐡"), rare("alligator gar", "🐊")] },
-  { maxLb: 300, species: [common("tuna", "🐟"), common("swordfish", "🗡️"), common("sturgeon", "🐟"), rare("coelacanth", "🦴")] },
+  {
+    maxLb: 100,
+    species: [common("muskie", "🐟"), common("halibut", "🐟"), common("tarpon", "🐡"), rare("alligator gar", "🐊"), megalodon(0.6)],
+  },
+  {
+    maxLb: 300,
+    species: [common("tuna", "🐟"), common("swordfish", "🗡️"), common("sturgeon", "🐟"), rare("coelacanth", "🦴", 15), megalodon(3)],
+  },
   {
     maxLb: Infinity,
     species: [
       { name: "marlin", emoji: "🐟", tier: "common", weight: 48.5 },
       { name: "great white shark", emoji: "🦈", tier: "common", weight: 48.5 },
-      { name: "megalodon", emoji: "🦈", tier: "legendary", weight: 3 },
+      megalodon(20),
     ],
   },
 ];
