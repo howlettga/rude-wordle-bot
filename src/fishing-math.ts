@@ -58,6 +58,17 @@ export interface CastFactors {
   quality: number;
 }
 
+// What an angler's gear does to a cast (see gear.ts for where the numbers come from). quality multiplies
+// cast quality (the rod); lakeRelief is the share of today's earlier casts the lake doesn't count against
+// you (the boat: you fish away from the crowd, but never better than an empty lake); junk multiplies the
+// junk chance (worms). NO_GEAR changes nothing.
+export interface CastGear {
+  quality: number;
+  lakeRelief: number;
+  junk: number;
+}
+export const NO_GEAR: CastGear = { quality: 1, lakeRelief: 0, junk: 1 };
+
 export function waitFactor(daysWaited: number): number {
   const table = FISHING_CONFIG.WAIT_FACTOR;
   const index = Math.min(table.length, Math.max(1, Math.floor(daysWaited))) - 1;
@@ -70,16 +81,18 @@ export function lakeFactor(castsToday: number): number {
   return Math.max(LAKE_FLOOR, LAKE_START - LAKE_STEP * Math.max(0, castsToday));
 }
 
-export function castFactors(input: { daysWaited: number; tide: Tide; castsToday: number }): CastFactors {
+export function castFactors(input: { daysWaited: number; tide: Tide; castsToday: number; gear?: CastGear }): CastFactors {
+  const gear = input.gear ?? NO_GEAR;
   const wait = waitFactor(input.daysWaited);
   const tide = tideMultiplier(input.tide);
-  const lake = lakeFactor(input.castsToday);
-  return { wait, tide, lake, quality: Math.max(FISHING_CONFIG.Q_FLOOR, wait * tide * lake) };
+  const lake = lakeFactor(input.castsToday * (1 - gear.lakeRelief));
+  return { wait, tide, lake, quality: Math.max(FISHING_CONFIG.Q_FLOOR, wait * tide * lake * gear.quality) };
 }
 
-export function junkChance(quality: number): number {
+// junkMultiplier: worms (see CastGear.junk) scale the final chance down.
+export function junkChance(quality: number, junkMultiplier = 1): number {
   const { JUNK_BASE, JUNK_SLOPE, JUNK_MAX } = FISHING_CONFIG;
-  return Math.min(JUNK_MAX, Math.max(JUNK_BASE, JUNK_BASE + JUNK_SLOPE * (1 - quality)));
+  return junkMultiplier * Math.min(JUNK_MAX, Math.max(JUNK_BASE, JUNK_BASE + JUNK_SLOPE * (1 - quality)));
 }
 
 // Log-normal around MEDIAN_LB * quality. Rounded to 0.1 lb, never below MIN_LB.
@@ -143,8 +156,8 @@ const TRASH: [item: string, emoji: string][] = [
 
 // Junk instead of a fish: no weight, never on the leaderboard or in anyone's bucket, and it still uses
 // up the day's cast.
-export function rollTrash(quality: number, random: () => number = Math.random): { item: string; emoji: string } | null {
-  if (random() >= junkChance(quality)) {
+export function rollTrash(quality: number, junkMultiplier = 1, random: () => number = Math.random): { item: string; emoji: string } | null {
+  if (random() >= junkChance(quality, junkMultiplier)) {
     return null;
   }
   const [item, emoji] = TRASH[Math.floor(random() * TRASH.length)]!;

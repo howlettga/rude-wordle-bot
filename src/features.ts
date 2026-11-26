@@ -15,8 +15,8 @@ export const FEATURES = [
   { key: "market", label: "Stock market", defaultEnabled: true },
   // /fish once a day, /fishing leaderboard, everyone's bucket of caught fish (what the pet eats)
   { key: "fishing", label: "Fishing", defaultEnabled: true },
-  // /store card (sell fish for beans, check your wallet; buying comes later) and the Sell button on /fish
-  // replies. Selling fish needs fishing on too.
+  // /store card (sell fish for beans, buy rod / boat upgrades and worms, check your wallet), the Sell
+  // button on /fish replies, and gear counting on casts. Selling and gear need fishing on too.
   { key: "store", label: "General store", defaultEnabled: true },
   // One shared pet per chat: /adopt, /pet, /graveyard, begging in /fish replies, plus scheduled dying
   // warnings and deaths

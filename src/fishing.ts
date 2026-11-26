@@ -7,6 +7,7 @@ import { rotatingLine } from "./fishing-math.js";
 import { HIGH_TIDE_LINES, HINT_LINES, JUNK_LINES, LAKE_LINES } from "./fishing-lines.js";
 import { petDesireLine } from "./pet.js";
 import { fishingSellButton } from "./store.js";
+import { castGear, type AnglerGear } from "./gear.js";
 import { escapeHtml, weightArticle } from "./util.js";
 
 // The "fishing" feature (see features.ts):
@@ -18,7 +19,8 @@ import { escapeHtml, weightArticle } from "./util.js";
 //                                    deliberately never shown, and buckets are private (the store's
 //                                    Wallet pop-up shows only your own).
 //                                    A fish (not junk) gets a Sell button while the store is on (see
-//                                    store.ts), the reply's only button.
+//                                    store.ts), the reply's only button. Store gear (gear.ts) applies to
+//                                    the cast while the store is on, and a cast uses up one worm if any.
 //   /fishing                      -> leaderboard: everyone's heaviest catch, ranked by weight
 //   /fishingwindow <days>|forever -> owner-only: how far back the leaderboard looks (default forever)
 //   /resetfishing                 -> owner-only: leaderboard starts over; nothing is deleted
@@ -52,14 +54,21 @@ export class FishingComposer extends Composer<MyContext> {
     }
 
     const chatId = ctx.chat.id;
+    const gear = await this.gear(ctx);
+    const useWorm = gear !== null && gear.worms > 0;
     const result = await this.storage.castFishing(chatId, {
       userId: ctx.from.id,
       ...(ctx.from.username !== undefined && { username: ctx.from.username }),
       firstName: ctx.from.first_name,
+      ...(gear && { gear: castGear(gear, useWorm) }),
     });
     if (!result.ok) {
       await replyToMessage(ctx, "You already fished today. Come back tomorrow.");
       return;
+    }
+    if (useWorm) {
+      // After the cast, so a cast that didn't happen never costs a worm. A failure here just means a free one.
+      await this.storage.useWorm(chatId, ctx.from.id).catch((err) => console.error("useWorm failed", err));
     }
     // Every flavor line rotates through its set (see fishing-lines.ts), keyed to this chat's day and
     // stepped by the cast count, so two casts the same day don't get the same line.
@@ -97,6 +106,20 @@ export class FishingComposer extends Composer<MyContext> {
       ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
       ...(sellButton && { reply_markup: sellButton }),
     });
+  }
+
+  // This angler's store gear (rod, boat, worms; see gear.ts), or null while the store is off: gear only
+  // counts while it's on. Like the pet's begging line, a store problem never costs anyone their cast.
+  private async gear(ctx: MyContext): Promise<AnglerGear | null> {
+    try {
+      if (!ctx.chat || !ctx.from || !(await this.features(ctx)).store.enabled) {
+        return null;
+      }
+      return await this.storage.getGear(ctx.chat.id, ctx.from.id);
+    } catch (err) {
+      console.error(err);
+      return null;
+    }
   }
 
   // The store's Sell button for this catch, priced at today's rate. Like the pet's begging line, a store

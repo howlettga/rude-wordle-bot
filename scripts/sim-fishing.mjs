@@ -1,8 +1,9 @@
 // Simulates /fish with the real math in src/fishing-math.ts (Node 24+ runs the .ts import directly), prints
 // the odds tables, and checks them against the tuning targets. Run after changing FISHING_CONFIG, the tide
-// multipliers, the pet's fish food, or the store's prices: `npm run sim:fishing`. Exits non-zero if a target is missed.
+// multipliers, the pet's fish food, the store's prices, or gear: `npm run sim:fishing`. Exits non-zero if a target is missed.
 import { FISHING_CONFIG, castFactors, junkChance, lakeTier, rollWeight, rotatingLine, speciesForWeight, speciesTier } from "../src/fishing-math.ts";
 import { STORE_CONFIG, fishPriceIndex, fishPricePerLb, fishSalePrice } from "../src/store-math.ts";
+import { GEAR_LINES, castGear } from "../src/gear.ts";
 import { HIGH_TIDE_LINES, HINT_LINES, JUNK_LINES, LAKE_LINES } from "../src/fishing-lines.ts";
 import { PET_CONFIG, foodForFish } from "../src/pet-config.ts";
 
@@ -15,9 +16,10 @@ const randomTide = () => {
   const r = Math.random();
   return r < 0.25 ? "low" : r < 0.75 ? "normal" : r < 0.95 ? "high" : "king";
 };
-const cast = (daysWaited, tide, castsToday) => {
-  const { quality } = castFactors({ daysWaited, tide, castsToday });
-  return Math.random() < junkChance(quality) ? null : rollWeight(quality);
+const TOP_GEAR = castGear({ rod: GEAR_LINES.rod.tiers.length - 1, boat: GEAR_LINES.boat.tiers.length - 1, worms: 1 }, true);
+const cast = (daysWaited, tide, castsToday, gear) => {
+  const { quality } = castFactors({ daysWaited, tide, castsToday, gear });
+  return Math.random() < junkChance(quality, gear?.junk) ? null : rollWeight(quality);
 };
 
 const failures = [];
@@ -37,14 +39,16 @@ const rows = [
   ["4+ days, 8th cast, low tide", 4, "low", 7],
   ["daily, low tide, fished out", 1, "low", 12],
   ["4+ days, 1st cast, king tide", 4, "king", 0],
+  ["4+ days, 3rd cast, top gear", 4, "normal", 2, TOP_GEAR],
+  ["4+ days, 8th cast, top gear", 4, "normal", 7, TOP_GEAR],
 ];
 const medians = {};
-for (const [label, days, tide, n] of rows) {
-  const { quality } = castFactors({ daysWaited: days, tide, castsToday: n });
+for (const [label, days, tide, n, gear] of rows) {
+  const { quality } = castFactors({ daysWaited: days, tide, castsToday: n, gear });
   const weights = Array.from({ length: 100_000 }, () => rollWeight(quality));
   medians[label] = pct(weights, 0.5);
   console.log(
-    `  ${label.padEnd(30)} ${quality.toFixed(2)}  ${(junkChance(quality) * 100).toFixed(0).padStart(3)}%  ${pct(weights, 0.5).toFixed(1).padStart(6)}  ${pct(weights, 0.9).toFixed(1).padStart(8)}  ${pct(weights, 0.99).toFixed(1).padStart(8)}`
+    `  ${label.padEnd(30)} ${quality.toFixed(2)}  ${(junkChance(quality, gear?.junk) * 100).toFixed(0).padStart(3)}%  ${pct(weights, 0.5).toFixed(1).padStart(6)}  ${pct(weights, 0.9).toFixed(1).padStart(8)}  ${pct(weights, 0.99).toFixed(1).padStart(8)}`
   );
 }
 
@@ -158,6 +162,24 @@ console.log(`  a fish sells for (on a typical day): median ${pct(sales, 0.5)}, 1
 console.log(`  our chat earns about ${(meanSale * pct(fishPerDay, 0.5)).toFixed(0)} beans a day if it sells everything`);
 console.log(`  biggest sales (1 in 1,000 fish): ${pct(sales, 0.999)} beans`);
 
+// The same chat a year in, if everyone owns the top rod and boat and always has a worm.
+const geared365 = [];
+for (let run = 0; run < 1000; run++) {
+  let record = OLD_RECORD;
+  const offsets = rhythms.map((r) => Math.floor(Math.random() * r));
+  for (let day = 0; day < 365; day++) {
+    const tide = randomTide();
+    rhythms
+      .filter((r, i) => day >= offsets[i] && (day - offsets[i]) % r === 0)
+      .forEach((every, n) => {
+        const weight = cast(every, tide, n, TOP_GEAR);
+        if (weight !== null) record = Math.max(record, weight);
+      });
+  }
+  geared365.push(record);
+}
+console.log(`  with everyone on top gear, the chat record after a year: ${pct(geared365, 0.5).toFixed(0)} lb`);
+
 console.log("\nTargets");
 check(medians["daily, 1st cast"] >= 8, `a daily caster's typical fish is at least 8 lb (${medians["daily, 1st cast"]})`);
 check(medians["daily, low tide, fished out"] >= 3, `the worst possible cast still has a typical fish of 3+ lb (${medians["daily, low tide, fished out"]})`);
@@ -167,6 +189,7 @@ check(["3", "4", "5"].includes(bestRhythm), `the best yearly trophy comes from a
 check(yearlyBest[1] < yearlyBest[4], `casting daily isn't the best trophy strategy (${yearlyBest[1]} vs ${yearlyBest[4]} lb)`);
 check(pct(daysToBeat, 0.5) <= 10, `the old ${OLD_RECORD} lb record usually falls within 10 days (day ${pct(daysToBeat, 0.5)})`);
 check(pct(record365, 0.5) <= 175, `records don't run away: a year in, the record is at most 175 lb (${pct(record365, 0.5).toFixed(0)})`);
+check(pct(geared365, 0.5) <= 1.35 * pct(record365, 0.5), `gear helps but doesn't take over: top-gear records stay within 35% of ungeared (${pct(geared365, 0.5).toFixed(0)} vs ${pct(record365, 0.5).toFixed(0)} lb)`);
 check(pct(fishPerDay, 0.5) >= 1.5 * (foodPerDay / meanFood), `the chat catches at least 1.5x the fish the pet needs`);
 const rareShare = tiers.rare / fishCount;
 check(rareShare >= 0.08 && rareShare <= 0.12, `about 1 fish in 10 is rare (${(rareShare * 100).toFixed(1)}%)`);

@@ -8,12 +8,14 @@ import type {
   FishUse,
   Fishing,
   FishingCastResult,
-  FishingCatch,
+  BucketFish,
   FishingLeaderboard,
   HeldFish,
   TakeFishByIdResult,
 } from "./durable-objects/fishing.js";
-import type { Store, StoreCard, StoreSaleResult } from "./durable-objects/store.js";
+import type { Store, StoreCard, StoreItem, StoreSaleResult, StoreTapResult } from "./durable-objects/store.js";
+import type { AnglerGear } from "./gear.js";
+import type { CastGear } from "./fishing-math.js";
 import type {
   Pet,
   PetAdoptResult,
@@ -355,7 +357,7 @@ export class StorageService {
     return this.rudeMessagesNs.get(this.rudeMessagesNs.idFromName(`rude_messages_${chatId}`));
   }
 
-  castFishing(chatId: number, input: { userId: number; username?: string; firstName: string }): Promise<FishingCastResult> {
+  castFishing(chatId: number, input: { userId: number; username?: string; firstName: string; gear?: CastGear }): Promise<FishingCastResult> {
     return this.fishingStub(chatId).cast({ ...input, chatId });
   }
 
@@ -379,7 +381,7 @@ export class StorageService {
     return this.fishingStub(chatId).takeFishById(userId, fishId, usedFor, use);
   }
 
-  getFishBucket(chatId: number, userId: number): Promise<FishingCatch[]> {
+  getFishBucket(chatId: number, userId: number): Promise<BucketFish[]> {
     return this.fishingStub(chatId).bucket(userId);
   }
 
@@ -403,8 +405,20 @@ export class StorageService {
     return this.storeStub(chatId).sellFish({ ...input, chatId });
   }
 
-  getWalletBalance(chatId: number, userId: number): Promise<number> {
+  getWallet(chatId: number, userId: number): Promise<{ balance: number; gear: AnglerGear }> {
     return this.storeStub(chatId).wallet(userId);
+  }
+
+  getGear(chatId: number, userId: number): Promise<AnglerGear> {
+    return this.storeStub(chatId).gear(userId);
+  }
+
+  useWorm(chatId: number, userId: number): Promise<void> {
+    return this.storeStub(chatId).useWorm(userId);
+  }
+
+  tapStoreGear(chatId: number, input: { userId: number; firstName: string; item: StoreItem }): Promise<StoreTapResult> {
+    return this.storeStub(chatId).tapGear(input);
   }
 
   private storeStub(chatId: number) {

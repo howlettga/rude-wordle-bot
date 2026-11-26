@@ -11,6 +11,7 @@ import {
   rollWeight,
   speciesForWeight,
   tideFor,
+  type CastGear,
   type CatchHint,
   type LakeTier,
 } from "../fishing-math.js";
@@ -58,6 +59,11 @@ export interface HeldFish extends FishingCatch {
 
 // What takeFish / takeFishById marks a fish as: eaten by the pet, or sold at the store.
 export type FishUse = "eaten" | "sold";
+
+// A fish still in its catcher's bucket, and how long it's been there (for the store's freshness hints).
+export interface BucketFish extends FishingCatch {
+  daysHeld: number;
+}
 
 export type TakeFishByIdResult = { ok: true; fish: HeldFish } | { ok: false; reason: "NOT_YOURS" | "GONE" };
 
@@ -174,7 +180,8 @@ export class Fishing extends DurableObject<Env> {
   // cast, today's tide, and how many casts the chat has already made today set the cast's quality (see
   // fishing-math.ts); a first-ever cast counts as FIRST_CAST_WAIT_DAYS. No await anywhere in here, so two
   // /fish sent at once can't both get through, or both see the same lake count.
-  async cast(input: { chatId: number; userId: number; username?: string; firstName: string }): Promise<FishingCastResult> {
+  // gear: what the angler's store gear does to this cast (see gear.ts); none when the store is off.
+  async cast(input: { chatId: number; userId: number; username?: string; firstName: string; gear?: CastGear }): Promise<FishingCastResult> {
     const { date: today, dayNumber } = fishingDay(easternParts(new Date()));
     // Without the secret, tides just stay normal rather than becoming predictable from the source code.
     const tide = this.env.TIDE_SECRET ? tideFor(this.env.TIDE_SECRET, input.chatId, dayNumber) : "normal";
@@ -205,9 +212,9 @@ export class Fishing extends DurableObject<Env> {
       today
     );
 
-    const factors = castFactors({ daysWaited, tide, castsToday });
+    const factors = castFactors({ daysWaited, tide, castsToday, ...(input.gear && { gear: input.gear }) });
     const lake = lakeTier(castsToday);
-    const trash = rollTrash(factors.quality);
+    const trash = rollTrash(factors.quality, input.gear?.junk);
     if (trash) {
       return { ok: true, kind: "trash", ...trash, highTide, lake, hint: hintFor(factors), date: today, castsToday };
     }
@@ -344,14 +351,15 @@ export class Fishing extends DurableObject<Env> {
   }
 
   // Everything in this angler's bucket, for the store's private Wallet pop-up.
-  async bucket(userId: number): Promise<FishingCatch[]> {
+  async bucket(userId: number): Promise<BucketFish[]> {
     return this.ctx.storage.sql
-      .exec<{ species: string; emoji: string; weight: number }>(
-        `SELECT species, emoji, weight FROM catches WHERE owner_id = ? AND status = 'held'`,
+      .exec<{ species: string; emoji: string; weight: number; days_held: number }>(
+        `SELECT species, emoji, weight, julianday('now') - julianday(caught_at) AS days_held
+         FROM catches WHERE owner_id = ? AND status = 'held'`,
         userId
       )
       .toArray()
-      .map((row) => ({ species: row.species, emoji: row.emoji, weight: row.weight }));
+      .map((row) => ({ species: row.species, emoji: row.emoji, weight: row.weight, daysHeld: row.days_held }));
   }
 
   async setWindow(days: number | null): Promise<void> {
