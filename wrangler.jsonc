@@ -19,7 +19,8 @@
       { "name": "RUDE_MESSAGES", "class_name": "RudeMessages" },
       { "name": "FISHING", "class_name": "Fishing" },
       { "name": "PET", "class_name": "Pet" },
-      { "name": "PET_REGISTRY", "class_name": "PetRegistry" }
+      { "name": "PET_REGISTRY", "class_name": "PetRegistry" },
+      { "name": "STORE", "class_name": "Store" }
     ]
   },
   "migrations": [
@@ -32,7 +33,8 @@
     { "tag": "v7", "new_sqlite_classes": ["ChatPause"] },
     { "tag": "v8", "new_sqlite_classes": ["RudeMessages"] },
     { "tag": "v9", "new_sqlite_classes": ["Fishing"] },
-    { "tag": "v10", "new_sqlite_classes": ["Pet", "PetRegistry"] }
+    { "tag": "v10", "new_sqlite_classes": ["Pet", "PetRegistry"] },
+    { "tag": "v11", "new_sqlite_classes": ["Store"] }
   ],
   // Cron Triggers always run in UTC (no timezone support), and every job is scheduled in Eastern time,
   // which shifts against UTC across DST. So this is one hourly trigger, and main.ts's scheduled() checks

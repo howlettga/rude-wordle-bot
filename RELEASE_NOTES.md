@@ -1,6 +1,14 @@
 # Release Notes
 
-## Unreleased - Fishing v2
+## Unreleased - General Store
+
+- New `/store` card: one shared message with buttons, like `/pet`. Sell your small / medium / large fish for beans, or check your wallet in a private pop-up. Buying is coming soon.
+- Every fish reply from `/fish` gets a Sell button that only the catcher can use. Selling edits the reply in place.
+- Fish prices change day to day (turning over at 5am ET with the fishing day), and rare species pay more.
+- One new rare species per weight band, about 1 catch in 10: goldfish, blobfish, koi, electric eel, alligator gar, and coelacanth. The biggest fish can very occasionally be a megalodon.
+- A new `store` feature switch, on by default.
+
+## Fishing v2
 
 - Fishing math rebuilt around a single cast quality: how long since your last cast (full strength from 4 days on; casting daily is a mild penalty instead of a 60%-junk, 0.1 lb grind), the hidden tide, and how many casts the whole chat has already made today. The first few casts of the day get a bonus; past about the 5th, the lake is fished out for everyone. Typical fish are bigger, so the old leaderboard is beatable; tuning lives in `FISHING_CONFIG`, checked by `npm run sim:fishing`.
 - Every `/fish` reply says how busy the lake is today, and a poor catch can say why (your spot, or a low tide).

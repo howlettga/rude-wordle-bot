@@ -18,7 +18,7 @@ import { escapeHtml, random } from "./util.js";
 //   /petrevive  -> owner-only: brings the last dead pet back at full meters (in case a bug killed it)
 // While the chat has fishing on, feeding costs one of the feeder's own fish: the card's Feed button is
 // three — small, medium, large — each taking that size from the tapper's bucket (see Fishing.takeFish),
-// with bigger fish worth more food (foodForFish). Nobody sees what's in their bucket.
+// with bigger fish worth more food (foodForFish). Nobody sees anyone else's bucket.
 // The hourly check (runHourlyCheck) posts only the "it's dying" warning and announces deaths; hunger and
 // loneliness show up as the pet begging in /fish replies instead (petDesireLine). Every number lives in
 // pet-config.ts.

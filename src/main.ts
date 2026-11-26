@@ -12,13 +12,14 @@ import { RudeMessages } from "./durable-objects/rude-messages.js";
 import { Fishing } from "./durable-objects/fishing.js";
 import { Pet } from "./durable-objects/pet.js";
 import { PetRegistry } from "./durable-objects/pet-registry.js";
+import { Store } from "./durable-objects/store.js";
 import { StorageService } from "./storage-service.js";
 import { WordleGolfComposer } from "./wordle-golf.js";
 import { StockMarketComposer } from "./stock-market.js";
 import { PetComposer } from "./pet.js";
 import { easternParts } from "./eastern-time.js";
 
-export { BeenCounter, BeanCounter, SpankChain, WordleGolf, WordleGolfRegistry, StockMarket, StockMarketRegistry, ChatPause, RudeMessages, Fishing, Pet, PetRegistry };
+export { BeenCounter, BeanCounter, SpankChain, WordleGolf, WordleGolfRegistry, StockMarket, StockMarketRegistry, ChatPause, RudeMessages, Fishing, Pet, PetRegistry, Store };
 
 // Cron Triggers are UTC-only, and every job here is scheduled in Eastern time, which shifts an hour
 // against UTC across DST. So wrangler.jsonc runs a single hourly trigger, and scheduled() below works out
@@ -46,8 +47,10 @@ export interface Env {
   FISHING: DurableObjectNamespace<Fishing>;
   PET: DurableObjectNamespace<Pet>;
   PET_REGISTRY: DurableObjectNamespace<PetRegistry>;
+  STORE: DurableObjectNamespace<Store>;
   OWNER_CHAT_ID?: string;
-  // Seeds fishing tides (see tideFor in fishing-math.ts). Unset means tides stay normal.
+  // Seeds fishing tides (see tideFor in fishing-math.ts) and the store's daily fish prices (see
+  // Store.fishPriceIndex). Unset means tides stay normal and prices stay flat.
   TIDE_SECRET?: string;
 }
 
@@ -64,7 +67,8 @@ function buildStorage(env: Env): StorageService {
     env.RUDE_MESSAGES,
     env.FISHING,
     env.PET,
-    env.PET_REGISTRY
+    env.PET_REGISTRY,
+    env.STORE
   );
 }
 

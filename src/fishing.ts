@@ -6,6 +6,7 @@ import type { FeatureFlags } from "./features.js";
 import { rotatingLine } from "./fishing-math.js";
 import { HIGH_TIDE_LINES, HINT_LINES, JUNK_LINES, LAKE_LINES } from "./fishing-lines.js";
 import { petDesireLine } from "./pet.js";
+import { fishingSellButton } from "./store.js";
 import { escapeHtml } from "./util.js";
 
 // The "fishing" feature (see features.ts):
@@ -14,7 +15,10 @@ import { escapeHtml } from "./util.js";
 //                                    one flavor line: the pet begging when it's hungry or lonely, else a
 //                                    high tide, else a hint about a poor catch, else how busy the lake is
 //                                    today. The roll math (fishing-math.ts) is
-//                                    deliberately never shown, and neither is anyone's bucket.
+//                                    deliberately never shown, and buckets are private (the store's
+//                                    Wallet pop-up shows only your own).
+//                                    A fish (not junk) gets a Sell button while the store is on (see
+//                                    store.ts), the reply's only button.
 //   /fishing                      -> leaderboard: everyone's heaviest catch, ranked by weight
 //   /fishingwindow <days>|forever -> owner-only: how far back the leaderboard looks (default forever)
 //   /resetfishing                 -> owner-only: leaderboard starts over; nothing is deleted
@@ -87,7 +91,26 @@ export class FishingComposer extends Composer<MyContext> {
       flavor = pick(HIGH_TIDE_LINES, "tide");
     }
     lines.push((await this.petBegging(ctx, result.kind)) ?? flavor);
-    await replyToMessage(ctx, lines.join("\n"));
+    const sellButton = result.kind === "fish" ? await this.sellButton(ctx, result.catchId, result.catch) : null;
+    await ctx.reply(lines.join("\n"), {
+      ...(ctx.message?.message_id !== undefined && { reply_to_message_id: ctx.message.message_id }),
+      ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
+      ...(sellButton && { reply_markup: sellButton }),
+    });
+  }
+
+  // The store's Sell button for this catch, priced at today's rate. Like the pet's begging line, a store
+  // problem never costs anyone their catch reply: it just goes out without the button.
+  private async sellButton(ctx: MyContext, catchId: number, fish: { species: string; weight: number }) {
+    try {
+      if (!ctx.chat || !(await this.features(ctx)).store.enabled) {
+        return null;
+      }
+      return fishingSellButton(catchId, await this.storage.quoteFish(ctx.chat.id, fish));
+    } catch (err) {
+      console.error(err);
+      return null;
+    }
   }
 
   // The chat's pet, if it's hungry or lonely, begging at the end of the reply (see petDesireLine). A pet

@@ -97,7 +97,7 @@ curl -s "https://api.telegram.org/bot<TOKEN>/getMe" | jq -c '.result' | npx wran
 openssl rand -hex 32 | npx wrangler secret put TIDE_SECRET
 ```
 
-`TIDE_SECRET` seeds the hidden daily fishing tides. Without it, tides stay normal. Never commit it or change it casually: changing it reshuffles every chat's tides.
+`TIDE_SECRET` seeds the hidden daily fishing tides and the store's daily fish prices. Without it, tides stay normal and prices stay flat. Never commit it or change it casually: changing it reshuffles every chat's tides and prices.
 
 Deploy:
 
@@ -133,6 +133,7 @@ Registering a command with `bot.command()` in `src/bot.ts` only wires up the han
 | `instructions` | how's this work? |
 | `fish` | cast a line |
 | `fishing` | biggest catches |
+| `store` | sell ya fish |
 | `adopt` | get a group pet |
 | `pet` | check on the pet |
 | `graveyard` | pets we've lost |
@@ -159,6 +160,7 @@ curl "https://api.telegram.org/bot<TOKEN>/setMyCommands" \
   {"command":"instructions","description":"how's this work?"},
   {"command":"fish","description":"cast a line"},
   {"command":"fishing","description":"biggest catches"},
+  {"command":"store","description":"sell ya fish"},
   {"command":"adopt","description":"get a group pet"},
   {"command":"pet","description":"check on the pet"},
   {"command":"graveyard","description":"pets we've lost"}
@@ -186,6 +188,7 @@ marketrules - how to win
 instructions - how's this work?
 fish - cast a line
 fishing - biggest catches
+store - sell ya fish
 adopt - get a group pet
 pet - check on the pet
 graveyard - pets we've lost
@@ -221,6 +224,7 @@ Every feature can be turned on or off per chat by the owner, with `/features` ru
 | `market` | Stock market | Every market command, price tracking, and the market's scheduled jobs | on |
 | `fishing` | Fishing | `/fish` (at most once a day; catches are best when you've waited 4+ days and the chat hasn't cast much yet today, since everyone shares one lake), the `/fishing` leaderboard (everyone's best catch), and the owner's fishing commands. Every fish caught goes into the catcher's hidden bucket, which is what the pet eats. Every tuning number is in `FISHING_CONFIG` in `src/fishing-math.ts`; `npm run sim:fishing` checks the odds after a change | on |
 | `pet` | Group pet | One shared pet per chat: `/adopt`, the `/pet` card with Feed / Pet / Play buttons, `/graveyard`, the pet begging in `/fish` replies when it's hungry or lonely, and a scheduled warning when it's dying and its eulogy when it dies. While fishing is on, feeding costs one of your own fish (small, medium, or large; bigger fish fill it more). Switching it off freezes the pet rather than letting it starve. Every tuning number (how fast it gets hungry, cooldowns, how long until it dies) is in `src/pet-config.ts` | on |
+| `store` | General store | The `/store` card: today's fish price, the latest sale, and buttons to sell your small / medium / large fish, check your wallet privately, or buy (coming soon). Fish replies from `/fish` also get a Sell button that only the catcher can use. The money is beans. A fish sells for its weight times the day's price per lb times a hidden multiplier for rare species. Selling needs `fishing` on too. Every price number is in `STORE_CONFIG` in `src/store-math.ts`, and `npm run sim:fishing` checks it | on |
 | `beans` | Been/bean counter | Counts "been", posts the tally on "bean". Reply to that post with a question (anything with a "?") to get the bean count | on |
 | `replies` | Talk-back | Replies when someone names the bot, replies to one of its jokes, or says "galen" | on |
 | `eastereggs` | Easter eggs | Keyword jokes in normal conversation (gas, commute, raise, ...) | on |
