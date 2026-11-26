@@ -9,20 +9,20 @@ import { escapeHtml, random, weightArticle } from "./util.js";
 import { storeAppUrl } from "./webapp/store-link.js";
 
 // The "store" feature (see features.ts): a shared General Store card, built like the pet card, so the
-// chat only ever sees one message whose buttons update it in place. Everything personal (what you sold,
-// what something costs you, your wallet) comes back as a pop-up only the tapper sees.
-//   /store -> the card: today's fish price, the latest sale or upgrade, and buttons to
+// chat only ever sees one message whose buttons update it in place. Anything personal comes back as a pop-up
+// only the tapper sees, or happens in the store page.
+//   /store -> the card: today's fish price, the latest sale or upgrade, and two buttons:
 //             - sell a fish (a random one from your bucket, so it's one button: the pop-up says which)
-//             - buy your next rod or boat tier (see gear.ts): the first tap quotes the price privately,
-//               and a second tap on the same button within BUY_CONFIRM_SECONDS buys it
-//             - buy a worm: one tap, no confirmation (they're cheap)
-//             - check your wallet: beans, how many fish you have, and your gear
-//             - open the store page (see webapp/api.ts): a URL button to the Mini App, whose link carries this
-//               chat's id signed with the bot's token (see webapp/store-link.ts). Re-signed on every card edit, so a
-//               link is good for a day from the card's last change.
+//             - open the store page (see webapp/api.ts and public/app/), where you see your whole bucket, sell any
+//               fish, buy gear (see gear.ts), and check your beans. It's a URL button to the Mini App, whose link
+//               carries this chat's id signed with the bot's token (see webapp/store-link.ts), re-signed on every
+//               card edit, so a link is good for a day from the card's last change.
+//             Cards posted before the store page also have Rod / Boat / Worms (the first tap on Rod or Boat quotes
+//             the price, a second within BUY_CONFIRM_SECONDS buys) and Wallet buttons. Those still work, and the
+//             card switches to the two-button layout the next time it's edited.
 // /fish replies also get a Sell button for that exact fish (see fishingSellButton), which only its catcher
-// can use. Selling and gear need fishing on too; with it off, the card only has the wallet. Prices live in
-// store-math.ts and gear.ts, and the money is beans, always written with 🫘 as the currency sign.
+// can use. Selling and gear need fishing on too. Prices live in store-math.ts and gear.ts, and the money is
+// beans, always written with 🫘 as the currency sign.
 //
 // Fish don't spoil yet, but a cooler is planned, so the shopkeeper drops the odd hint that they might
 // (FRESHNESS_LINES), and the wallet mentions it when someone's been holding a fish for a while.
@@ -75,6 +75,7 @@ export class StoreComposer extends Composer<MyContext> {
     this.command("store", (ctx) => this.sendCard(ctx));
     this.callbackQuery(SELL_CAUGHT, (ctx) => this.sellCaught(ctx));
     this.callbackQuery("store:sellrandom", (ctx) => this.sellFromCard(ctx));
+    // Only on cards posted before the store page (see the note at the top); new cards don't have these buttons.
     this.callbackQuery(GEAR_BUTTON, (ctx) => this.tapGear(ctx));
     this.callbackQuery("store:wallet", (ctx) => this.showWallet(ctx));
   }
@@ -298,51 +299,51 @@ function articled(name: string): string {
 
 // The /store card's text (HTML) and keyboard. storeUrl null leaves out the Open store button.
 export function renderStoreCard(card: StoreCard, fishing: boolean, storeUrl: string | null): { text: string; reply_markup: InlineKeyboard } {
-  const reply_markup = cardKeyboard(fishing);
-  if (storeUrl !== null) {
-    reply_markup.row().url("🛒 Open store", storeUrl);
-  }
-  return { text: formatCard(card, fishing), reply_markup };
+  return { text: formatCard(card, fishing), reply_markup: cardKeyboard(fishing, storeUrl) };
 }
 
+// Title, today's price, and the latest activity, each separated by a blank line:
+//   🏪 General Store
+//
+//   🐟 Fish: 🫘0.38/lb · ▲ 9%
+//
+//   💰 Galen sold an 8.1 lb koi for 🫘9.
 function formatCard(card: StoreCard, fishing: boolean): string {
-  const lines = [`🏪 <b>General Store</b>`];
+  const sections = [`🏪 <b>General Store</b>`];
   if (fishing) {
     const { perLb, yesterdayPerLb } = card.fish;
-    lines.push(`🐟 Fish: ${formatBeanPrice(perLb)}/lb${priceChange(perLb, yesterdayPerLb)}`);
+    sections.push(`🐟 Fish: ${formatBeanPrice(perLb)}/lb${priceChange(perLb, yesterdayPerLb)}`);
   } else {
-    lines.push(`Nothing for sale right now.`);
+    sections.push(`Nothing for sale right now.`);
   }
   const activity = card.lastActivity;
   if (activity?.kind === "sale") {
     const { firstName, label, amount } = activity;
-    lines.push(`<i>💰 ${escapeHtml(firstName)} sold ${weightArticle(label)} ${escapeHtml(label)} for ${formatBeans(amount)}.</i>`);
+    sections.push(`<i>💰 ${escapeHtml(firstName)} sold ${weightArticle(label)} ${escapeHtml(label)} for ${formatBeans(amount)}.</i>`);
   } else if (activity?.kind === "upgrade") {
     const { firstName, label, line } = activity;
-    lines.push(`<i>${GEAR_LINES[line].emoji} ${escapeHtml(firstName)} upgraded to ${indefinite(label)} ${escapeHtml(label)}.</i>`);
+    sections.push(`<i>${GEAR_LINES[line].emoji} ${escapeHtml(firstName)} upgraded to ${indefinite(label)} ${escapeHtml(label)}.</i>`);
   }
-  return lines.join("\n");
+  return sections.join("\n\n");
 }
 
-// " (▲ 12% since yesterday)", or nothing when it's flat.
+// " · ▲ 12%" against yesterday's price, or nothing when it's flat.
 function priceChange(today: number, yesterday: number): string {
   const pct = Math.round((today / yesterday - 1) * 100);
   if (pct === 0 || !Number.isFinite(pct)) {
     return "";
   }
-  return ` (${pct > 0 ? "▲" : "▼"} ${Math.abs(pct)}% since yesterday)`;
+  return ` · ${pct > 0 ? "▲" : "▼"} ${Math.abs(pct)}%`;
 }
 
-function cardKeyboard(fishing: boolean): InlineKeyboard {
+// One row: Sell a fish (needs fishing on) and Open store (needs a link). Buying and the wallet live in the store page.
+function cardKeyboard(fishing: boolean, storeUrl: string | null): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   if (fishing) {
-    keyboard
-      .text("🐟 Sell a fish", "store:sellrandom")
-      .row()
-      .text(`${GEAR_LINES.rod.emoji} Rod ⬆️`, "store:gear:rod")
-      .text(`${GEAR_LINES.boat.emoji} Boat ⬆️`, "store:gear:boat")
-      .text(`${WORMS.emoji} Worms`, "store:gear:worms")
-      .row();
+    keyboard.text("🐟 Sell a fish", "store:sellrandom");
   }
-  return keyboard.text("👛 Wallet", "store:wallet");
+  if (storeUrl !== null) {
+    keyboard.url("🛒 Open store", storeUrl);
+  }
+  return keyboard;
 }
