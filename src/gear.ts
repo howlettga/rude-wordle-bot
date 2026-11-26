@@ -9,9 +9,10 @@
 //   🪱 Worms - one per cast, used automatically on your next /fish: half the junk. Cheap, so one tap buys
 //             one (rods and boats take a confirming second tap).
 // Tier 0 is what everyone starts with, free. Prices are in beans, set by how many fish they take to earn
-// (an average fish sells for about 7.6 beans; the sim prints this): tier 1 about 5 fish, tier 2 about 45,
-// tier 3 about 200. With one cast a day, and some fish going to the pet, the top tier takes most of a
-// year. Tier names are stored as ledger labels, but tiers are stored by number, so names can change
+// (an average fish sells for about 7.6 beans; the sim prints this). Rods: tier 1 about 5 fish, tier 2
+// about 45, tier 3 about 200. Boats cost more (about 8 / 80 / 330), since a boat is the bigger help: late
+// in a busy day, a yacht turns a fished-out lake back into a good one. With one cast a day, and some fish
+// going to the pet, a top tier takes most of a year or more. Tier names are stored as ledger labels, but tiers are stored by number, so names can change
 // freely; never reorder them.
 export type GearLine = "rod" | "boat";
 
@@ -37,9 +38,9 @@ export const GEAR_LINES: Record<GearLine, { emoji: string; pitch: string; tiers:
     pitch: "fish away from the crowd when the lake's busy",
     tiers: [
       { name: "Inner tube", price: 0, effect: 0 },
-      { name: "Rowboat", price: 40, effect: 0.25 },
-      { name: "Bass boat", price: 350, effect: 0.5 },
-      { name: "Yacht", price: 1500, effect: 0.75 },
+      { name: "Rowboat", price: 60, effect: 0.25 },
+      { name: "Bass boat", price: 600, effect: 0.5 },
+      { name: "Yacht", price: 2500, effect: 0.75 },
     ],
   },
 };
