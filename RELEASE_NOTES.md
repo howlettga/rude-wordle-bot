@@ -6,7 +6,7 @@
 - Every fish reply from `/fish` gets a Sell button that only the catcher can use. Selling edits the reply in place.
 - Fish prices change day to day (turning over at 5am ET with the fishing day), and rare species pay more.
 - One new rare species per weight band, about 1 catch in 10: goldfish, blobfish, koi, electric eel, alligator gar, and coelacanth. Anything from 40 lb up can very occasionally be a megalodon (about 1 fish in 1,500), the rarest and most valuable catch.
-- Gear: rods (Basic → Fiberglass → Carbon → Legendary) for bigger fish, boats (Inner tube → Rowboat → Bass boat → Yacht) to fish away from a busy lake, and worms that halve the junk on your next cast. Tap a gear button once to see the price, again to buy.
+- Gear: rods (Basic → Fiberglass → Carbon → Legendary) for bigger fish, boats (Inner tube → Rowboat → Bass boat → Yacht) to fish away from a busy lake, and worms that halve the junk on your next cast. Tap Rod or Boat once to see the price and again to buy. Worms are one tap.
 - A new `store` feature switch, on by default.
 
 ## Fishing v2

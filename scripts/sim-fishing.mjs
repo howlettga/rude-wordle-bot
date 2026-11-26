@@ -161,6 +161,9 @@ console.log(`  our chat lands a megalodon about every ${megalodonYears.toFixed(1
 console.log(`  a fish sells for (on a typical day): median ${pct(sales, 0.5)}, 1 in 10 ${pct(sales, 0.9)}, 1 in 100 ${pct(sales, 0.99)}, mean ${meanSale.toFixed(1)}`);
 console.log(`  our chat earns about ${(meanSale * pct(fishPerDay, 0.5)).toFixed(0)} beans a day if it sells everything`);
 console.log(`  biggest sales (1 in 1,000 fish): ${pct(sales, 0.999)} beans`);
+for (const [line, { tiers }] of Object.entries(GEAR_LINES)) {
+  console.log(`  ${line}: ${tiers.slice(1).map((t) => `${t.name} ${t.price} (~${Math.round(t.price / meanSale)} fish)`).join(", ")}`);
+}
 
 // The same chat a year in, if everyone owns the top rod and boat and always has a worm.
 const geared365 = [];

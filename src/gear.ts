@@ -6,10 +6,13 @@
 //             leaderboard stays about fishing, not shopping (the sim checks records don't run away).
 //   🚣 Boat - fish away from the crowd: the lake counts only part of today's earlier casts against you.
 //             It never makes the lake better than empty, so early casters aren't beaten, only matched.
-//   🪱 Worms - one per cast, used automatically on your next /fish: half the junk.
-// Tier 0 is what everyone starts with, free. Prices are in beans. A chat earns about 20 beans a day if it
-// sells every fish (about half go to the pet), so the top tiers take months on purpose. Tier names are
-// stored as ledger labels, but tiers are stored by number, so names can change freely; never reorder them.
+//   🪱 Worms - one per cast, used automatically on your next /fish: half the junk. Cheap, so one tap buys
+//             one (rods and boats take a confirming second tap).
+// Tier 0 is what everyone starts with, free. Prices are in beans, set by how many fish they take to earn
+// (an average fish sells for about 7.6 beans; the sim prints this): tier 1 about 5 fish, tier 2 about 45,
+// tier 3 about 200. With one cast a day, and some fish going to the pet, the top tier takes most of a
+// year. Tier names are stored as ledger labels, but tiers are stored by number, so names can change
+// freely; never reorder them.
 export type GearLine = "rod" | "boat";
 
 export interface GearTier {
@@ -24,9 +27,9 @@ export const GEAR_LINES: Record<GearLine, { emoji: string; pitch: string; tiers:
     pitch: "bigger fish on every cast",
     tiers: [
       { name: "Basic rod", price: 0, effect: 1 },
-      { name: "Fiberglass rod", price: 20, effect: 1.05 },
-      { name: "Carbon rod", price: 60, effect: 1.1 },
-      { name: "Legendary rod", price: 180, effect: 1.2 },
+      { name: "Fiberglass rod", price: 40, effect: 1.05 },
+      { name: "Carbon rod", price: 350, effect: 1.1 },
+      { name: "Legendary rod", price: 1500, effect: 1.2 },
     ],
   },
   boat: {
@@ -34,9 +37,9 @@ export const GEAR_LINES: Record<GearLine, { emoji: string; pitch: string; tiers:
     pitch: "fish away from the crowd when the lake's busy",
     tiers: [
       { name: "Inner tube", price: 0, effect: 0 },
-      { name: "Rowboat", price: 25, effect: 0.25 },
-      { name: "Bass boat", price: 75, effect: 0.5 },
-      { name: "Yacht", price: 200, effect: 0.75 },
+      { name: "Rowboat", price: 40, effect: 0.25 },
+      { name: "Bass boat", price: 350, effect: 0.5 },
+      { name: "Yacht", price: 1500, effect: 0.75 },
     ],
   },
 };

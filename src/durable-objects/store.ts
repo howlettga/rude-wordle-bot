@@ -23,9 +23,9 @@ export interface StoreCard {
 
 export type StoreItem = GearLine | "worms";
 
-// A tap on one of the card's gear buttons. The first tap only quotes (CONFIRM), and a second tap on the
-// same button within BUY_CONFIRM_SECONDS buys (BOUGHT), so nobody buys anything by accident and no
-// confirmation message is ever posted.
+// A tap on one of the card's gear buttons. For a rod or boat, the first tap only quotes (CONFIRM), and a
+// second tap on the same button within BUY_CONFIRM_SECONDS buys (BOUGHT), so nobody spends hundreds of
+// beans by accident and no confirmation message is ever posted. Worms are cheap: one tap buys one.
 export type StoreTapResult =
   | { kind: "CONFIRM"; item: StoreItem; name: string; price: number; balance: number }
   | { kind: "BOUGHT"; item: StoreItem; name: string; price: number; balance: number; gear: AnglerGear }
@@ -174,7 +174,7 @@ export class Store extends DurableObject<Env> {
     const pending = this.ctx.storage.sql
       .exec<{ item: string; tapped_at: number }>(`SELECT item, tapped_at FROM pending_buys WHERE user_id = ?`, userId)
       .toArray()[0];
-    const confirming = pending?.item === item && now - pending.tapped_at <= BUY_CONFIRM_SECONDS;
+    const confirming = item === "worms" || (pending?.item === item && now - pending.tapped_at <= BUY_CONFIRM_SECONDS);
     if (balance < price) {
       this.ctx.storage.sql.exec(`DELETE FROM pending_buys WHERE user_id = ?`, userId);
       return { kind: "CANT_AFFORD", item, name, price, balance };

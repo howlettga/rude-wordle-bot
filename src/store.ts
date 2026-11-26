@@ -12,8 +12,9 @@ import { escapeHtml, random, weightArticle } from "./util.js";
 // what something costs you, your wallet) comes back as a pop-up only the tapper sees.
 //   /store -> the card: today's fish price, the latest sale or upgrade, and buttons to
 //             - sell a fish (a random one from your bucket, so it's one button: the pop-up says which)
-//             - buy your next rod or boat tier, or a worm (see gear.ts). The first tap quotes the price
-//               privately; a second tap on the same button within BUY_CONFIRM_SECONDS buys it.
+//             - buy your next rod or boat tier (see gear.ts): the first tap quotes the price privately,
+//               and a second tap on the same button within BUY_CONFIRM_SECONDS buys it
+//             - buy a worm: one tap, no confirmation (they're cheap)
 //             - check your wallet: beans, how many fish you have, and your gear
 // /fish replies also get a Sell button for that exact fish (see fishingSellButton), which only its catcher
 // can use. Selling and gear need fishing on too; with it off, the card only has the wallet. Prices live in
