@@ -5,6 +5,7 @@ import type { HeldFish } from "./durable-objects/fishing.js";
 import type { StoreCard, StoreItem, StoreTapResult } from "./durable-objects/store.js";
 import { GEAR_LINES, WORMS, type AnglerGear } from "./gear.js";
 import { formatBeanPrice, formatBeans } from "./store-math.js";
+import type { LinkPreviewOptions } from "grammy/types";
 import { escapeHtml, random, weightArticle } from "./util.js";
 import { storeAppUrl } from "./webapp/store-link.js";
 
@@ -47,9 +48,22 @@ export function fishingSellButton(catchId: number, quote: number): InlineKeyboar
 
 // What it takes to put the Open store button on a card: the bot's username (for the t.me link) and a way to sign
 // a fresh link for a chat. Built in bot.ts for the composer, and in webapp/api.ts for card edits made from the page.
+// bannerUrl is the card's banner image (see storeBannerUrl), or null for a plain text card.
 export interface StoreLinks {
   botUsername: string | undefined;
   signLink: (chatId: number) => Promise<string>;
+  bannerUrl: string | null;
+}
+
+// The card's banner: the store icon (public/app/general_store.png), shown as a large link preview above the card's
+// text. A large preview makes Telegram draw the message at full width, so the card and its buttons fill the chat
+// instead of shrinking to the card's short lines. publicUrl is this Worker's own address (the PUBLIC_URL var in
+// wrangler.jsonc); without it, no banner. Bump BANNER_VERSION after changing the image: Telegram caches previews
+// by URL, so a new query string is what makes it fetch the new one.
+const BANNER_PATH = "/app/general_store.png";
+const BANNER_VERSION = 1;
+export function storeBannerUrl(publicUrl: string | undefined): string | null {
+  return publicUrl ? `${publicUrl.replace(/\/+$/, "")}${BANNER_PATH}?v=${BANNER_VERSION}` : null;
 }
 
 // The Open store button's URL for this chat, or null (no button) if the bot has no username or signing fails, so
@@ -94,10 +108,11 @@ export class StoreComposer extends Composer<MyContext> {
       this.storage.getStoreCard(chatId),
       storeUrlFor(chatId, this.links),
     ]);
-    const { text, reply_markup } = renderStoreCard(card, fishing, storeUrl);
+    const { text, reply_markup, link_preview_options } = renderStoreCard(card, fishing, storeUrl, this.links.bannerUrl);
     const sent = await ctx.reply(text, {
       parse_mode: "HTML",
       reply_markup,
+      link_preview_options,
       ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
     });
     // Remembered so a sale or upgrade made in the store page can update this card (see webapp/api.ts). The card is
@@ -111,9 +126,9 @@ export class StoreComposer extends Composer<MyContext> {
   // signed Open store link.
   private async refreshCard(ctx: MyContext, chatId: number) {
     const [card, storeUrl] = await Promise.all([this.storage.getStoreCard(chatId), storeUrlFor(chatId, this.links)]);
-    const { text, reply_markup } = renderStoreCard(card, true, storeUrl);
+    const { text, reply_markup, link_preview_options } = renderStoreCard(card, true, storeUrl, this.links.bannerUrl);
     await ctx
-      .editMessageText(text, { parse_mode: "HTML", reply_markup })
+      .editMessageText(text, { parse_mode: "HTML", reply_markup, link_preview_options })
       .catch((err) => console.error(err)); // e.g. "message is not modified"
   }
 
@@ -297,9 +312,18 @@ function articled(name: string): string {
   return `${article.charAt(0).toUpperCase()}${article.slice(1)} ${name}`;
 }
 
-// The /store card's text (HTML) and keyboard. storeUrl null leaves out the Open store button.
-export function renderStoreCard(card: StoreCard, fishing: boolean, storeUrl: string | null): { text: string; reply_markup: InlineKeyboard } {
-  return { text: formatCard(card, fishing), reply_markup: cardKeyboard(fishing, storeUrl) };
+// The /store card's text (HTML), keyboard, and link preview. storeUrl null leaves out the Open store button; bannerUrl
+// null leaves out the banner. Every send and edit of the card passes all three, since an edit without
+// link_preview_options would drop the banner.
+export function renderStoreCard(
+  card: StoreCard,
+  fishing: boolean,
+  storeUrl: string | null,
+  bannerUrl: string | null
+): { text: string; reply_markup: InlineKeyboard; link_preview_options: LinkPreviewOptions } {
+  const link_preview_options: LinkPreviewOptions =
+    bannerUrl === null ? { is_disabled: true } : { url: bannerUrl, prefer_large_media: true, show_above_text: true };
+  return { text: formatCard(card, fishing), reply_markup: cardKeyboard(fishing, storeUrl), link_preview_options };
 }
 
 // Title, today's price, and the latest activity, each separated by a blank line:

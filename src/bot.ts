@@ -11,7 +11,7 @@ import { StockMarketComposer } from "./stock-market.js";
 import { BeanCounterComposer } from "./beans.js";
 import { FishingComposer } from "./fishing.js";
 import { PetComposer } from "./pet.js";
-import { StoreComposer } from "./store.js";
+import { StoreComposer, storeBannerUrl } from "./store.js";
 import { SpicyComposer, EasterEggComposer, RepliesComposer } from "./rude.js";
 import { signStoreLink } from "./webapp/store-link.js";
 
@@ -21,7 +21,8 @@ export class RudeBot {
   private storage: StorageService;
   private featureLookups = new WeakMap<MyContext, Promise<FeatureFlags>>();
 
-  constructor(token: string, botInfo: UserFromGetMe, storage: StorageService, ownerChatId?: number) {
+  // publicUrl: this Worker's own address (the PUBLIC_URL var), for the store card's banner image.
+  constructor(token: string, botInfo: UserFromGetMe, storage: StorageService, ownerChatId?: number, publicUrl?: string) {
     this.bot = new Bot<MyContext>(token, { botInfo });
     this.ownerChatId = ownerChatId;
     this.storage = storage;
@@ -42,10 +43,11 @@ export class RudeBot {
     this.gate("fishing", new FishingComposer(this.storage, ownerChatId, (ctx) => this.features(ctx)));
     this.gate("pet", new PetComposer(this.storage, ownerChatId), /^pet:/);
     // The store card's Open store button needs the bot's username for its t.me link, and a link signed with the
-    // token at the moment the card is posted or edited (see webapp/store-link.ts).
+    // token at the moment the card is posted or edited (see webapp/store-link.ts). Its banner needs this Worker's URL.
     const storeLinks = {
       botUsername: botInfo.username,
       signLink: (chatId: number) => signStoreLink(chatId, Math.floor(Date.now() / 1000), token),
+      bannerUrl: storeBannerUrl(publicUrl),
     };
     this.gate("store", new StoreComposer(this.storage, storeLinks), /^store:/);
 
