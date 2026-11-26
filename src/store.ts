@@ -130,13 +130,11 @@ export class StoreComposer extends Composer<MyContext> {
     const chatId = ctx.chat.id;
     const fishing = await this.fishingOn(chatId);
     const bucket = fishing ? await this.storage.getFishBucket(chatId, ctx.from.id) : [];
-    const { balance, bucketValue } = await this.storage.getWallet(chatId, ctx.from.id, bucket);
+    const balance = await this.storage.getWalletBalance(chatId, ctx.from.id);
     const lines = [`👛 You have ${formatBeans(balance)}.`];
     if (fishing) {
       lines.push(
-        bucket.length === 0
-          ? `🪣 Your bucket's empty.`
-          : `🪣 ${bucket.length} fish in your bucket, worth about ${formatBeans(bucketValue)} today.`
+        bucket.length === 0 ? `🪣 Your bucket's empty.` : `🪣 ${bucket.length} fish in your bucket.`
       );
     }
     await ctx.answerCallbackQuery({ text: lines.join("\n"), show_alert: true });

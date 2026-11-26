@@ -129,11 +129,9 @@ export class Store extends DurableObject<Env> {
     return { amount, balance };
   }
 
-  // A wallet, plus what a list of fish would fetch today, for the private Wallet pop-up.
-  async wallet(chatId: number, userId: number, fish: { species: string; weight: number }[]): Promise<{ balance: number; bucketValue: number }> {
-    const { perLb } = this.fishPrice(chatId);
-    const bucketValue = fish.reduce((sum, f) => sum + fishSalePrice(f.weight, speciesTier(f.species), perLb), 0);
-    return { balance: this.balance(userId), bucketValue };
+  // A wallet's balance, for the private Wallet pop-up.
+  async wallet(userId: number): Promise<number> {
+    return this.balance(userId);
   }
 
   private balance(userId: number): number {

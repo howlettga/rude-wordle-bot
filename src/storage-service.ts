@@ -403,8 +403,8 @@ export class StorageService {
     return this.storeStub(chatId).sellFish({ ...input, chatId });
   }
 
-  getWallet(chatId: number, userId: number, fish: { species: string; weight: number }[]): Promise<{ balance: number; bucketValue: number }> {
-    return this.storeStub(chatId).wallet(chatId, userId, fish);
+  getWalletBalance(chatId: number, userId: number): Promise<number> {
+    return this.storeStub(chatId).wallet(userId);
   }
 
   private storeStub(chatId: number) {
