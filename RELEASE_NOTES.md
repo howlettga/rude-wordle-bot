@@ -2,11 +2,12 @@
 
 ## Unreleased - General Store
 
-- New `/store` card: one shared message with buttons, like `/pet`. Sell a random fish from your bucket for beans (the pop-up tells you which one), or check your wallet in a private pop-up.
+- New `/store` card: one shared message with two buttons. **Sell a fish** sells a random fish from your bucket for beans (the pop-up tells you which one). **Open store** opens the store page.
+- The store page (a Telegram Mini App) opens over the chat: your whole bucket, today's price, your beans, gear, and worms. Pick exactly which fish to sell, or buy gear, and nothing gets posted in the group. The card's latest-activity line updates when you do.
 - Every fish reply from `/fish` gets a Sell button that only the catcher can use. Selling edits the reply in place.
 - Fish prices change day to day (turning over at 5am ET with the fishing day), and rare species pay more.
 - One new rare species per weight band, about 1 catch in 10: goldfish, blobfish, koi, electric eel, alligator gar, and coelacanth. Anything from 40 lb up can very occasionally be a megalodon (about 1 fish in 1,500), the rarest and most valuable catch.
-- Gear: rods (Basic → Fiberglass → Carbon → Legendary) for bigger fish, boats (Inner tube → Rowboat → Bass boat → Yacht) to fish away from a busy lake, and worms that halve the junk on your next cast. Tap Rod or Boat once to see the price and again to buy. Worms are one tap.
+- Gear: rods (Basic → Fiberglass → Carbon → Legendary) for bigger fish, boats (Inner tube → Rowboat → Bass boat → Yacht) to fish away from a busy lake, and worms that halve the junk on your next cast, all bought in the store page.
 - A new `store` feature switch, on by default.
 - Message in a bottle: pay 🫘5 in the store page to throw an anonymous note out to sea (close to shore, past the buoys, or out to sea, for 1 day to 2 weeks of hidden drifting). Once it washes up, someone else's `/fish` has a 35% chance of reeling it in instead of a fish and reading it to the chat. At most 3 of yours in the water at once. The card says when someone throws one, never who. Owner-only `/bottles`, `/bottlepull`, and `/bottlewho` moderate them from the owner's private chat.
 

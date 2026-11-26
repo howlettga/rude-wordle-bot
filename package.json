@@ -6,7 +6,7 @@
   "version": "2.1.0",
   "scripts": {
     "dev": "wrangler dev --tunnel",
-    "deploy": "wrangler deploy",
+    "deploy": "wrangler deploy --env=\"\"",
     "deploy:dev": "wrangler deploy --env dev",
     "sim:fishing": "node scripts/sim-fishing.mjs",
     "test:webapp": "node scripts/test-webapp.mjs"

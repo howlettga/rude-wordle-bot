@@ -2,7 +2,6 @@ Bugfixes
 
 Cleanup
 - When you /fish again, remove the Sell button from your previous catch reply, so old buttons don't pile up.
-- Update the store's command description now that it also sells gear (e.g. "store - gear up, cash in").
 
 
 Features
@@ -26,10 +25,8 @@ Store & fishing (next)
 - Two-person reels. Some big fish can't be landed alone: the cast posts "something huge is on the line" and another person has a short window to tap Help, or it gets away. Both get credit or a split.
 - Seasonal and time-based fish. Species that only bite in certain months, at night, or on certain tides/weekdays; a hint system so people learn the patterns.
 - Awards / museum. Donate your first of each species to a chat museum; collection progress, trophies for records, "first megalodon" honors.
-- Embedded store UI. A private chat with the bot via a deep link from the card (full shop, inventory, multi-step menus, nothing posted in the group), or a Telegram Mini App later.
 - Gator mechanics. A gator in the lake steals fish from buckets and might eat the pet; gator-proof gear, or a bounty to hunt it.
 - Headlines. Absurd newspaper headlines for big moments: "LOCAL MAN LANDS MEGALODON, CLAIMS IT WAS 'MOSTLY TECHNIQUE'".
-- Message in a bottle. Pay to write a message and throw it out to sea; paying more throws it farther, so it takes longer to wash up. Eventually someone (maybe in another chat) reels it in instead of a fish and opens it. Writing it needs a private place to type, so it probably depends on the embedded store UI.
 - Sell all button (cash out the whole bucket, maybe with a confirm tap).
 - Pet treats and toys in the store, so beans can go to the pet's food or mood.
 - Cosmetics: flair emoji or hats next to your name on /fishing.
