@@ -3,7 +3,19 @@ import type { BeanCounter } from "./durable-objects/bean-counter.js";
 import type { SpankChain } from "./durable-objects/spank-chain.js";
 import type { ChatPause } from "./durable-objects/chat-pause.js";
 import type { RudeMessages } from "./durable-objects/rude-messages.js";
-import type { FishSize, Fishing, FishingCastResult, FishingLeaderboard, HeldFish } from "./durable-objects/fishing.js";
+import type {
+  FishPick,
+  FishUse,
+  Fishing,
+  FishingCastResult,
+  BucketFish,
+  FishingLeaderboard,
+  HeldFish,
+  TakeFishByIdResult,
+} from "./durable-objects/fishing.js";
+import type { Store, StoreCard, StoreItem, StoreSaleResult, StoreTapResult } from "./durable-objects/store.js";
+import type { AnglerGear } from "./gear.js";
+import type { CastGear } from "./fishing-math.js";
 import type {
   Pet,
   PetAdoptResult,
@@ -52,7 +64,8 @@ export class StorageService {
     private rudeMessagesNs: DurableObjectNamespace<RudeMessages>,
     private fishingNs: DurableObjectNamespace<Fishing>,
     private petNs: DurableObjectNamespace<Pet>,
-    private petRegistryNs: DurableObjectNamespace<PetRegistry>
+    private petRegistryNs: DurableObjectNamespace<PetRegistry>,
+    private storeNs: DurableObjectNamespace<Store>
   ) {}
 
   incrementBeenCounter(name: string, by: number = 1): Promise<number> {
@@ -344,7 +357,7 @@ export class StorageService {
     return this.rudeMessagesNs.get(this.rudeMessagesNs.idFromName(`rude_messages_${chatId}`));
   }
 
-  castFishing(chatId: number, input: { userId: number; username?: string; firstName: string }): Promise<FishingCastResult> {
+  castFishing(chatId: number, input: { userId: number; username?: string; firstName: string; gear?: CastGear }): Promise<FishingCastResult> {
     return this.fishingStub(chatId).cast({ ...input, chatId });
   }
 
@@ -360,8 +373,16 @@ export class StorageService {
     return this.fishingStub(chatId).reset();
   }
 
-  takeFish(chatId: number, userId: number, size: FishSize, usedFor: string): Promise<HeldFish | null> {
-    return this.fishingStub(chatId).takeFish(userId, size, usedFor);
+  takeFish(chatId: number, userId: number, size: FishPick, usedFor: string, use: FishUse = "eaten"): Promise<HeldFish | null> {
+    return this.fishingStub(chatId).takeFish(userId, size, usedFor, use);
+  }
+
+  takeFishById(chatId: number, userId: number, fishId: number, usedFor: string, use: FishUse): Promise<TakeFishByIdResult> {
+    return this.fishingStub(chatId).takeFishById(userId, fishId, usedFor, use);
+  }
+
+  getFishBucket(chatId: number, userId: number): Promise<BucketFish[]> {
+    return this.fishingStub(chatId).bucket(userId);
   }
 
   returnFish(chatId: number, fishId: number): Promise<void> {
@@ -370,6 +391,38 @@ export class StorageService {
 
   private fishingStub(chatId: number) {
     return this.fishingNs.get(this.fishingNs.idFromName(`fishing_${chatId}`));
+  }
+
+  getStoreCard(chatId: number): Promise<StoreCard> {
+    return this.storeStub(chatId).card(chatId);
+  }
+
+  quoteFish(chatId: number, fish: { species: string; weight: number }): Promise<number> {
+    return this.storeStub(chatId).quoteFish(chatId, fish);
+  }
+
+  sellFish(chatId: number, input: { userId: number; firstName: string; fish: HeldFish }): Promise<StoreSaleResult> {
+    return this.storeStub(chatId).sellFish({ ...input, chatId });
+  }
+
+  getWallet(chatId: number, userId: number): Promise<{ balance: number; gear: AnglerGear }> {
+    return this.storeStub(chatId).wallet(userId);
+  }
+
+  getGear(chatId: number, userId: number): Promise<AnglerGear> {
+    return this.storeStub(chatId).gear(userId);
+  }
+
+  useWorm(chatId: number, userId: number): Promise<void> {
+    return this.storeStub(chatId).useWorm(userId);
+  }
+
+  tapStoreGear(chatId: number, input: { userId: number; firstName: string; item: StoreItem }): Promise<StoreTapResult> {
+    return this.storeStub(chatId).tapGear(input);
+  }
+
+  private storeStub(chatId: number) {
+    return this.storeNs.get(this.storeNs.idFromName(`store_${chatId}`));
   }
 
   getPet(chatId: number): Promise<PetLookup> {

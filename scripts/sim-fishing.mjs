@@ -1,7 +1,9 @@
 // Simulates /fish with the real math in src/fishing-math.ts (Node 24+ runs the .ts import directly), prints
 // the odds tables, and checks them against the tuning targets. Run after changing FISHING_CONFIG, the tide
-// multipliers, or the pet's fish food: `npm run sim:fishing`. Exits non-zero if a target is missed.
-import { FISHING_CONFIG, castFactors, junkChance, lakeTier, rollWeight, rotatingLine } from "../src/fishing-math.ts";
+// multipliers, the pet's fish food, the store's prices, or gear: `npm run sim:fishing`. Exits non-zero if a target is missed.
+import { FISHING_CONFIG, castFactors, junkChance, lakeTier, rollWeight, rotatingLine, speciesForWeight, speciesTier } from "../src/fishing-math.ts";
+import { STORE_CONFIG, fishPriceIndex, fishPricePerLb, fishSalePrice } from "../src/store-math.ts";
+import { GEAR_LINES, castGear } from "../src/gear.ts";
 import { HIGH_TIDE_LINES, HINT_LINES, JUNK_LINES, LAKE_LINES } from "../src/fishing-lines.ts";
 import { PET_CONFIG, foodForFish } from "../src/pet-config.ts";
 
@@ -14,9 +16,10 @@ const randomTide = () => {
   const r = Math.random();
   return r < 0.25 ? "low" : r < 0.75 ? "normal" : r < 0.95 ? "high" : "king";
 };
-const cast = (daysWaited, tide, castsToday) => {
-  const { quality } = castFactors({ daysWaited, tide, castsToday });
-  return Math.random() < junkChance(quality) ? null : rollWeight(quality);
+const TOP_GEAR = castGear({ rod: GEAR_LINES.rod.tiers.length - 1, boat: GEAR_LINES.boat.tiers.length - 1, worms: 1 }, true);
+const cast = (daysWaited, tide, castsToday, gear) => {
+  const { quality } = castFactors({ daysWaited, tide, castsToday, gear });
+  return Math.random() < junkChance(quality, gear?.junk) ? null : rollWeight(quality);
 };
 
 const failures = [];
@@ -36,14 +39,16 @@ const rows = [
   ["4+ days, 8th cast, low tide", 4, "low", 7],
   ["daily, low tide, fished out", 1, "low", 12],
   ["4+ days, 1st cast, king tide", 4, "king", 0],
+  ["4+ days, 3rd cast, top gear", 4, "normal", 2, TOP_GEAR],
+  ["4+ days, 8th cast, top gear", 4, "normal", 7, TOP_GEAR],
 ];
 const medians = {};
-for (const [label, days, tide, n] of rows) {
-  const { quality } = castFactors({ daysWaited: days, tide, castsToday: n });
+for (const [label, days, tide, n, gear] of rows) {
+  const { quality } = castFactors({ daysWaited: days, tide, castsToday: n, gear });
   const weights = Array.from({ length: 100_000 }, () => rollWeight(quality));
   medians[label] = pct(weights, 0.5);
   console.log(
-    `  ${label.padEnd(30)} ${quality.toFixed(2)}  ${(junkChance(quality) * 100).toFixed(0).padStart(3)}%  ${pct(weights, 0.5).toFixed(1).padStart(6)}  ${pct(weights, 0.9).toFixed(1).padStart(8)}  ${pct(weights, 0.99).toFixed(1).padStart(8)}`
+    `  ${label.padEnd(30)} ${quality.toFixed(2)}  ${(junkChance(quality, gear?.junk) * 100).toFixed(0).padStart(3)}%  ${pct(weights, 0.5).toFixed(1).padStart(6)}  ${pct(weights, 0.9).toFixed(1).padStart(8)}  ${pct(weights, 0.99).toFixed(1).padStart(8)}`
   );
 }
 
@@ -113,6 +118,71 @@ console.log(`  chat record after 30 days: ${pct(record30, 0.5).toFixed(0)} lb, a
 console.log(`  ${pct(fishPerDay, 0.5).toFixed(2)} fish a day; a fish averages ${meanFood.toFixed(1)} food, the pet burns ${foodPerDay.toFixed(1)} a day`);
 console.log(`  -> the pet needs ${(foodPerDay / meanFood).toFixed(2)} fish a day`);
 
+// The store: species rarity, the daily fish price, and what fish sell for.
+const normal = () => Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
+const window = Array.from({ length: STORE_CONFIG.PRICE_WINDOW_DAYS }, normal);
+const indexes = [];
+const prices = [];
+const moves = [];
+for (let day = 0; day < 200_000; day++) {
+  window.shift();
+  window.push(normal());
+  const index = fishPriceIndex(window);
+  indexes.push(index);
+  const perLb = fishPricePerLb(index);
+  if (prices.length > 0) moves.push(Math.abs(perLb / prices[prices.length - 1] - 1));
+  prices.push(perLb);
+}
+console.log(`\nStore: fish price per lb (base ${STORE_CONFIG.FISH_BASE_PER_LB})`);
+console.log(`  5% / median / 95%: ${pct(prices, 0.05)} / ${pct(prices, 0.5)} / ${pct(prices, 0.95)}; typical day-to-day move ${(pct(moves, 0.5) * 100).toFixed(0)}%`);
+
+// Fish from the chat-like rhythm above (one cast each, at the median lake position), at a typical price.
+const tiers = { common: 0, rare: 0, legendary: 0 };
+const bySpecies = {};
+const sales = [];
+for (let n = 0; n < 1_000_000; n++) {
+  const weight = cast([1, 1, 2, 3, 5][n % 5], randomTide(), n % 3);
+  if (weight === null) continue;
+  const { species } = speciesForWeight(weight);
+  const tier = speciesTier(species);
+  tiers[tier]++;
+  bySpecies[species] = (bySpecies[species] ?? 0) + 1;
+  sales.push(fishSalePrice(weight, tier, fishPricePerLb(1)));
+}
+const fishCount = tiers.common + tiers.rare + tiers.legendary;
+const oneIn = (count) => (count ? `1 in ${Math.round(fishCount / count).toLocaleString("en-US")}` : "never");
+const meanSale = sales.reduce((a, b) => a + b, 0) / sales.length;
+const specials = Object.keys(bySpecies)
+  .filter((name) => speciesTier(name) !== "common")
+  .sort((a, b) => bySpecies[b] - bySpecies[a]);
+console.log(`  rare ${((tiers.rare / fishCount) * 100).toFixed(1)}% of fish; ${specials.map((name) => `${name} ${oneIn(bySpecies[name])}`).join(", ")}`);
+const megalodonYears = fishCount / (bySpecies.megalodon ?? 0) / pct(fishPerDay, 0.5) / 365;
+console.log(`  our chat lands a megalodon about every ${megalodonYears.toFixed(1)} years`);
+console.log(`  a fish sells for (on a typical day): median ${pct(sales, 0.5)}, 1 in 10 ${pct(sales, 0.9)}, 1 in 100 ${pct(sales, 0.99)}, mean ${meanSale.toFixed(1)}`);
+console.log(`  our chat earns about ${(meanSale * pct(fishPerDay, 0.5)).toFixed(0)} beans a day if it sells everything`);
+console.log(`  biggest sales (1 in 1,000 fish): ${pct(sales, 0.999)} beans`);
+for (const [line, { tiers }] of Object.entries(GEAR_LINES)) {
+  console.log(`  ${line}: ${tiers.slice(1).map((t) => `${t.name} ${t.price} (~${Math.round(t.price / meanSale)} fish)`).join(", ")}`);
+}
+
+// The same chat a year in, if everyone owns the top rod and boat and always has a worm.
+const geared365 = [];
+for (let run = 0; run < 1000; run++) {
+  let record = OLD_RECORD;
+  const offsets = rhythms.map((r) => Math.floor(Math.random() * r));
+  for (let day = 0; day < 365; day++) {
+    const tide = randomTide();
+    rhythms
+      .filter((r, i) => day >= offsets[i] && (day - offsets[i]) % r === 0)
+      .forEach((every, n) => {
+        const weight = cast(every, tide, n, TOP_GEAR);
+        if (weight !== null) record = Math.max(record, weight);
+      });
+  }
+  geared365.push(record);
+}
+console.log(`  with everyone on top gear, the chat record after a year: ${pct(geared365, 0.5).toFixed(0)} lb`);
+
 console.log("\nTargets");
 check(medians["daily, 1st cast"] >= 8, `a daily caster's typical fish is at least 8 lb (${medians["daily, 1st cast"]})`);
 check(medians["daily, low tide, fished out"] >= 3, `the worst possible cast still has a typical fish of 3+ lb (${medians["daily, low tide, fished out"]})`);
@@ -122,7 +192,16 @@ check(["3", "4", "5"].includes(bestRhythm), `the best yearly trophy comes from a
 check(yearlyBest[1] < yearlyBest[4], `casting daily isn't the best trophy strategy (${yearlyBest[1]} vs ${yearlyBest[4]} lb)`);
 check(pct(daysToBeat, 0.5) <= 10, `the old ${OLD_RECORD} lb record usually falls within 10 days (day ${pct(daysToBeat, 0.5)})`);
 check(pct(record365, 0.5) <= 175, `records don't run away: a year in, the record is at most 175 lb (${pct(record365, 0.5).toFixed(0)})`);
+check(pct(geared365, 0.5) <= 1.35 * pct(record365, 0.5), `gear helps but doesn't take over: top-gear records stay within 35% of ungeared (${pct(geared365, 0.5).toFixed(0)} vs ${pct(record365, 0.5).toFixed(0)} lb)`);
 check(pct(fishPerDay, 0.5) >= 1.5 * (foodPerDay / meanFood), `the chat catches at least 1.5x the fish the pet needs`);
+const rareShare = tiers.rare / fishCount;
+check(rareShare >= 0.08 && rareShare <= 0.12, `about 1 fish in 10 is rare (${(rareShare * 100).toFixed(1)}%)`);
+check(specials[specials.length - 1] === "megalodon", `the megalodon is the rarest rare-or-legendary fish (${specials[specials.length - 1]})`);
+check(megalodonYears <= 3, `our chat still lands a megalodon within 3 years (${megalodonYears.toFixed(1)})`);
+const beansPerDay = meanSale * pct(fishPerDay, 0.5);
+check(beansPerDay >= 15 && beansPerDay <= 25, `our chat earns about 20 beans a day selling everything (${beansPerDay.toFixed(0)})`);
+check(pct(indexes, 0.05) >= 0.5 && pct(indexes, 0.95) <= 2, `fish prices stay between 0.5x and 2x base 90% of the time`);
+check(pct(moves, 0.5) <= 0.15, `prices drift, not jump: the typical day-to-day move is 15% or less (${(pct(moves, 0.5) * 100).toFixed(0)}%)`);
 
 // Flavor-line rotation (fishing-lines.ts): over a busy day, the lake line never repeats until the day has
 // been through every tier's whole set, and the order changes from day to day.

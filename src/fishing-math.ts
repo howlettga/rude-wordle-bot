@@ -19,6 +19,9 @@
 // Over a year, the best trophy odds come from casting every 3-5 days; casting daily lands the most fish
 // (handy for feeding the pet), just smaller ones.
 export const FISHING_CONFIG = {
+  // The fishing day (one cast each, the lake count, the tide) turns over at this Eastern hour, not midnight.
+  DAY_STARTS_HOUR_ET: 5,
+
   MEDIAN_LB: 14,
   SIGMA: 0.75,
   MIN_LB: 0.3,
@@ -55,6 +58,17 @@ export interface CastFactors {
   quality: number;
 }
 
+// What an angler's gear does to a cast (see gear.ts for where the numbers come from). quality multiplies
+// cast quality (the rod); lakeRelief is the share of today's earlier casts the lake doesn't count against
+// you (the boat: you fish away from the crowd, but never better than an empty lake); junk multiplies the
+// junk chance (worms). NO_GEAR changes nothing.
+export interface CastGear {
+  quality: number;
+  lakeRelief: number;
+  junk: number;
+}
+export const NO_GEAR: CastGear = { quality: 1, lakeRelief: 0, junk: 1 };
+
 export function waitFactor(daysWaited: number): number {
   const table = FISHING_CONFIG.WAIT_FACTOR;
   const index = Math.min(table.length, Math.max(1, Math.floor(daysWaited))) - 1;
@@ -67,16 +81,18 @@ export function lakeFactor(castsToday: number): number {
   return Math.max(LAKE_FLOOR, LAKE_START - LAKE_STEP * Math.max(0, castsToday));
 }
 
-export function castFactors(input: { daysWaited: number; tide: Tide; castsToday: number }): CastFactors {
+export function castFactors(input: { daysWaited: number; tide: Tide; castsToday: number; gear?: CastGear }): CastFactors {
+  const gear = input.gear ?? NO_GEAR;
   const wait = waitFactor(input.daysWaited);
   const tide = tideMultiplier(input.tide);
-  const lake = lakeFactor(input.castsToday);
-  return { wait, tide, lake, quality: Math.max(FISHING_CONFIG.Q_FLOOR, wait * tide * lake) };
+  const lake = lakeFactor(input.castsToday * (1 - gear.lakeRelief));
+  return { wait, tide, lake, quality: Math.max(FISHING_CONFIG.Q_FLOOR, wait * tide * lake * gear.quality) };
 }
 
-export function junkChance(quality: number): number {
+// junkMultiplier: worms (see CastGear.junk) scale the final chance down.
+export function junkChance(quality: number, junkMultiplier = 1): number {
   const { JUNK_BASE, JUNK_SLOPE, JUNK_MAX } = FISHING_CONFIG;
-  return Math.min(JUNK_MAX, Math.max(JUNK_BASE, JUNK_BASE + JUNK_SLOPE * (1 - quality)));
+  return junkMultiplier * Math.min(JUNK_MAX, Math.max(JUNK_BASE, JUNK_BASE + JUNK_SLOPE * (1 - quality)));
 }
 
 // Log-normal around MEDIAN_LB * quality. Rounded to 0.1 lb, never below MIN_LB.
@@ -140,8 +156,8 @@ const TRASH: [item: string, emoji: string][] = [
 
 // Junk instead of a fish: no weight, never on the leaderboard or in anyone's bucket, and it still uses
 // up the day's cast.
-export function rollTrash(quality: number, random: () => number = Math.random): { item: string; emoji: string } | null {
-  if (random() >= junkChance(quality)) {
+export function rollTrash(quality: number, junkMultiplier = 1, random: () => number = Math.random): { item: string; emoji: string } | null {
+  if (random() >= junkChance(quality, junkMultiplier)) {
     return null;
   }
   const [item, emoji] = TRASH[Math.floor(random() * TRASH.length)]!;
@@ -171,13 +187,12 @@ const TIDE_TIERS: { tide: Tide; below: number; multiplier: number }[] = [
   { tide: "king", below: Infinity, multiplier: 2.0 },
 ];
 
-// dayNumber: whole days since the Unix epoch, for the Eastern calendar date (so the tide turns at
-// midnight ET, along with the daily cast limit).
+// dayNumber: whole days since the Unix epoch, for the fishing day (so the tide turns at
+// DAY_STARTS_HOUR_ET, along with the daily cast limit).
 export function tideFor(secret: string, chatId: number, dayNumber: number): Tide {
   let sum = 0;
   for (let day = dayNumber - TIDE_WINDOW_DAYS + 1; day <= dayNumber; day++) {
-    const u = (cyrb53(`${secret}:${chatId}:${day}`) + 0.5) / 2 ** 53;
-    sum += inverseNormalCdf(u);
+    sum += seededNormal(`${secret}:${chatId}:${day}`);
   }
   const level = sum / Math.sqrt(TIDE_WINDOW_DAYS);
   return TIDE_TIERS.find((tier) => level < tier.below)!.tide;
@@ -226,20 +241,87 @@ function cyrb53(str: string): number {
 }
 
 // Species are picked by weight, so the name tells you how good the catch was (a marlin is always huge).
-const SPECIES_BANDS: { maxLb: number; species: [name: string, emoji: string][] }[] = [
-  { maxLb: 1, species: [["minnow", "🐟"], ["sunfish", "🐠"], ["perch", "🐟"]] },
-  { maxLb: 5, species: [["trout", "🐟"], ["bass", "🐟"], ["walleye", "🐟"]] },
-  { maxLb: 15, species: [["salmon", "🐟"], ["catfish", "🐟"], ["carp", "🐟"]] },
-  { maxLb: 40, species: [["pike", "🐟"], ["striped bass", "🐟"], ["mahi-mahi", "🐠"]] },
-  { maxLb: 100, species: [["muskie", "🐟"], ["halibut", "🐟"], ["tarpon", "🐡"]] },
-  { maxLb: 300, species: [["tuna", "🐟"], ["swordfish", "🗡️"], ["sturgeon", "🐟"]] },
-  { maxLb: Infinity, species: [["marlin", "🐟"], ["great white shark", "🦈"]] },
+// Within a band, weight is each species' relative odds: the commons split most catches, and each band has
+// one rare species (about 1 in 10). A species can show up in more than one band: the goldfish's own band
+// (under 1 lb) is so seldom caught that it also turns up among 1-5 lb fish, and the legendary megalodon
+// (a young one, below 300 lb) can surface from 40 lb up, so a chat sees one every year or two. The sim
+// (scripts/sim-fishing.mjs) checks that it stays the rarest of the rare and legendary fish. The catch reply never says which
+// is which; the only giveaway is what the store pays (see STORE_CONFIG.TIER_MULTIPLIER). Names are stored
+// with every catch and keyed on for prices, so never rename one; add new ones freely.
+export type FishTier = "common" | "rare" | "legendary";
+type SpeciesEntry = { name: string; emoji: string; tier: FishTier; weight: number };
+const common = (name: string, emoji: string): SpeciesEntry => ({ name, emoji, tier: "common", weight: 30 });
+const rare = (name: string, emoji: string, weight = 10): SpeciesEntry => ({ name, emoji, tier: "rare", weight });
+const megalodon = (weight: number): SpeciesEntry => ({ name: "megalodon", emoji: "🦈", tier: "legendary", weight });
+
+const SPECIES_BANDS: { maxLb: number; species: SpeciesEntry[] }[] = [
+  { maxLb: 1, species: [common("minnow", "🐟"), common("sunfish", "🐠"), common("perch", "🐟"), rare("goldfish", "🐠")] },
+  {
+    maxLb: 5,
+    species: [common("trout", "🐟"), common("bass", "🐟"), common("walleye", "🐟"), rare("blobfish", "🫠"), rare("goldfish", "🐠", 3)],
+  },
+  { maxLb: 15, species: [common("salmon", "🐟"), common("catfish", "🐟"), common("carp", "🐟"), rare("koi", "🎏")] },
+  { maxLb: 40, species: [common("pike", "🐟"), common("striped bass", "🐟"), common("mahi-mahi", "🐠"), rare("electric eel", "⚡")] },
+  {
+    maxLb: 100,
+    species: [common("muskie", "🐟"), common("halibut", "🐟"), common("tarpon", "🐡"), rare("alligator gar", "🐊"), megalodon(0.6)],
+  },
+  {
+    maxLb: 300,
+    species: [common("tuna", "🐟"), common("swordfish", "🗡️"), common("sturgeon", "🐟"), rare("coelacanth", "🦴", 15), megalodon(3)],
+  },
+  {
+    maxLb: Infinity,
+    species: [
+      { name: "marlin", emoji: "🐟", tier: "common", weight: 48.5 },
+      { name: "great white shark", emoji: "🦈", tier: "common", weight: 48.5 },
+      megalodon(20),
+    ],
+  },
 ];
 
 export function speciesForWeight(weight: number, random: () => number = Math.random): { species: string; emoji: string } {
   const band = SPECIES_BANDS.find((b) => weight < b.maxLb)!;
-  const [species, emoji] = band.species[Math.floor(random() * band.species.length)]!;
-  return { species, emoji };
+  const picked = weightedPick(band.species, random);
+  return { species: picked.name, emoji: picked.emoji };
+}
+
+// Unknown names (none today) count as common.
+export function speciesTier(species: string): FishTier {
+  for (const band of SPECIES_BANDS) {
+    const entry = band.species.find((s) => s.name === species);
+    if (entry) {
+      return entry.tier;
+    }
+  }
+  return "common";
+}
+
+function weightedPick<T extends { weight: number }>(options: T[], random: () => number): T {
+  const total = options.reduce((sum, option) => sum + option.weight, 0);
+  let roll = random() * total;
+  for (const option of options) {
+    roll -= option.weight;
+    if (roll < 0) {
+      return option;
+    }
+  }
+  return options[options.length - 1]!;
+}
+
+// The fishing day as "YYYY-MM-DD" (compares correctly as a plain string) and as whole days since the
+// epoch: the Eastern calendar date (pass easternParts(now)), except before DAY_STARTS_HOUR_ET it's still
+// the day before. Done on the wall clock rather than by subtracting hours, so DST days don't turn over an
+// hour off. The store's prices turn over with it.
+export function fishingDay(eastern: { year: number; month: number; day: number; hour: number }): { date: string; dayNumber: number } {
+  const dayNumber =
+    Date.UTC(eastern.year, eastern.month - 1, eastern.day) / 86_400_000 - (eastern.hour < FISHING_CONFIG.DAY_STARTS_HOUR_ET ? 1 : 0);
+  return { date: new Date(dayNumber * 86_400_000).toISOString().slice(0, 10), dayNumber };
+}
+
+// Normal deviates from a secret, for the tide and the store's prices: hash -> uniform -> N(0, 1).
+export function seededNormal(key: string): number {
+  return inverseNormalCdf((cyrb53(key) + 0.5) / 2 ** 53);
 }
 
 // Acklam's rational approximation of the standard normal inverse CDF (relative error < 1.2e-9), for

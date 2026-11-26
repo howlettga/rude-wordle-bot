@@ -1,9 +1,21 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../main.js";
-import { PET_CONFIG, PET_FOODS, PET_TRICKS, rollPlayOutcome, type PetRarity, type PlayOutcome } from "../pet-config.js";
+import {
+  CAR_CRASH_CHANCE,
+  CAR_TRICK,
+  PARK_TRICK,
+  PARKING_LAWSUIT_MOOD,
+  PET_CONFIG,
+  PET_FOODS,
+  PET_TRICKS,
+  rollPlayOutcome,
+  type PetRarity,
+  type PlayOutcome,
+} from "../pet-config.js";
 import { advanceMeters, petFate, type PetMeters } from "../pet-math.js";
 
-export type PetDeathCause = "starved" | "ran_away" | "put_down";
+// "overfed" is no longer caused by anything (it was briefly a 3% overfeed death), but a past pet may have it.
+export type PetDeathCause = "starved" | "ran_away" | "put_down" | "overfed" | "car_crash";
 
 export interface PetStatus {
   id: number;
@@ -24,7 +36,8 @@ export interface PetStatus {
 }
 
 // What a button press turned into: a feed (or an overfeed), a pet, or one of the random Play outcomes.
-export type PetAction = "fed" | "petted" | "overfed" | PlayOutcome;
+// "botched" is a PARK_TRICK performance by a pet that learned it before it could drive.
+export type PetAction = "fed" | "petted" | "overfed" | "botched" | PlayOutcome;
 export type PetInput = "feed" | "pet" | "play";
 
 export interface PetEulogy {
@@ -39,6 +52,7 @@ export interface PetEulogy {
   lastFedAt: number | null;
   lastPettedBy: string | null;
   lastPettedAt: number | null;
+  lastActionBy: string | null; // who did the last feed/pet/play — for a car crash, who was playing with it
   onlyPetted: string[]; // petted it, never fed it
   onlyFed: string[]; // fed it, never petted it
   tricksKnown: number;
@@ -67,6 +81,7 @@ export type PetInteractResult =
   | { result: "OK" | "OVERFED"; pet: PetStatus }
   | { result: "COOLDOWN"; pet: PetStatus; retryInSeconds: number }
   | { result: "GONE"; eulogy: PetEulogy } // died right before this tap
+  | { result: "KILLED"; eulogy: PetEulogy } // this tap killed it (performing CAR_TRICK — see CAR_CRASH_CHANCE)
   | { result: "STALE" }; // button from a card for a pet that's no longer around
 
 export interface PetGraveyardEntry {
@@ -327,6 +342,10 @@ export class Pet extends DurableObject<Env> {
         );
       } else if (kind === "trick") {
         trick = known[Math.floor(Math.random() * known.length)]!;
+        if (trick === PARK_TRICK && this.learnedParkingBeforeDriving(row.id)) {
+          kind = "botched";
+          mood = row.mood + PARKING_LAWSUIT_MOOD;
+        }
       }
     }
     food = Math.max(0, Math.min(100, food));
@@ -382,6 +401,12 @@ export class Pet extends DurableObject<Env> {
       petted ? now : null,
       input.action === "play" ? now : null
     );
+
+    // Recorded after the play above, so the eulogy knows who it was with.
+    if (kind === "trick" && trick === CAR_TRICK && Math.random() < CAR_CRASH_CHANCE) {
+      this.ctx.storage.sql.exec(`UPDATE pets SET died_at = ?, cause = 'car_crash' WHERE id = ?`, now, row.id);
+      return { result: "KILLED", eulogy: this.eulogy(row.id) };
+    }
 
     return { result: kind === "overfed" ? "OVERFED" : "OK", pet: this.status(updated) };
   }
@@ -559,10 +584,22 @@ export class Pet extends DurableObject<Env> {
       lastFedAt: row.last_fed_at,
       lastPettedBy: row.last_petted_by,
       lastPettedAt: row.last_petted_at,
+      lastActionBy: row.last_action_by,
       onlyPetted: caretakers.filter((c) => c.feeds === 0 && c.pets > 0).map((c) => c.first_name),
       onlyFed: caretakers.filter((c) => c.pets === 0 && c.feeds > 0).map((c) => c.first_name),
       tricksKnown: this.knownTricks(petId).length,
     };
+  }
+
+  // True if it knows PARK_TRICK and either can't drive (CAR_TRICK) or learned to drive afterwards.
+  private learnedParkingBeforeDriving(petId: number): boolean {
+    const learnedAt = (trick: string) =>
+      this.ctx.storage.sql
+        .exec<{ learned_at: number }>(`SELECT learned_at FROM pet_tricks WHERE pet_id = ? AND trick = ?`, petId, trick)
+        .toArray()[0]?.learned_at;
+    const park = learnedAt(PARK_TRICK);
+    const drive = learnedAt(CAR_TRICK);
+    return park !== undefined && (drive === undefined || drive > park);
   }
 
   private knownTricks(petId: number): string[] {

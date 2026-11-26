@@ -11,6 +11,7 @@ import { StockMarketComposer } from "./stock-market.js";
 import { BeanCounterComposer } from "./beans.js";
 import { FishingComposer } from "./fishing.js";
 import { PetComposer } from "./pet.js";
+import { StoreComposer } from "./store.js";
 import { SpicyComposer, EasterEggComposer, RepliesComposer } from "./rude.js";
 
 export class RudeBot {
@@ -39,6 +40,7 @@ export class RudeBot {
     this.gate("market", new StockMarketComposer(this.storage, ownerChatId), /^(buy|sell|delist|reset|option_\w+):/);
     this.gate("fishing", new FishingComposer(this.storage, ownerChatId, (ctx) => this.features(ctx)));
     this.gate("pet", new PetComposer(this.storage, ownerChatId), /^pet:/);
+    this.gate("store", new StoreComposer(this.storage), /^store:/);
 
     this.registerStart();
     this.registerMentionForwarding();

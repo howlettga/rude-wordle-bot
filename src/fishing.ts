@@ -6,7 +6,9 @@ import type { FeatureFlags } from "./features.js";
 import { rotatingLine } from "./fishing-math.js";
 import { HIGH_TIDE_LINES, HINT_LINES, JUNK_LINES, LAKE_LINES } from "./fishing-lines.js";
 import { petDesireLine } from "./pet.js";
-import { escapeHtml } from "./util.js";
+import { fishingSellButton } from "./store.js";
+import { castGear, type AnglerGear } from "./gear.js";
+import { escapeHtml, weightArticle } from "./util.js";
 
 // The "fishing" feature (see features.ts):
 //   /fish                         -> one cast per day; reports the catch, plus personal best / rank / chat
@@ -14,7 +16,11 @@ import { escapeHtml } from "./util.js";
 //                                    one flavor line: the pet begging when it's hungry or lonely, else a
 //                                    high tide, else a hint about a poor catch, else how busy the lake is
 //                                    today. The roll math (fishing-math.ts) is
-//                                    deliberately never shown, and neither is anyone's bucket.
+//                                    deliberately never shown, and buckets are private (the store's
+//                                    Wallet pop-up shows only your own).
+//                                    A fish (not junk) gets a Sell button while the store is on (see
+//                                    store.ts), the reply's only button. Store gear (gear.ts) applies to
+//                                    the cast while the store is on, and a cast uses up one worm if any.
 //   /fishing                      -> leaderboard: everyone's heaviest catch, ranked by weight
 //   /fishingwindow <days>|forever -> owner-only: how far back the leaderboard looks (default forever)
 //   /resetfishing                 -> owner-only: leaderboard starts over; nothing is deleted
@@ -48,14 +54,21 @@ export class FishingComposer extends Composer<MyContext> {
     }
 
     const chatId = ctx.chat.id;
+    const gear = await this.gear(ctx);
+    const useWorm = gear !== null && gear.worms > 0;
     const result = await this.storage.castFishing(chatId, {
       userId: ctx.from.id,
       ...(ctx.from.username !== undefined && { username: ctx.from.username }),
       firstName: ctx.from.first_name,
+      ...(gear && { gear: castGear(gear, useWorm) }),
     });
     if (!result.ok) {
       await replyToMessage(ctx, "You already fished today. Come back tomorrow.");
       return;
+    }
+    if (useWorm) {
+      // After the cast, so a cast that didn't happen never costs a worm. A failure here just means a free one.
+      await this.storage.useWorm(chatId, ctx.from.id).catch((err) => console.error("useWorm failed", err));
     }
     // Every flavor line rotates through its set (see fishing-lines.ts), keyed to this chat's day and
     // stepped by the cast count, so two casts the same day don't get the same line.
@@ -67,7 +80,7 @@ export class FishingComposer extends Composer<MyContext> {
     } else {
       const { species, emoji, weight } = result.catch;
       const weightText = weight.toFixed(1);
-      lines.push(`You caught ${article(weightText)} ${weightText} lbs ${species}! ${emoji}`);
+      lines.push(`You caught ${weightArticle(weightText)} ${weightText} lbs ${species}! ${emoji}`);
       if (result.chatRecord) {
         lines.push(`🏆 New chat record!`);
       } else if (result.previousBest === null) {
@@ -87,7 +100,40 @@ export class FishingComposer extends Composer<MyContext> {
       flavor = pick(HIGH_TIDE_LINES, "tide");
     }
     lines.push((await this.petBegging(ctx, result.kind)) ?? flavor);
-    await replyToMessage(ctx, lines.join("\n"));
+    const sellButton = result.kind === "fish" ? await this.sellButton(ctx, result.catchId, result.catch) : null;
+    await ctx.reply(lines.join("\n"), {
+      ...(ctx.message?.message_id !== undefined && { reply_to_message_id: ctx.message.message_id }),
+      ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
+      ...(sellButton && { reply_markup: sellButton }),
+    });
+  }
+
+  // This angler's store gear (rod, boat, worms; see gear.ts), or null while the store is off: gear only
+  // counts while it's on. Like the pet's begging line, a store problem never costs anyone their cast.
+  private async gear(ctx: MyContext): Promise<AnglerGear | null> {
+    try {
+      if (!ctx.chat || !ctx.from || !(await this.features(ctx)).store.enabled) {
+        return null;
+      }
+      return await this.storage.getGear(ctx.chat.id, ctx.from.id);
+    } catch (err) {
+      console.error(err);
+      return null;
+    }
+  }
+
+  // The store's Sell button for this catch, priced at today's rate. Like the pet's begging line, a store
+  // problem never costs anyone their catch reply: it just goes out without the button.
+  private async sellButton(ctx: MyContext, catchId: number, fish: { species: string; weight: number }) {
+    try {
+      if (!ctx.chat || !(await this.features(ctx)).store.enabled) {
+        return null;
+      }
+      return fishingSellButton(catchId, await this.storage.quoteFish(ctx.chat.id, fish));
+    } catch (err) {
+      console.error(err);
+      return null;
+    }
   }
 
   // The chat's pet, if it's hungry or lonely, begging at the end of the reply (see petDesireLine). A pet
@@ -167,10 +213,4 @@ export class FishingComposer extends Composer<MyContext> {
 function formatEntry(entry: FishingLeaderboardEntry, index: number): string {
   const place = MEDALS[index] ?? `${index + 1}.`;
   return `${place} ${escapeHtml(entry.firstName)} — ${entry.weight.toFixed(1)} lbs ${entry.species} ${entry.emoji}`;
-}
-
-// "an 8.2 lbs", "an 11.0 lbs", "an 18.4 lbs" — every other weight reads with "a".
-function article(weightText: string): string {
-  const whole = weightText.split(".")[0]!;
-  return whole.startsWith("8") || whole === "11" || whole === "18" ? "an" : "a";
 }
