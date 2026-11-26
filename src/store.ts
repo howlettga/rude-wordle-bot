@@ -323,6 +323,9 @@ function formatCard(card: StoreCard, fishing: boolean): string {
   } else if (activity?.kind === "upgrade") {
     const { firstName, label, line } = activity;
     sections.push(`<i>${GEAR_LINES[line].emoji} ${escapeHtml(firstName)} upgraded to ${indefinite(label)} ${escapeHtml(label)}.</i>`);
+  } else if (activity?.kind === "bottle") {
+    // Anonymous on purpose: whoever threw it is never named anywhere (see bottles.ts).
+    sections.push(`<i>🍾 Someone threw a bottle out to sea.</i>`);
   }
   return sections.join("\n\n");
 }

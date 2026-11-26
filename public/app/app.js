@@ -5,12 +5,16 @@
 //   GET  /app/api/state            the player's balance, bucket (with quotes), gear, and worms
 //   POST /app/api/sell { fishId }  sell one fish
 //   POST /app/api/buy  { item }    buy the next rod or boat tier, or one worm
-// Tapping a row selects it, and Telegram's bottom button (MainButton) does the action. After every sale or purchase
-// the page re-fetches state, so it always shows what the server has.
+//   POST /app/api/bottle { text, distance }  pay for a message in a bottle and throw it out to sea
+// Tapping a row selects it, and Telegram's bottom button (MainButton) does the action. Typing a bottle note (or picking
+// how far to throw it) makes the bottle the selection instead. After every sale or purchase the page re-fetches state,
+// so it always shows what the server has.
 //
 // /app/?mock=1 runs on built-in fixture data with faked sell and buy responses, for reviewing the page in a normal
 // browser, and draws a stand-in for the bottom button (MainButton only renders inside Telegram). Extra mock switches:
-// &fishing=0 (fishing off), &empty=1 (empty bucket), &error=LINK_EXPIRED (or any error code: the state request fails).
+// &fishing=0 (fishing off), &empty=1 (empty bucket), &error=LINK_EXPIRED (or any error code: the state request fails),
+// &balance=3 (start with that many beans), &bottlelimit=1 (start with too many bottles out there). The 3rd bottle thrown
+// in a mock session is refused with a littering quip, the way the real API answers a player's 4th bottle in the water.
 //
 // All text from the API goes into the page with textContent, never innerHTML.
 "use strict";
@@ -20,6 +24,7 @@
   const OLD_FISH_DAYS = 7; // same as the card's Wallet pop-up hint (src/store.ts)
   const NOTICE_MS = 3500;
   const ERROR_NOTICE_MS = 6000;
+  const NOTICE_MS_PER_CHAR = 55; // long errors (like the littering quip) stay up long enough to read in full
   // Errors that mean the page can't be used at all; anything else is shown as a notice and the page stays up.
   const FATAL = new Set(["BAD_SESSION", "SESSION_EXPIRED", "BAD_LINK", "LINK_EXPIRED", "NOT_A_MEMBER", "STORE_OFF"]);
 
@@ -31,7 +36,8 @@
   const $ = (id) => document.getElementById(id);
 
   let state = null; // the last GET /app/api/state response
-  let selected = null; // { kind: "fish", id } | { kind: "gear", line } | { kind: "worms" }
+  let selected = null; // { kind: "fish", id } | { kind: "gear", line } | { kind: "worms" } | { kind: "bottle" }
+  let bottleDistance = null; // the picked distance id for the bottle note; kept while something else is selected
   let busy = false;
   let noticeTimer = 0;
 
@@ -51,6 +57,21 @@
 
   function plural(n, word) {
     return n.toLocaleString("en-US") + " " + word + (n === 1 ? "" : "s");
+  }
+
+  // A bottle note the way the server will see it: newlines normalized, control characters (other than newlines)
+  // dropped, runs of blank lines collapsed to one, and trimmed. Only for the counter's warning and the bottom button;
+  // the raw text is what gets sent, and the server's own cleaning has the final say.
+  function cleanNote(raw) {
+    return raw
+      .replace(/\r\n?/g, "\n")
+      .replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  function noteLines(text) {
+    return text ? text.split("\n").length : 0;
   }
 
   // A DOM element with an optional class and text (always textContent).
@@ -212,6 +233,29 @@
         },
       };
     }
+    if (selected.kind === "bottle") {
+      const bottles = state.bottles;
+      if (!bottles) return null;
+      const raw = $("bottle-text").value;
+      const text = cleanNote(raw);
+      if (!text && !bottleDistance) return null;
+      if (bottles.atLimit) return { label: "Too many bottles out there", active: false };
+      if (state.balance < bottles.price) return { label: "Not enough beans", active: false };
+      if (!text) return { label: "Write your note first", active: false };
+      if (noteLines(text) > bottles.maxLines) return { label: "Keep it to " + plural(bottles.maxLines, "line"), active: false };
+      if (!bottleDistance) return { label: "Pick how far to throw it", active: false };
+      return {
+        label: "Throw it for " + beans(bottles.price),
+        active: true,
+        path: "/app/api/bottle",
+        body: { text: raw, distance: bottleDistance },
+        clear: true,
+        after: clearBottle,
+        done() {
+          return "🍾 Off it goes. Someone will find it… eventually.";
+        },
+      };
+    }
     if (selected.kind === "worms") {
       const worms = state.worms;
       if (worms.count >= worms.max) return { label: "Your worm can is full", active: false };
@@ -250,12 +294,16 @@
     if (!action || !action.active) return;
     busy = true;
     bottom.progress(true);
+    const note = $("bottle-text");
+    note.readOnly = true; // so the note can't change under a throw in flight
+    note.blur(); // drops the on-screen keyboard, which would cover the notice
     try {
       const result = await api("POST", action.path, action.body);
       haptic("success");
       showNotice(action.done(result), false);
       if (typeof result.balance === "number") state.balance = result.balance; // in case the re-fetch fails
       if (action.clear) selected = null;
+      if (action.after) action.after();
       await refresh();
     } catch (err) {
       if (!(err instanceof ApiError)) throw err;
@@ -268,7 +316,9 @@
       await refresh(); // GONE, FISHING_OFF, CANT_AFFORD, etc.: show what the server has now
     } finally {
       busy = false;
+      note.readOnly = false;
       bottom.progress(false);
+      markSelection();
       updateBottom();
     }
   }
@@ -299,6 +349,21 @@
       bucket,
       worms: data.worms || { count: 0, max: 0, price: 0 },
       gear: Array.isArray(data.gear) ? data.gear : [],
+      bottles: normalizeBottles(data.bottles),
+    };
+  }
+
+  // null (and the section stays hidden) unless the state has a usable bottles block.
+  function normalizeBottles(bottles) {
+    if (!bottles || typeof bottles !== "object" || typeof bottles.price !== "number") return null;
+    const distances = Array.isArray(bottles.distances) ? bottles.distances.filter((d) => d && typeof d.id === "string") : [];
+    if (!distances.length) return null;
+    return {
+      price: bottles.price,
+      maxChars: typeof bottles.maxChars === "number" && bottles.maxChars > 0 ? bottles.maxChars : 200,
+      maxLines: typeof bottles.maxLines === "number" && bottles.maxLines > 0 ? bottles.maxLines : 3,
+      atLimit: bottles.atLimit === true,
+      distances,
     };
   }
 
@@ -339,6 +404,7 @@
     renderBucket();
     renderGear();
     renderWorms();
+    renderBottle();
     markSelection();
     updateBottom();
   }
@@ -445,10 +511,95 @@
     );
   }
 
+  // The note box keeps its text across re-renders; only the limits, the price, and the distance options are redrawn.
+  function renderBottle() {
+    const bottles = state.bottles;
+    $("bottle-section").hidden = !bottles;
+    if (!bottles) {
+      if (selected && selected.kind === "bottle") selected = null;
+      return;
+    }
+    $("bottle-price").textContent = "· " + beans(bottles.price) + " a bottle";
+    $("bottle-limit").hidden = !bottles.atLimit;
+    $("bottle-text").maxLength = bottles.maxChars;
+    if (bottleDistance && !bottles.distances.some((d) => d.id === bottleDistance)) bottleDistance = null;
+    $("bottle-distances").replaceChildren(
+      ...bottles.distances.map((distance) => {
+        const chip = el("button", "chip");
+        chip.type = "button";
+        chip.dataset.distance = distance.id;
+        chip.setAttribute("aria-label", distance.label + ", " + distance.hint);
+        chip.append(el("span", "chip-emoji", distance.emoji), el("span", "chip-label", distance.label), el("span", "chip-hint", distance.hint));
+        chip.addEventListener("click", () => pickDistance(distance.id));
+        return chip;
+      })
+    );
+    markDistances();
+    updateMeter();
+  }
+
+  function markDistances() {
+    for (const chip of document.querySelectorAll(".chip[data-distance]")) {
+      const on = chip.dataset.distance === bottleDistance;
+      chip.classList.toggle("selected", on);
+      chip.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+  }
+
+  // The live "0/200" counter, and a warning once the note runs past the line limit.
+  function updateMeter() {
+    const bottles = state && state.bottles;
+    if (!bottles) return;
+    const raw = $("bottle-text").value;
+    const over = noteLines(cleanNote(raw)) > bottles.maxLines;
+    $("bottle-count").textContent = raw.length.toLocaleString("en-US") + "/" + bottles.maxChars.toLocaleString("en-US");
+    $("bottle-lines").textContent = over ? "Keep it to " + plural(bottles.maxLines, "line") + "." : "";
+    $("bottle-meter").classList.toggle("over", over);
+  }
+
+  function clearBottle() {
+    $("bottle-text").value = "";
+    bottleDistance = null;
+    markDistances();
+    updateMeter();
+  }
+
+  // Typing makes the bottle the selection (replacing any fish or gear), as does coming back to a note already written.
+  function onNoteInput() {
+    updateMeter();
+    if (busy || !state || !state.bottles) return;
+    if ($("bottle-text").value.trim()) selectBottle();
+    updateBottom();
+  }
+
+  function onNoteFocus() {
+    if (busy || !state || !state.bottles || !$("bottle-text").value.trim()) return;
+    selectBottle();
+    updateBottom();
+  }
+
+  function selectBottle() {
+    if (selected && selected.kind === "bottle") return;
+    selected = { kind: "bottle" };
+    markSelection();
+  }
+
+  // Picking a distance also selects the bottle. Tapping the picked one again keeps it: a bottle needs a distance.
+  function pickDistance(id) {
+    if (busy) return;
+    bottleDistance = id;
+    haptic("select");
+    markDistances();
+    selected = { kind: "bottle" };
+    markSelection();
+    updateBottom();
+  }
+
   function selectionKey() {
     if (!selected) return null;
     if (selected.kind === "fish") return "fish:" + selected.id;
     if (selected.kind === "gear") return "gear:" + selected.line;
+    if (selected.kind === "bottle") return "bottle";
     return "worms";
   }
 
@@ -459,6 +610,7 @@
       node.classList.toggle("selected", on);
       node.setAttribute("aria-pressed", on ? "true" : "false");
     }
+    $("bottle-compose").classList.toggle("selected", key === "bottle");
   }
 
   // Tapping a row selects it; tapping it again deselects it.
@@ -487,7 +639,8 @@
     notice.setAttribute("role", isError ? "alert" : "status");
     notice.hidden = false;
     window.clearTimeout(noticeTimer);
-    noticeTimer = window.setTimeout(hideNotice, isError ? ERROR_NOTICE_MS : NOTICE_MS);
+    const ms = isError ? Math.max(ERROR_NOTICE_MS, 1500 + text.length * NOTICE_MS_PER_CHAR) : NOTICE_MS;
+    noticeTimer = window.setTimeout(hideNotice, ms);
   }
 
   function hideNotice() {
@@ -522,15 +675,32 @@
   };
 
   // 140 beans: the Rowboat is affordable, the Carbon rod isn't. Quotes are weight * 0.38/lb * rarity (koi is rare: 3x).
+  // Same as BOTTLE_DISTANCES in src/bottles.ts.
+  const MOCK_BOTTLE_DISTANCES = [
+    { id: "shore", emoji: "🏖️", label: "Close to shore", hint: "washes up in a day or two" },
+    { id: "buoys", emoji: "🛟", label: "Past the buoys", hint: "washes up in 3 to 5 days" },
+    { id: "sea", emoji: "🌊", label: "Out to sea", hint: "washes up in a week or two" },
+  ];
+
+  // Stand-ins for LITTER_LINES in src/bottles.ts, so the refusal can be reviewed at full length.
+  const MOCK_LITTER_LINES = [
+    "🚯 You've already got 3 bottles bobbing around out there. The fish are drafting a lawsuit. Wait till someone finds one.",
+    "🚯 Three bottles in the lake is littering. Four is a Superfund site.",
+  ];
+
+  const mockBalance = Number(params.get("balance"));
+
   const mock = {
     firstName: "Galen",
-    balance: 140,
+    balance: params.has("balance") && Number.isFinite(mockBalance) && mockBalance >= 0 ? Math.floor(mockBalance) : 140,
     fishing: params.get("fishing") !== "0",
     perLb: 0.38,
     yesterdayPerLb: 0.35,
     rod: 1,
     boat: 0,
     worms: 2,
+    bottleThrows: 0, // this session's throw attempts; the 3rd is refused as littering
+    bottlesAtLimit: params.get("bottlelimit") === "1",
     bucket:
       params.get("empty") === "1"
         ? []
@@ -573,6 +743,7 @@
         bucket: mock.fishing ? mock.bucket : [],
         worms: { count: mock.worms, max: 5, price: 2 },
         gear,
+        bottles: { price: 5, maxChars: 200, maxLines: 3, atLimit: mock.bottlesAtLimit, distances: MOCK_BOTTLE_DISTANCES },
       })
     );
   }
@@ -618,6 +789,24 @@
       mock[body.item] += 1;
       return { name: next.name, price: next.price, balance: mock.balance, worms: mock.worms };
     }
+    if (method === "POST" && path === "/app/api/bottle") {
+      if (!MOCK_BOTTLE_DISTANCES.some((d) => d.id === body.distance)) fail(400, "BAD_REQUEST", "Pick how far to throw it.");
+      const text = cleanNote(typeof body.text === "string" ? body.text : "");
+      if (!text) fail(400, "BAD_REQUEST", "Write something first.");
+      if (text.length > 200) fail(400, "BAD_REQUEST", "That's too long for a bottle (200 characters max).");
+      if (noteLines(text) > 3) fail(400, "BAD_REQUEST", "Keep it to 3 lines.");
+      if (mock.balance < 5) {
+        fail(409, "CANT_AFFORD", "A bottle costs " + beans(5) + ". You have " + beans(mock.balance) + ". Sell some fish.");
+      }
+      mock.bottleThrows += 1;
+      // The real API charges first and refunds on LIMIT, so the balance ends up the same as never charging.
+      if (mock.bottlesAtLimit || mock.bottleThrows >= 3) {
+        mock.bottlesAtLimit = true;
+        fail(409, "LIMIT", MOCK_LITTER_LINES[Math.floor(Math.random() * MOCK_LITTER_LINES.length)]);
+      }
+      mock.balance -= 5;
+      return { balance: mock.balance };
+    }
     return fail(404, "NOT_FOUND", "Not found.");
   }
 
@@ -629,6 +818,8 @@
       refresh();
     });
     $("notice").addEventListener("click", hideNotice);
+    $("bottle-text").addEventListener("input", onNoteInput);
+    $("bottle-text").addEventListener("focus", onNoteFocus);
     if (MOCK) {
       document.body.classList.add("mock");
       $("mock-tag").hidden = false;

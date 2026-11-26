@@ -15,6 +15,7 @@ import {
   type CatchHint,
   type LakeTier,
 } from "../fishing-math.js";
+import { BOTTLE_CONFIG, washUpTime, type BottleDistance } from "../bottles.js";
 
 export interface FishingCatch {
   species: string;
@@ -35,6 +36,9 @@ export type FishingCastResult =
   | { ok: false; type: "ALREADY_FISHED" }
   // Junk instead of a fish (see rollTrash): not recorded anywhere, but the cast is still used up.
   | ({ ok: true; kind: "trash"; item: string; emoji: string } & CastReport)
+  // Someone's message in a bottle instead of a fish or junk (see bottles.ts): text is the note. No catch row, so
+  // nothing goes in the bucket or on the leaderboard, but the cast is still used up and counted.
+  | ({ ok: true; kind: "bottle"; text: string } & CastReport)
   | ({
       ok: true;
       kind: "fish";
@@ -68,6 +72,15 @@ export interface BucketFish extends FishingCatch {
 }
 
 export type TakeFishByIdResult = { ok: true; fish: HeldFish } | { ok: false; reason: "NOT_YOURS" | "GONE" };
+
+// What the owner's /bottles shows: every bottle still in the water, and the last few found. Never the author (see
+// bottleAuthor for that). Times are epoch seconds.
+export interface BottleListing {
+  drifting: { id: number; distance: BottleDistance; thrownAt: number; washesUpAt: number; washedUp: boolean; text: string }[];
+  found: { id: number; caughtAt: number; caughtByName: string; text: string }[];
+}
+
+export type ThrowBottleResult = { ok: true } | { ok: false; reason: "LIMIT" };
 
 export interface FishingLeaderboardEntry extends FishingCatch {
   userId: number;
@@ -176,6 +189,29 @@ export class Fishing extends DurableObject<Env> {
       );
       this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (2)`);
     }
+
+    if (version < 3) {
+      // Messages in bottles (see bottles.ts), thrown from the store page. author_* is never shown to players: it's
+      // only so nobody catches their own, for the MAX_IN_WATER limit, and for the owner's /bottlewho. Times are
+      // epoch seconds. status: 'drifting' (in the water, washed up or not), 'caught', or 'removed' (/bottlepull).
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE bottles (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          author_id INTEGER NOT NULL,
+          author_name TEXT NOT NULL,
+          text TEXT NOT NULL,
+          distance TEXT NOT NULL,
+          thrown_at INTEGER NOT NULL,
+          washes_up_at INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'drifting',
+          caught_by INTEGER,
+          caught_by_name TEXT,
+          caught_at INTEGER
+        )
+      `);
+      this.ctx.storage.sql.exec(`CREATE INDEX idx_bottles_status_washes_up ON bottles(status, washes_up_at)`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (3)`);
+    }
   }
 
   // One cast per fishing day (starting DAY_STARTS_HOUR_ET, not midnight). Days waited since the angler's last
@@ -183,6 +219,8 @@ export class Fishing extends DurableObject<Env> {
   // fishing-math.ts); a first-ever cast counts as FIRST_CAST_WAIT_DAYS. No await anywhere in here, so two
   // /fish sent at once can't both get through, or both see the same lake count.
   // gear: what the angler's store gear does to this cast (see gear.ts); none when the store is off.
+  // Once the cast is used up and counted, a washed-up bottle someone else threw may take the place of the fish or
+  // junk (see claimBottle), still with no await, so two casts at once can't both reel in the same one.
   async cast(input: { chatId: number; userId: number; username?: string; firstName: string; gear?: CastGear }): Promise<FishingCastResult> {
     const { date: today, dayNumber } = fishingDay(easternParts(new Date()));
     // Without the secret, tides just stay normal rather than becoming predictable from the source code.
@@ -214,8 +252,13 @@ export class Fishing extends DurableObject<Env> {
       today
     );
 
-    const factors = castFactors({ daysWaited, tide, castsToday, ...(input.gear && { gear: input.gear }) });
     const lake = lakeTier(castsToday);
+    const bottle = this.claimBottle(input.userId, input.firstName);
+    if (bottle !== null) {
+      return { ok: true, kind: "bottle", text: bottle, highTide, lake, hint: null, date: today, castsToday };
+    }
+
+    const factors = castFactors({ daysWaited, tide, castsToday, ...(input.gear && { gear: input.gear }) });
     const trash = rollTrash(factors.quality, input.gear?.junk);
     if (trash) {
       return { ok: true, kind: "trash", ...trash, highTide, lake, hint: hintFor(factors), date: today, castsToday };
@@ -270,6 +313,106 @@ export class Fishing extends DurableObject<Env> {
       chatRecord: weight > (previousRecord ?? 0),
       rank,
     };
+  }
+
+  // With CATCH_CHANCE, if any bottle someone else threw has washed up and nobody's found it yet, marks the oldest
+  // (by wash-up time) caught by this angler and returns its note. Otherwise null, and the cast goes on as normal.
+  // Synchronous, so nothing can run between finding the bottle and claiming it.
+  private claimBottle(userId: number, firstName: string): string | null {
+    const now = Math.floor(Date.now() / 1000);
+    const bottle = this.ctx.storage.sql
+      .exec<{ id: number; text: string }>(
+        `SELECT id, text FROM bottles WHERE status = 'drifting' AND washes_up_at <= ? AND author_id != ?
+         ORDER BY washes_up_at ASC, id ASC LIMIT 1`,
+        now,
+        userId
+      )
+      .toArray()[0];
+    if (!bottle || Math.random() >= BOTTLE_CONFIG.CATCH_CHANCE) {
+      return null;
+    }
+    this.ctx.storage.sql.exec(
+      `UPDATE bottles SET status = 'caught', caught_by = ?, caught_by_name = ?, caught_at = ? WHERE id = ?`,
+      userId,
+      firstName,
+      now,
+      bottle.id
+    );
+    return bottle.text;
+  }
+
+  // A note from the store page (the store has already charged for it; see webapp/api.ts), out into the water with a
+  // hidden wash-up time. Refused once the author has MAX_IN_WATER still drifting. No await between the count and
+  // the insert, so two throws at once can't both slip under the limit.
+  async throwBottle(input: { authorId: number; authorName: string; text: string; distance: BottleDistance }): Promise<ThrowBottleResult> {
+    if (this.drifting(input.authorId) >= BOTTLE_CONFIG.MAX_IN_WATER) {
+      return { ok: false, reason: "LIMIT" };
+    }
+    const now = Math.floor(Date.now() / 1000);
+    this.ctx.storage.sql.exec(
+      `INSERT INTO bottles (author_id, author_name, text, distance, thrown_at, washes_up_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      input.authorId,
+      input.authorName,
+      input.text,
+      input.distance,
+      now,
+      washUpTime(input.distance, now)
+    );
+    return { ok: true };
+  }
+
+  // How many of this author's bottles are still in the water (for the store page's atLimit).
+  async bottlesInWater(authorId: number): Promise<number> {
+    return this.drifting(authorId);
+  }
+
+  private drifting(authorId: number): number {
+    return this.ctx.storage.sql
+      .exec<{ count: number }>(`SELECT COUNT(*) as count FROM bottles WHERE author_id = ? AND status = 'drifting'`, authorId)
+      .one().count;
+  }
+
+  // For the owner's /bottles: everything still in the water, next to wash up first, and the 5 most recently found.
+  async listBottles(): Promise<BottleListing> {
+    const now = Math.floor(Date.now() / 1000);
+    const drifting = this.ctx.storage.sql
+      .exec<{ id: number; distance: string; thrown_at: number; washes_up_at: number; text: string }>(
+        `SELECT id, distance, thrown_at, washes_up_at, text FROM bottles WHERE status = 'drifting' ORDER BY washes_up_at ASC, id ASC`
+      )
+      .toArray()
+      .map((row) => ({
+        id: row.id,
+        distance: row.distance as BottleDistance,
+        thrownAt: row.thrown_at,
+        washesUpAt: row.washes_up_at,
+        washedUp: row.washes_up_at <= now,
+        text: row.text,
+      }));
+    const found = this.ctx.storage.sql
+      .exec<{ id: number; caught_at: number; caught_by_name: string; text: string }>(
+        `SELECT id, caught_at, caught_by_name, text FROM bottles WHERE status = 'caught' ORDER BY caught_at DESC, id DESC LIMIT 5`
+      )
+      .toArray()
+      .map((row) => ({ id: row.id, caughtAt: row.caught_at, caughtByName: row.caught_by_name, text: row.text }));
+    return { drifting, found };
+  }
+
+  // The owner's /bottlepull: takes a bottle out of the water before anyone finds it. False if it isn't drifting
+  // (already found, already pulled, or no such bottle).
+  async removeBottle(id: number): Promise<boolean> {
+    return (
+      this.ctx.storage.sql
+        .exec<{ id: number }>(`UPDATE bottles SET status = 'removed' WHERE id = ? AND status = 'drifting' RETURNING id`, id)
+        .toArray().length > 0
+    );
+  }
+
+  // The owner's /bottlewho: who wrote any bottle, whatever happened to it.
+  async bottleAuthor(id: number): Promise<{ authorName: string; authorId: number } | null> {
+    const row = this.ctx.storage.sql
+      .exec<{ author_name: string; author_id: number }>(`SELECT author_name, author_id FROM bottles WHERE id = ?`, id)
+      .toArray()[0];
+    return row ? { authorName: row.author_name, authorId: row.author_id } : null;
   }
 
   async getLeaderboard(): Promise<FishingLeaderboard> {

@@ -4,8 +4,10 @@ import { buildStorage } from "../build-storage.js";
 import type { StorageService } from "../storage-service.js";
 import type { StoreBuyResult, StoreItem } from "../durable-objects/store.js";
 import { GEAR_LINES, WORMS, type GearLine } from "../gear.js";
+import { BOTTLE_CONFIG, BOTTLE_DISTANCES, LITTER_LINES, cleanBottleText, isBottleDistance } from "../bottles.js";
 import { formatBeans } from "../store-math.js";
 import { renderStoreCard, storeUrlFor, type StoreLinks } from "../store.js";
+import { random } from "../util.js";
 import { validateInitData } from "./init-data.js";
 import { signStoreLink, verifyStoreLink } from "./store-link.js";
 
@@ -21,12 +23,16 @@ import { signStoreLink, verifyStoreLink } from "./store-link.js";
 //   GET  /app/api/state  the player's wallet, bucket (with quotes), gear and worms, and today's fish price
 //   POST /app/api/sell   { fishId } sells that fish, the same take-then-pay as the card's Sell buttons
 //   POST /app/api/buy    { item: "rod" | "boat" | "worms" } buys it now (the page asks before it calls this)
-// A sale or a rod or boat upgrade also edits the chat's latest /store card (its activity line), after the response.
+//   POST /app/api/bottle { text, distance: "shore" | "buoys" | "sea" } pays for a message in a bottle and throws it
+//                        out to sea (see bottles.ts)
+// A sale, a rod or boat upgrade, or a bottle also edits the chat's latest /store card (its activity line), after the
+// response.
 
 const ROUTES: Record<string, { method: "GET" | "POST"; handle: (session: Session, request: Request) => Promise<Response> }> = {
   "/app/api/state": { method: "GET", handle: (session) => getState(session) },
   "/app/api/sell": { method: "POST", handle: (session, request) => sell(session, request) },
   "/app/api/buy": { method: "POST", handle: (session, request) => buy(session, request) },
+  "/app/api/bottle": { method: "POST", handle: (session, request) => throwBottle(session, request) },
 };
 
 // Plain text for the player: the page shows message as it is.
@@ -142,10 +148,11 @@ async function isMember(env: Env, chatId: number, userId: number): Promise<boole
 
 async function getState(session: Session): Promise<Response> {
   const { storage, chatId, user, fishing } = session;
-  const [card, wallet, held] = await Promise.all([
+  const [card, wallet, held, bottlesOut] = await Promise.all([
     storage.getStoreCard(chatId),
     storage.getWallet(chatId, user.id),
     fishing ? storage.getFishBucket(chatId, user.id) : Promise.resolve([]),
+    fishing ? storage.countBottlesInWater(chatId, user.id) : Promise.resolve(0),
   ]);
   const quotes = held.length > 0 ? await storage.quoteFishes(chatId, held) : [];
   const bucket = held.map((fish, i) => ({
@@ -175,6 +182,14 @@ async function getState(session: Session): Promise<Response> {
     bucket,
     worms: { count: wallet.gear.worms, max: WORMS.maxHeld, price: WORMS.price },
     gear,
+    // atLimit is the only thing the page learns about the player's own bottles: there's no history, by design.
+    bottles: {
+      price: BOTTLE_CONFIG.PRICE,
+      maxChars: BOTTLE_CONFIG.MAX_CHARS,
+      maxLines: BOTTLE_CONFIG.MAX_LINES,
+      atLimit: bottlesOut >= BOTTLE_CONFIG.MAX_IN_WATER,
+      distances: Object.entries(BOTTLE_DISTANCES).map(([id, { emoji, label, hint }]) => ({ id, emoji, label, hint })),
+    },
   });
 }
 
@@ -243,6 +258,55 @@ async function buy(session: Session, request: Request): Promise<Response> {
   return json(200, { name: result.name, price: result.price, balance: result.balance, worms: result.gear.worms });
 }
 
+const BOTTLE_TEXT_ERRORS = {
+  EMPTY: "Write something first.",
+  TOO_LONG: `That's too long for a bottle (${BOTTLE_CONFIG.MAX_CHARS} characters max).`,
+  TOO_MANY_LINES: `Keep it to ${BOTTLE_CONFIG.MAX_LINES} lines.`,
+} as const;
+
+// Pay first, then throw: the Store and Fishing DOs are separate, so there's no one transaction. If the throw is
+// refused (the player already has MAX_IN_WATER out, maybe from another throw a moment ago) or fails, the beans go
+// back. The card's activity line skips a refunded bottle (see Store.card).
+async function throwBottle(session: Session, request: Request): Promise<Response> {
+  const body = await readBody(request);
+  const distance = body?.distance;
+  if (!isBottleDistance(distance)) {
+    return fail(400, "BAD_REQUEST", "Pick how far to throw it.");
+  }
+  const cleaned = cleanBottleText(typeof body?.text === "string" ? body.text : "");
+  if (!cleaned.ok) {
+    return fail(400, "BAD_REQUEST", BOTTLE_TEXT_ERRORS[cleaned.reason]);
+  }
+  const { storage, chatId, user } = session;
+  if (!session.fishing) {
+    return fail(409, "FISHING_OFF", MESSAGES.FISHING_OFF);
+  }
+
+  const purchase = { userId: user.id, firstName: user.first_name, amount: BOTTLE_CONFIG.PRICE, source: "bottle", label: "Message in a bottle" };
+  const charged = await storage.chargeWallet(chatId, purchase);
+  if (!charged.ok) {
+    return fail(
+      409,
+      "CANT_AFFORD",
+      `A bottle costs ${formatBeans(BOTTLE_CONFIG.PRICE)}. You have ${formatBeans(charged.balance)}. Sell some fish.`
+    );
+  }
+  let thrown;
+  try {
+    thrown = await storage.throwBottle(chatId, { authorId: user.id, authorName: user.first_name, text: cleaned.text, distance });
+  } catch (err) {
+    await storage.refundWallet(chatId, purchase).catch((refundErr) => console.error("bottle refund failed", chatId, user.id, refundErr));
+    throw err;
+  }
+  if (!thrown.ok) {
+    await storage.refundWallet(chatId, purchase);
+    return fail(409, "LIMIT", random([...LITTER_LINES]));
+  }
+
+  refreshLatestCard(session);
+  return json(200, { balance: charged.balance });
+}
+
 // Plain text, like the card's gear pop-ups (see gearPopup in store.ts).
 function buyRefusal(result: Exclude<StoreBuyResult, { kind: "BOUGHT" }>): string {
   switch (result.kind) {
@@ -260,7 +324,7 @@ function buyRefusal(result: Exclude<StoreBuyResult, { kind: "BOUGHT" }>): string
 }
 
 // After the response goes out: puts the new activity line (and a freshly signed Open store link) on the chat's most
-// recent /store card. Older cards are left alone. Fishing is on here, or there'd have been no sale or upgrade.
+// recent /store card. Older cards are left alone. Fishing is on here, or there'd have been no sale, upgrade, or bottle.
 // Failures, like "message is not modified" or a deleted card, are only logged.
 function refreshLatestCard(session: Session) {
   const { env, ctx, storage, chatId } = session;

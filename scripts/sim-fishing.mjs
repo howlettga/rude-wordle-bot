@@ -1,11 +1,12 @@
 // Simulates /fish with the real math in src/fishing-math.ts (Node 24+ runs the .ts import directly), prints
 // the odds tables, and checks them against the tuning targets. Run after changing FISHING_CONFIG, the tide
-// multipliers, the pet's fish food, the store's prices, or gear: `npm run sim:fishing`. Exits non-zero if a target is missed.
+// multipliers, the pet's fish food, the store's prices, gear, or bottles: `npm run sim:fishing`. Exits non-zero if a target is missed.
 import { FISHING_CONFIG, castFactors, junkChance, lakeTier, rollWeight, rotatingLine, speciesForWeight, speciesTier } from "../src/fishing-math.ts";
 import { STORE_CONFIG, fishPriceIndex, fishPricePerLb, fishSalePrice } from "../src/store-math.ts";
 import { GEAR_LINES, castGear } from "../src/gear.ts";
 import { HIGH_TIDE_LINES, HINT_LINES, JUNK_LINES, LAKE_LINES } from "../src/fishing-lines.ts";
 import { PET_CONFIG, foodForFish } from "../src/pet-config.ts";
+import { BOTTLE_CONFIG, BOTTLE_DISTANCES, LITTER_LINES, cleanBottleText, washUpTime } from "../src/bottles.ts";
 
 const pct = (values, p) => {
   const sorted = [...values].sort((a, b) => a - b);
@@ -228,6 +229,59 @@ for (let day = 0; day < 200; day++) {
   }
 }
 check(lakeRepeats === 0, `no lake line repeats within a day, even ${9 + LAKE_LINES.fished_out.length} casts in (${lakeRepeats} repeats)`);
+
+// Message in a bottle (bottles.ts), in the same chat as above: once a bottle washes up, how long it bobs around
+// before someone's /fish reels it in. Each angler casts at a random time on their days, and one of them wrote it,
+// so their casts can't find it. One bottle at a time; more out at once would each wait a bit longer.
+const bottleWaits = [];
+for (let run = 0; run < 20_000; run++) {
+  const offsets = rhythms.map((r) => Math.floor(Math.random() * r));
+  const author = Math.floor(Math.random() * rhythms.length);
+  const washUp = 24 * (100 + Math.random() * 30); // hours, any time of day
+  let wait = Infinity;
+  for (let day = Math.floor(washUp / 24); wait === Infinity && day < washUp / 24 + 365; day++) {
+    const casts = rhythms
+      .map((every, i) => ({ i, every, at: (day + Math.random()) * 24 }))
+      .filter(({ i, every, at }) => i !== author && (day - offsets[i]) % every === 0 && at >= washUp)
+      .sort((a, b) => a.at - b.at);
+    const catcher = casts.find(() => Math.random() < BOTTLE_CONFIG.CATCH_CHANCE);
+    if (catcher) wait = catcher.at - washUp;
+  }
+  bottleWaits.push(wait);
+}
+console.log(`\nMessage in a bottle (${(BOTTLE_CONFIG.CATCH_CHANCE * 100).toFixed(0)}% a cast, our chat)`);
+console.log(`  a washed-up bottle is found in: median ${pct(bottleWaits, 0.5).toFixed(0)} h, 90% within ${pct(bottleWaits, 0.9).toFixed(0)} h`);
+for (const [distance, { minHours, maxHours }] of Object.entries(BOTTLE_DISTANCES)) {
+  const total = Array.from({ length: 2000 }, () => (washUpTime(distance, 0) + 3600 * pct(bottleWaits, Math.random())) / 3600);
+  console.log(`  ${distance.padEnd(5)} (${minHours}-${maxHours} h out): read about ${(pct(total, 0.5) / 24).toFixed(1)} days after it's thrown`);
+}
+
+check(pct(bottleWaits, 0.5) <= 24, `a washed-up bottle is usually found within a day (median ${pct(bottleWaits, 0.5).toFixed(0)} h)`);
+let washUpsOk = true;
+for (const [distance, { minHours, maxHours }] of Object.entries(BOTTLE_DISTANCES)) {
+  const thrownAt = 1_700_000_000;
+  const draws = [() => 0, () => 0.999_999_999_999, ...Array.from({ length: 100_000 }, () => Math.random)];
+  for (const random of draws) {
+    const at = washUpTime(distance, thrownAt, random);
+    if (!Number.isInteger(at) || at < thrownAt + minHours * 3600 || at > thrownAt + maxHours * 3600) washUpsOk = false;
+  }
+}
+check(washUpsOk, `washUpTime always lands inside its distance's range, on a whole second`);
+const cleaned = (raw) => {
+  const result = cleanBottleText(raw);
+  return result.ok ? result.text : result.reason;
+};
+check(
+  cleaned("  hi\r\nthere\u0007  ") === "hi\nthere" &&
+    cleaned("a\n\n\n\n\nb") === "a\n\nb" &&
+    cleaned(" \n\t ") === "EMPTY" &&
+    cleaned("x".repeat(BOTTLE_CONFIG.MAX_CHARS)) === "x".repeat(BOTTLE_CONFIG.MAX_CHARS) &&
+    cleaned("x".repeat(BOTTLE_CONFIG.MAX_CHARS + 1)) === "TOO_LONG" &&
+    cleaned("1\n2\n3") === "1\n2\n3" &&
+    cleaned("1\n2\n3\n4") === "TOO_MANY_LINES",
+  `cleanBottleText trims, normalizes, and enforces ${BOTTLE_CONFIG.MAX_CHARS} characters and ${BOTTLE_CONFIG.MAX_LINES} lines`
+);
+check(LITTER_LINES.length >= 4, `at least 4 littering quips (${LITTER_LINES.length})`);
 
 if (failures.length > 0) {
   console.log(`\n${failures.length} target(s) missed.`);

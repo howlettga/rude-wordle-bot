@@ -276,6 +276,146 @@ button.row:focus-visible {
   color: var(--hint);
 }
 
+/* Message in a bottle: an intro, three distance options, and the note. Kept compact so the options and the note both
+   fit above a phone's on-screen keyboard. */
+
+.compose {
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 12px 14px 14px;
+}
+
+.compose.selected {
+  background: color-mix(in srgb, var(--button) 10%, var(--card));
+  box-shadow: inset 3px 0 0 var(--button);
+}
+
+.compose-intro {
+  margin: 0;
+  font-size: 14px;
+  color: var(--hint);
+}
+
+.compose-limit {
+  margin: 6px 0 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--down);
+}
+
+.chips {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 10px 0 8px;
+}
+
+.chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  min-width: 0;
+  padding: 6px 4px 7px;
+  border: 1px solid color-mix(in srgb, var(--hint) 30%, transparent);
+  border-radius: 10px;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+  line-height: 1.2;
+  text-align: center;
+  cursor: pointer;
+}
+
+.chip:active {
+  background: color-mix(in srgb, var(--hint) 12%, var(--bg));
+}
+
+.chip:focus-visible {
+  outline: 2px solid var(--button);
+  outline-offset: 1px;
+}
+
+.chip.selected {
+  border-color: var(--button);
+  background: color-mix(in srgb, var(--button) 18%, var(--bg));
+  box-shadow: inset 0 0 0 1px var(--button);
+}
+
+.chip-emoji {
+  font-size: 18px;
+}
+
+.chip-label {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.chip-hint {
+  font-size: 11px;
+  color: var(--hint);
+  overflow-wrap: anywhere;
+}
+
+/* The counter sits inside the note's box (over its bottom padding), so it's in view whenever the note is. */
+.note-box {
+  position: relative;
+}
+
+.note {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px 26px;
+  border: 1px solid color-mix(in srgb, var(--hint) 30%, transparent);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px; /* under 16px, iOS zooms the page in on focus */
+  line-height: 1.35;
+  resize: none;
+}
+
+.note::placeholder {
+  color: var(--hint);
+}
+
+.note:focus {
+  outline: none;
+  border-color: var(--button);
+  box-shadow: 0 0 0 1px var(--button);
+}
+
+/* Opaque, so a long note scrolling inside the box doesn't show through it. */
+.note-meter {
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  bottom: 1px;
+  padding: 3px 10px 4px;
+  border-radius: 0 0 9px 9px;
+  background: var(--bg);
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--hint);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.note-count {
+  margin-left: auto;
+}
+
+.note-meter.over .note-lines,
+.note-meter.over .note-count {
+  color: var(--down);
+  font-weight: 600;
+}
+
 /* The confirmation/error toast, above Telegram's bottom button (or the mock stand-in). */
 
 .notice {

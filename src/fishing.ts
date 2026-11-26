@@ -1,13 +1,14 @@
 import { Composer } from "grammy";
 import { type MyContext, replyToMessage, replyHTML } from "./context.js";
 import type { StorageService } from "./storage-service.js";
-import type { FishingLeaderboardEntry } from "./durable-objects/fishing.js";
+import type { BottleListing, FishingLeaderboardEntry } from "./durable-objects/fishing.js";
 import type { FeatureFlags } from "./features.js";
 import { rotatingLine } from "./fishing-math.js";
 import { HIGH_TIDE_LINES, HINT_LINES, JUNK_LINES, LAKE_LINES } from "./fishing-lines.js";
 import { petDesireLine } from "./pet.js";
 import { fishingSellButton } from "./store.js";
 import { castGear, type AnglerGear } from "./gear.js";
+import { BOTTLE_DISTANCES } from "./bottles.js";
 import { escapeHtml, weightArticle } from "./util.js";
 
 // The "fishing" feature (see features.ts):
@@ -21,15 +22,31 @@ import { escapeHtml, weightArticle } from "./util.js";
 //                                    A fish (not junk) gets a Sell button while the store is on (see
 //                                    store.ts), the reply's only button. Store gear (gear.ts) applies to
 //                                    the cast while the store is on, and a cast uses up one worm if any.
+//                                    Sometimes it reels in someone's message in a bottle instead (see
+//                                    bottles.ts): the reply just reads the note out, with no button and no
+//                                    flavor line, and nothing goes in the bucket or on the leaderboard.
 //   /fishing                      -> leaderboard: everyone's heaviest catch, ranked by weight
 //   /fishingwindow <days>|forever -> owner-only: how far back the leaderboard looks (default forever)
 //   /resetfishing                 -> owner-only: leaderboard starts over; nothing is deleted
-// Owner-only commands ignore anyone else silently, same as the other owner commands.
+//   /bottles                      -> owner-only: this chat's bottles in the water and the last few found
+//   /bottlepull <id>              -> owner-only: takes a bottle out of the water before anyone finds it
+//   /bottlewho <id>               -> owner-only: who wrote that bottle
+// Owner-only commands ignore anyone else silently, same as the other owner commands. The bottle ones answer in
+// the owner's private chat, never the group, so notes and their writers don't leak, and then try to delete the
+// owner's command from the group.
 const MAX_WINDOW_DAYS = 36500;
 // Telegram rejects messages over 4096 characters; the leaderboard stops a little short and says how many
 // it left off.
 const MAX_MESSAGE_CHARS = 3900;
 const MEDALS = ["🥇", "🥈", "🥉"];
+// "Nov 26, 3:42 PM", for the owner's /bottles.
+const EASTERN_TIME = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
 
 export class FishingComposer extends Composer<MyContext> {
   constructor(
@@ -42,6 +59,9 @@ export class FishingComposer extends Composer<MyContext> {
     this.command("fishing", (ctx) => this.sendLeaderboard(ctx));
     this.command("fishingwindow", (ctx) => this.handleSetWindow(ctx));
     this.command("resetfishing", (ctx) => this.handleReset(ctx));
+    this.command("bottles", (ctx) => this.handleBottles(ctx));
+    this.command("bottlepull", (ctx) => this.handleBottlePull(ctx));
+    this.command("bottlewho", (ctx) => this.handleBottleWho(ctx));
   }
 
   private isOwner(ctx: MyContext): boolean {
@@ -69,6 +89,15 @@ export class FishingComposer extends Composer<MyContext> {
     if (useWorm) {
       // After the cast, so a cast that didn't happen never costs a worm. A failure here just means a free one.
       await this.storage.useWorm(chatId, ctx.from.id).catch((err) => console.error("useWorm failed", err));
+    }
+    if (result.kind === "bottle") {
+      // Plain text, since the note is whatever someone typed, and no link preview, so a URL in it stays just text.
+      await ctx.reply(`🍾 You reeled in a bottle! There's a note inside:\n\n"${result.text}"`, {
+        ...(ctx.message?.message_id !== undefined && { reply_to_message_id: ctx.message.message_id }),
+        ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
+        link_preview_options: { is_disabled: true },
+      });
+      return;
     }
     // Every flavor line rotates through its set (see fishing-lines.ts), keyed to this chat's day and
     // stepped by the cast count, so two casts the same day don't get the same line.
@@ -208,6 +237,108 @@ export class FishingComposer extends Composer<MyContext> {
     await this.storage.resetFishing(ctx.chat.id);
     await replyToMessage(ctx, "Fishing leaderboard reset. Earlier catches no longer count.");
   }
+
+  private async handleBottles(ctx: MyContext) {
+    if (!this.isOwner(ctx) || !ctx.chat) {
+      return;
+    }
+    const where = ctx.chat.type === "private" ? "this chat" : (ctx.chat.title ?? "this chat");
+    await this.answerOwner(ctx, formatBottles(where, await this.storage.listBottles(ctx.chat.id)));
+  }
+
+  private async handleBottlePull(ctx: MyContext) {
+    if (!this.isOwner(ctx) || !ctx.chat) {
+      return;
+    }
+    const id = bottleIdArg(ctx);
+    if (id === null) {
+      await this.answerOwner(ctx, "Usage: /bottlepull <id> (see /bottles for ids)");
+      return;
+    }
+    const removed = await this.storage.removeBottle(ctx.chat.id, id);
+    await this.answerOwner(
+      ctx,
+      removed ? `🍾 Pulled bottle #${id} out of the water. Nobody will find it.` : `Bottle #${id} isn't in the water here (found, pulled, or never thrown).`
+    );
+  }
+
+  private async handleBottleWho(ctx: MyContext) {
+    if (!this.isOwner(ctx) || !ctx.chat) {
+      return;
+    }
+    const id = bottleIdArg(ctx);
+    if (id === null) {
+      await this.answerOwner(ctx, "Usage: /bottlewho <id> (see /bottles for ids)");
+      return;
+    }
+    const author = await this.storage.getBottleAuthor(ctx.chat.id, id);
+    await this.answerOwner(
+      ctx,
+      author ? `🍾 Bottle #${id} was written by ${author.authorName} (user id ${author.authorId}).` : `There's no bottle #${id} in this chat.`
+    );
+  }
+
+  // Sends a bottle moderation answer to the owner's private chat (plain text, since notes are whatever people
+  // typed), then tries to delete the owner's command from the group so it doesn't hang around asking questions.
+  // If the DM fails (most likely the owner has never started a private chat with the bot), nothing happens in the
+  // group at all. The bot may not be allowed to delete messages there, which is fine.
+  private async answerOwner(ctx: MyContext, text: string) {
+    if (this.ownerChatId === undefined || !ctx.chat) {
+      return;
+    }
+    try {
+      await ctx.api.sendMessage(this.ownerChatId, text, { link_preview_options: { is_disabled: true } });
+    } catch (err) {
+      console.error("bottle moderation DM to the owner failed", ctx.chat.id, err);
+      return;
+    }
+    if (ctx.chat.id !== this.ownerChatId && ctx.message) {
+      await ctx.deleteMessage().catch(() => {});
+    }
+  }
+}
+
+// The id after /bottlepull or /bottlewho, or null if there isn't a sensible one.
+function bottleIdArg(ctx: MyContext): number | null {
+  const arg = String(ctx.match ?? "").trim().replace(/^#/, "");
+  const id = /^\d+$/.test(arg) ? Number(arg) : NaN;
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+function easternTime(epochSec: number): string {
+  return `${EASTERN_TIME.format(new Date(epochSec * 1000))} ET`;
+}
+
+// The owner's /bottles, in plain text. Kept under Telegram's limit like the leaderboard: whatever doesn't fit is
+// counted at the end.
+function formatBottles(where: string, listing: BottleListing): string {
+  const blocks: string[] = [];
+  blocks.push(listing.drifting.length === 0 ? "In the water: none." : `In the water (${listing.drifting.length}):`);
+  for (const bottle of listing.drifting) {
+    const { emoji, label } = BOTTLE_DISTANCES[bottle.distance] ?? { emoji: "🍾", label: bottle.distance };
+    const washUp = bottle.washedUp
+      ? `washed up ${easternTime(bottle.washesUpAt)}, waiting to be found`
+      : `washes up ${easternTime(bottle.washesUpAt)}`;
+    blocks.push(`#${bottle.id} ${emoji} ${label} · thrown ${easternTime(bottle.thrownAt)} · ${washUp}\n"${bottle.text}"`);
+  }
+  blocks.push(listing.found.length === 0 ? "Recently found: none yet." : "Recently found:");
+  for (const bottle of listing.found) {
+    blocks.push(`#${bottle.id} found by ${bottle.caughtByName}, ${easternTime(bottle.caughtAt)}\n"${bottle.text}"`);
+  }
+
+  let text = `🍾 Bottles in ${where}`;
+  let shown = 0;
+  for (const block of blocks) {
+    if (text.length + 2 + block.length > MAX_MESSAGE_CHARS) {
+      break;
+    }
+    text += `\n\n${block}`;
+    shown++;
+  }
+  if (shown < blocks.length) {
+    text += `\n\n…and ${blocks.length - shown} more that didn't fit`;
+  }
+  return text;
 }
 
 function formatEntry(entry: FishingLeaderboardEntry, index: number): string {

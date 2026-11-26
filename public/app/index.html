@@ -49,6 +49,36 @@
           <h2 class="section-title" id="worms-heading">🪱 Worms <span class="count" id="worms-count"></span></h2>
           <ul class="list" id="worms"></ul>
         </section>
+
+        <!-- Hidden until the state has a bottles block. The distance options sit above the note, so they stay in view
+             while the on-screen keyboard is up, and the counter sits inside the note's box for the same reason. -->
+        <section class="section" id="bottle-section" aria-labelledby="bottle-heading" hidden>
+          <h2 class="section-title" id="bottle-heading">🍾 Message in a bottle <span class="count" id="bottle-price"></span></h2>
+          <div class="compose" id="bottle-compose">
+            <p class="compose-intro">
+              Write a note, throw it out to sea, and someday someone in the chat will reel it in. They won't know it was you.
+            </p>
+            <p class="compose-limit" id="bottle-limit" hidden>
+              Too many of your bottles are out there already. Wait till someone finds one.
+            </p>
+            <div class="chips" id="bottle-distances" role="group" aria-label="How far to throw it"></div>
+            <div class="note-box">
+              <textarea
+                class="note"
+                id="bottle-text"
+                rows="3"
+                maxlength="200"
+                placeholder="Your note…"
+                aria-label="Your note"
+                aria-describedby="bottle-meter"
+              ></textarea>
+              <div class="note-meter" id="bottle-meter">
+                <span class="note-lines" id="bottle-lines" aria-live="polite"></span>
+                <span class="note-count" id="bottle-count">0/200</span>
+              </div>
+            </div>
+          </div>
+        </section>
       </div>
     </main>
 
