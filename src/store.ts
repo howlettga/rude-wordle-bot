@@ -307,7 +307,7 @@ export function renderStoreCard(card: StoreCard, fishing: boolean, storeUrl: str
 //
 //   🐟 Fish: 🫘0.38/lb · ▲ 9%
 //
-//   💰 Galen sold an 8.1 lb koi, 🫘9
+//   💰 Galen sold an 8.1 lb koi for 🫘9.
 function formatCard(card: StoreCard, fishing: boolean): string {
   const sections = [`🏪 <b>General Store</b>`];
   if (fishing) {
@@ -319,7 +319,7 @@ function formatCard(card: StoreCard, fishing: boolean): string {
   const activity = card.lastActivity;
   if (activity?.kind === "sale") {
     const { firstName, label, amount } = activity;
-    sections.push(`<i>💰 ${escapeHtml(firstName)} sold ${weightArticle(label)} ${escapeHtml(label)}, ${formatBeans(amount)}</i>`);
+    sections.push(`<i>💰 ${escapeHtml(firstName)} sold ${weightArticle(label)} ${escapeHtml(label)} for ${formatBeans(amount)}.</i>`);
   } else if (activity?.kind === "upgrade") {
     const { firstName, label, line } = activity;
     sections.push(`<i>${GEAR_LINES[line].emoji} ${escapeHtml(firstName)} upgraded to ${indefinite(label)} ${escapeHtml(label)}.</i>`);
