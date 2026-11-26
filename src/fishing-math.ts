@@ -19,6 +19,9 @@
 // Over a year, the best trophy odds come from casting every 3-5 days; casting daily lands the most fish
 // (handy for feeding the pet), just smaller ones.
 export const FISHING_CONFIG = {
+  // The fishing day (one cast each, the lake count, the tide) turns over at this Eastern hour, not midnight.
+  DAY_STARTS_HOUR_ET: 5,
+
   MEDIAN_LB: 14,
   SIGMA: 0.75,
   MIN_LB: 0.3,
@@ -171,8 +174,8 @@ const TIDE_TIERS: { tide: Tide; below: number; multiplier: number }[] = [
   { tide: "king", below: Infinity, multiplier: 2.0 },
 ];
 
-// dayNumber: whole days since the Unix epoch, for the Eastern calendar date (so the tide turns at
-// midnight ET, along with the daily cast limit).
+// dayNumber: whole days since the Unix epoch, for the fishing day (so the tide turns at
+// DAY_STARTS_HOUR_ET, along with the daily cast limit).
 export function tideFor(secret: string, chatId: number, dayNumber: number): Tide {
   let sum = 0;
   for (let day = dayNumber - TIDE_WINDOW_DAYS + 1; day <= dayNumber; day++) {

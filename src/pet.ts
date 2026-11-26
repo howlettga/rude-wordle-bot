@@ -211,6 +211,13 @@ export class PetComposer extends Composer<MyContext> {
         await ctx.answerCallbackQuery({ text: "Too late." });
         await this.postEulogy(ctx.api, ctx.chat.id, result.eulogy);
         return;
+      case "KILLED":
+        await ctx.answerCallbackQuery({
+          text: `🚗💥 ${result.eulogy.name} crashed the car and died. The car curse is real.`,
+          show_alert: true,
+        });
+        await this.postEulogy(ctx.api, ctx.chat.id, result.eulogy);
+        return;
       case "COOLDOWN":
         // Deliberately vague about when: it's a nudge to share, not a timer to watch. show_alert keeps it up
         // until dismissed — Telegram gives bots no control over how long a normal toast stays.
@@ -232,9 +239,11 @@ export class PetComposer extends Composer<MyContext> {
             ? overfedMessage(result.pet, ctx.from.first_name)
             : kind === "bit"
               ? bitMessage(result.pet, ctx.from.first_name)
-              : kind === "learned"
-                ? `🎓 ${escapeHtml(ctx.from.first_name)} taught <b>${escapeHtml(result.pet.name)}</b> a new trick: <b>${trickTitle(result.pet.lastAction!.trick)}</b>!`
-                : null;
+              : kind === "botched"
+                ? parkingMessage(result.pet, ctx.from.first_name)
+                : kind === "learned"
+                  ? `🎓 ${escapeHtml(ctx.from.first_name)} taught <b>${escapeHtml(result.pet.name)}</b> a new trick: <b>${trickTitle(result.pet.lastAction!.trick)}</b>!`
+                  : null;
         if (shout) {
           await this.postShout(ctx, result.pet, shout);
         }
@@ -365,6 +374,8 @@ const CAUSE_LABELS: Record<PetEulogy["cause"], string> = {
   starved: "starved",
   ran_away: "ran away",
   put_down: "put down",
+  overfed: "overfed to death",
+  car_crash: "crashed the car",
 };
 
 function petTitle(pet: { name: string; species: string; emoji: string }): string {
@@ -401,6 +412,7 @@ function actionPopup(pet: PetStatus): string {
     bit: () => `🦷 ${name} bit you!`,
     learned: () => `🎓 You taught ${name} a new trick: ${trickTitle(trick)}!`,
     trick: () => `🪄 ${trickLine(trick, name, "you", "your")}`,
+    botched: () => `💥 ${name} tried to parallel park your car, hit a parked minivan, and is now being sued. ${name} never learned to drive.`,
   };
   return popups[kind]();
 }
@@ -451,6 +463,8 @@ function lastActionLine(pet: PetStatus): string {
       return `🎓 ${who} taught ${name} a new trick: ${trickTitle(trick)}.`;
     case "trick":
       return `🪄 ${trickLine(trick, name, who, `${who}'s`)}`;
+    case "botched":
+      return `💥 ${name} botched parallel parking ${who}'s car. Lawsuit pending.`;
   }
 }
 
@@ -471,6 +485,16 @@ function bitMessage(pet: PetStatus, by: string): string {
     `🦷 ${who} tried to play with ${name}. ${name} bit ${who}.`,
     `🦷 ${name} bit ${who}. Hard.`,
     `🦷 ${who} played too rough and ${name} bit back.`,
+  ]);
+}
+
+function parkingMessage(pet: PetStatus, by: string): string {
+  const name = `<b>${escapeHtml(pet.name)}</b>`;
+  const who = escapeHtml(by);
+  return random([
+    `💥 ${name} tried to parallel park ${who}'s car and backed straight into a minivan. The owner is suing. ${name} never learned to drive.`,
+    `💥 ${name} parallel parked ${who}'s car into another car. Lawyers have been contacted.`,
+    `💥 ${name} learned to park before it learned to drive. ${who}'s car is totaled and there's a lawsuit.`,
   ]);
 }
 
@@ -559,7 +583,11 @@ function formatEulogy(e: PetEulogy): string {
       ? `🪦 ${title} has died of starvation.`
       : e.cause === "ran_away"
         ? `🧳 ${title} ran away. Nobody showed it any love.`
-        : `🪦 ${title} has been put down by management.`;
+        : e.cause === "car_crash"
+          ? `🚗💥 ${title} crashed the car and died. The car curse is real.`
+          : e.cause === "overfed"
+            ? `🤮 ${title} threw up one last time and never got back up.`
+            : `🪦 ${title} has been put down by management.`;
   const lines = [
     headline,
     `${formatDate(e.adoptedAt)} – ${formatDate(e.diedAt)} (${formatLifespan(e.diedAt - e.adoptedAt)})`,
@@ -585,6 +613,8 @@ function formatEulogy(e: PetEulogy): string {
     if (e.onlyFed.length > 0) {
       lines.push(`${listNames(e.onlyFed)} fed it but never once petted it.`);
     }
+  } else if (e.cause === "car_crash" && e.lastActionBy) {
+    lines.push(`${escapeHtml(e.lastActionBy)} was the one who handed it the keys.`);
   }
   lines.push(``, `Use /adopt to try again.`);
   return lines.join("\n");

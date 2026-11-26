@@ -5,9 +5,12 @@
 - Fishing math rebuilt around a single cast quality: how long since your last cast (full strength from 4 days on; casting daily is a mild penalty instead of a 60%-junk, 0.1 lb grind), the hidden tide, and how many casts the whole chat has already made today. The first few casts of the day get a bonus; past about the 5th, the lake is fished out for everyone. Typical fish are bigger, so the old leaderboard is beatable; tuning lives in `FISHING_CONFIG`, checked by `npm run sim:fishing`.
 - Every `/fish` reply says how busy the lake is today, and a poor catch can say why (your spot, or a low tide).
 - `/fishing` shows everyone, not just the top 10.
+- The fishing day (your one cast, the lake count, and the tide) now turns over at 5am ET instead of midnight (`DAY_STARTS_HOUR_ET`).
 - Every fish caught now goes into the catcher's hidden bucket, including everything caught before this release. The leaderboard is unaffected by what happens to a fish afterwards.
 - The pet eats fish: the Feed button is now Small / Medium / Large, taking that size from your own bucket, and bigger fish fill it more. An empty bucket gets turned away. With fishing switched off, feeding works as before.
 - The pet no longer posts hungry/starving/miserable warnings on its own; it begs in people's `/fish` replies instead. The "it's dying" warning and the eulogy still post.
+- New pet trick: Drive a car. Every time the pet performs it there's a 33% chance it crashes and dies (`CAR_CRASH_CHANCE`).
+- A pet that learned Parallel park before Drive a car botches it every time: a collision, a lawsuit, and -90 mood (`PARKING_LAWSUIT_MOOD`).
 
 ## 2.1.0 - Storage features
 

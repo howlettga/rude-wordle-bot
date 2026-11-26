@@ -70,7 +70,7 @@ export type PlayOutcome = "zoomies" | "fetch" | "bored" | "bit" | "learned" | "t
 export const PLAY_OUTCOMES: { kind: PlayOutcome; weight: number; food: number; mood: number }[] = [
   { kind: "zoomies", weight: 30, food: -15, mood: 15 },
   { kind: "fetch", weight: 30, food: -10, mood: 10 },
-  { kind: "bored", weight: 15, food: 0, mood: 0 },
+  { kind: "bored", weight: 15, food: 0, mood: -5 },
   { kind: "bit", weight: 10, food: 0, mood: -10 },
   { kind: "learned", weight: 5, food: 0, mood: 20 },
   { kind: "trick", weight: 10, food: -5, mood: 10 },
@@ -83,6 +83,14 @@ export function rollPlayOutcome(
   const options = PLAY_OUTCOMES.filter((o) => (o.kind !== "learned" || can.learn) && (o.kind !== "trick" || can.showOff));
   return weightedPick(options, random);
 }
+
+// The one trick that can kill: each time the pet performs it, this is the chance (0-1) it crashes.
+export const CAR_TRICK = "drive a car";
+export const CAR_CRASH_CHANCE = 0.33;
+// A pet that learned to parallel park before it learned to drive botches it every time it tries: a
+// collision, a lawsuit, and this much mood instead of the trick's usual change.
+export const PARK_TRICK = "parallel park";
+export const PARKING_LAWSUIT_MOOD = -90;
 
 // Tricks a pet can learn through Play. name is announced as "Galen taught Gregory a new trick: ___!"
 // (capitalized); line is how it's described
@@ -102,32 +110,34 @@ export const PET_TRICKS: { name: string; line: string }[] = [
   { name: "juggle", line: "{pet} juggled three eggs for {person}." },
   { name: "make toast", line: "{pet} made {person} toast. Slightly burnt." },
   { name: "fold laundry", line: "{pet} folded {person's} laundry." },
-  { name: "parallel park", line: "{pet} parallel parked {person's} car." },
+  { name: PARK_TRICK, line: "{pet} parallel parked {person's} car." },
   { name: "file taxes", line: "{pet} filed {person's} taxes." },
   { name: "apologize", line: "{pet} apologized to {person}. It didn't mean it." },
+  // Performing this one can kill the pet (CAR_CRASH_CHANCE); the line is how it goes when it doesn't.
+  { name: CAR_TRICK, line: "{pet} drove {person} to the store and back. Nobody died this time." },
 ];
 
 export type PetRarity = "common" | "rare" | "ultra";
 
 // Rolled at adoption. weight is relative: commons 10 each, rares 2, ultras 0.5 — about 95% / 5% / 1%.
 export const PET_SPECIES: { species: string; emoji: string; rarity: PetRarity; weight: number }[] = [
-  { species: "dog", emoji: "🐕", rarity: "common", weight: 15 },
-  { species: "cat", emoji: "🐈", rarity: "common", weight: 15 },
-  { species: "hamster", emoji: "🐹", rarity: "common", weight: 10 },
-  { species: "goldfish", emoji: "🐠", rarity: "common", weight: 10 },
-  { species: "raccoon", emoji: "🦝", rarity: "common", weight: 10 },
-  { species: "goose", emoji: "🪿", rarity: "common", weight: 10 },
-  { species: "frog", emoji: "🐸", rarity: "common", weight: 10 },
-  { species: "rabbit", emoji: "🐇", rarity: "common", weight: 10 },
-  { species: "pig", emoji: "🐖", rarity: "common", weight: 10 },
-  { species: "turtle", emoji: "🐢", rarity: "common", weight: 10 },
-  { species: "parrot", emoji: "🦜", rarity: "common", weight: 10 },
-  { species: "hedgehog", emoji: "🦔", rarity: "common", weight: 10 },
-  { species: "sloth", emoji: "🦥", rarity: "rare", weight: 2 },
-  { species: "otter", emoji: "🦦", rarity: "rare", weight: 2 },
-  { species: "flamingo", emoji: "🦩", rarity: "rare", weight: 2 },
-  { species: "dragon", emoji: "🐉", rarity: "ultra", weight: 0.5 },
-  { species: "unicorn", emoji: "🦄", rarity: "ultra", weight: 0.5 },
+  { species: "dog", emoji: "🐕", rarity: "common", weight: 10 },
+  { species: "cat", emoji: "🐈", rarity: "common", weight: 10 },
+  { species: "hamster", emoji: "🐹", rarity: "common", weight: 8 },
+  { species: "goldfish", emoji: "🐠", rarity: "common", weight: 8 },
+  { species: "raccoon", emoji: "🦝", rarity: "common", weight: 6 },
+  { species: "goose", emoji: "🪿", rarity: "common", weight: 6 },
+  { species: "frog", emoji: "🐸", rarity: "common", weight: 6 },
+  { species: "rabbit", emoji: "🐇", rarity: "common", weight: 8 },
+  { species: "pig", emoji: "🐖", rarity: "common", weight: 8 },
+  { species: "turtle", emoji: "🐢", rarity: "common", weight: 6 },
+  { species: "parrot", emoji: "🦜", rarity: "common", weight: 8 },
+  { species: "hedgehog", emoji: "🦔", rarity: "common", weight: 6 },
+  { species: "sloth", emoji: "🦥", rarity: "rare", weight: 3 },
+  { species: "otter", emoji: "🦦", rarity: "rare", weight: 3 },
+  { species: "flamingo", emoji: "🦩", rarity: "rare", weight: 3 },
+  { species: "dragon", emoji: "🐉", rarity: "ultra", weight: 0.8 },
+  { species: "unicorn", emoji: "🦄", rarity: "ultra", weight: 1.0 },
 ];
 
 export function rollSpecies(random: () => number = Math.random): (typeof PET_SPECIES)[number] {

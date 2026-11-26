@@ -151,7 +151,7 @@ export class Fishing extends DurableObject<Env> {
           casts INTEGER NOT NULL
         )
       `);
-      const today = easternDate(new Date());
+      const today = fishingDay(new Date()).date;
       this.ctx.storage.sql.exec(
         `INSERT INTO lake_days (date, casts) SELECT ?, COUNT(*) FROM anglers WHERE last_cast_date = ?`,
         today,
@@ -161,23 +161,22 @@ export class Fishing extends DurableObject<Env> {
     }
   }
 
-  // One cast per Eastern calendar day (midnight ET, same as Wordle). Days waited since the angler's last
+  // One cast per fishing day (starting DAY_STARTS_HOUR_ET, not midnight). Days waited since the angler's last
   // cast, today's tide, and how many casts the chat has already made today set the cast's quality (see
   // fishing-math.ts); a first-ever cast counts as FIRST_CAST_WAIT_DAYS. No await anywhere in here, so two
   // /fish sent at once can't both get through, or both see the same lake count.
   async cast(input: { chatId: number; userId: number; username?: string; firstName: string }): Promise<FishingCastResult> {
-    const p = easternParts(new Date());
-    const today = easternDate(new Date());
+    const { date: today, dayNumber } = fishingDay(new Date());
     // Without the secret, tides just stay normal rather than becoming predictable from the source code.
-    const tide = this.env.TIDE_SECRET
-      ? tideFor(this.env.TIDE_SECRET, input.chatId, Date.UTC(p.year, p.month - 1, p.day) / 86_400_000)
-      : "normal";
+    const tide = this.env.TIDE_SECRET ? tideFor(this.env.TIDE_SECRET, input.chatId, dayNumber) : "normal";
     const highTide = tide === "high" || tide === "king";
 
     const angler = this.ctx.storage.sql
       .exec<{ last_cast_date: string }>(`SELECT last_cast_date FROM anglers WHERE user_id = ?`, input.userId)
       .toArray()[0];
-    if (angler?.last_cast_date === today) {
+    // >= rather than ===: a cast made between midnight and the day's start, before the start moved off
+    // midnight, is stamped with what is now tomorrow's date.
+    if (angler && angler.last_cast_date >= today) {
       return { ok: false, type: "ALREADY_FISHED" };
     }
     const daysWaited = angler ? daysBetween(angler.last_cast_date, today) : FISHING_CONFIG.FIRST_CAST_WAIT_DAYS;
@@ -353,10 +352,13 @@ export class Fishing extends DurableObject<Env> {
   }
 }
 
-// The Eastern calendar date as "YYYY-MM-DD", which compares correctly as a plain string.
-function easternDate(date: Date): string {
-  const p = easternParts(date);
-  return `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
+// The fishing day as "YYYY-MM-DD" (compares correctly as a plain string) and as whole days since the
+// epoch: the Eastern calendar date, except before DAY_STARTS_HOUR_ET it's still the day before. Done on
+// the wall clock rather than by subtracting hours, so DST days don't turn over an hour off.
+function fishingDay(now: Date): { date: string; dayNumber: number } {
+  const p = easternParts(now);
+  const dayNumber = Date.UTC(p.year, p.month - 1, p.day) / 86_400_000 - (p.hour < FISHING_CONFIG.DAY_STARTS_HOUR_ET ? 1 : 0);
+  return { date: new Date(dayNumber * 86_400_000).toISOString().slice(0, 10), dayNumber };
 }
 
 // Whole calendar days between two "YYYY-MM-DD" dates.
