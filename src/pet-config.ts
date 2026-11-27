@@ -47,6 +47,18 @@ export const PET_CONFIG = {
   MISERABLE_WARNING_AT: 15,
 } as const;
 
+// The pet fund (store page): the chat pools beans for room for another pet. Every chat starts with one
+// slot (how many pets can be alive at once), and each goal reached unlocks one more, up to MAX_PET_SLOTS.
+// Anything past a goal carries into the next; once every slot is unlocked the fund closes. Slots are
+// never lost — a pet dying just frees its slot for the next /adopt. TOP_DONORS is how many names the
+// "the fund hit 🫘100!" message thanks.
+export const PET_FUND = {
+  SLOT_GOALS: [100, 750, 2500], // beans to unlock slots 2, 3, 4
+  DONATION_OPTIONS: [10, 25, 50, 100],
+  TOP_DONORS: 3,
+} as const;
+export const MAX_PET_SLOTS = 1 + PET_FUND.SLOT_GOALS.length;
+
 export function foodForFish(weight: number): number {
   const { FISH_FOOD_AT_MEDIAN, FISH_FOOD_MEDIAN_LB, FISH_FOOD_MIN, FISH_FOOD_MAX } = PET_CONFIG;
   const food = Math.round(FISH_FOOD_AT_MEDIAN * Math.sqrt(Math.max(0, weight) / FISH_FOOD_MEDIAN_LB));

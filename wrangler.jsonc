@@ -6,6 +6,10 @@
   "rules": [
     { "type": "Data", "globs": ["**/*.jpg"], "fallthrough": true }
   ],
+  // The store Mini App's page lives in public/app/ and is served at /app/. A request that matches a file is served
+  // straight from the assets without running the Worker; everything else (the webhook's POST /, /app/api/*) reaches
+  // the Worker. Keep public/ free of a root index.html so / always goes to the Worker.
+  "assets": { "directory": "./public" },
   "durable_objects": {
     "bindings": [
       { "name": "BEEN_COUNTER", "class_name": "BeenCounter" },
@@ -36,6 +40,10 @@
     { "tag": "v10", "new_sqlite_classes": ["Pet", "PetRegistry"] },
     { "tag": "v11", "new_sqlite_classes": ["Store"] }
   ],
+  // Plain (non-secret) settings. vars aren't inherited by environments, so dev sets its own below.
+  "vars": {
+    "PUBLIC_URL": "https://rude-bot.howlettga.workers.dev"
+  },
   // Cron Triggers always run in UTC (no timezone support), and every job is scheduled in Eastern time,
   // which shifts against UTC across DST. So this is one hourly trigger, and main.ts's scheduled() checks
   // the Eastern hour and runs whatever's due:
@@ -60,6 +68,38 @@
       "enabled": false,
       "persist": true,
       "head_sampling_rate": 1
+    }
+  },
+  // A separate Worker for testing (`npm run deploy:dev`), with its own Durable Objects, secrets, and test bot, so
+  // prod is never touched. Wrangler inherits rules, assets, migrations, triggers, and observability from the top
+  // level, but not durable_objects, so the bindings list is repeated here and must be kept in step with the one
+  // above. The trigger is repeated too, to make it plain that dev runs the same hourly jobs.
+  "env": {
+    "dev": {
+      "name": "rude-bot-dev",
+      "vars": {
+        "PUBLIC_URL": "https://rude-bot-dev.howlettga.workers.dev"
+      },
+      "durable_objects": {
+        "bindings": [
+          { "name": "BEEN_COUNTER", "class_name": "BeenCounter" },
+          { "name": "BEAN_COUNTER", "class_name": "BeanCounter" },
+          { "name": "SPANK_CHAIN", "class_name": "SpankChain" },
+          { "name": "WORDLE_GOLF", "class_name": "WordleGolf" },
+          { "name": "WORDLE_GOLF_REGISTRY", "class_name": "WordleGolfRegistry" },
+          { "name": "STOCK_MARKET", "class_name": "StockMarket" },
+          { "name": "STOCK_MARKET_REGISTRY", "class_name": "StockMarketRegistry" },
+          { "name": "CHAT_PAUSE", "class_name": "ChatPause" },
+          { "name": "RUDE_MESSAGES", "class_name": "RudeMessages" },
+          { "name": "FISHING", "class_name": "Fishing" },
+          { "name": "PET", "class_name": "Pet" },
+          { "name": "PET_REGISTRY", "class_name": "PetRegistry" },
+          { "name": "STORE", "class_name": "Store" }
+        ]
+      },
+      "triggers": {
+        "crons": ["0 * * * *"]
+      }
     }
   }
 }

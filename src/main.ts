@@ -13,7 +13,8 @@ import { Fishing } from "./durable-objects/fishing.js";
 import { Pet } from "./durable-objects/pet.js";
 import { PetRegistry } from "./durable-objects/pet-registry.js";
 import { Store } from "./durable-objects/store.js";
-import { StorageService } from "./storage-service.js";
+import { buildStorage } from "./build-storage.js";
+import { handleStoreApi } from "./webapp/api.js";
 import { WordleGolfComposer } from "./wordle-golf.js";
 import { StockMarketComposer } from "./stock-market.js";
 import { PetComposer } from "./pet.js";
@@ -52,30 +53,21 @@ export interface Env {
   // Seeds fishing tides (see tideFor in fishing-math.ts) and the store's daily fish prices (see
   // Store.fishPriceIndex). Unset means tides stay normal and prices stay flat.
   TIDE_SECRET?: string;
-}
-
-function buildStorage(env: Env): StorageService {
-  return new StorageService(
-    env.BEEN_COUNTER,
-    env.BEAN_COUNTER,
-    env.SPANK_CHAIN,
-    env.WORDLE_GOLF,
-    env.WORDLE_GOLF_REGISTRY,
-    env.STOCK_MARKET,
-    env.STOCK_MARKET_REGISTRY,
-    env.CHAT_PAUSE,
-    env.RUDE_MESSAGES,
-    env.FISHING,
-    env.PET,
-    env.PET_REGISTRY,
-    env.STORE
-  );
+  // This Worker's own public address (a plain var in wrangler.jsonc, different for dev and prod), for links back to
+  // itself, like the store card's banner image. Unset (e.g. under npm run dev) just means no banner.
+  PUBLIC_URL?: string;
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  // /app/api/* is the store page's API (see webapp/api.ts); the page itself is a static asset that never reaches
+  // the Worker. Everything else is a Telegram webhook update, as it always was.
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const { pathname } = new URL(request.url);
+    if (pathname === "/app/api" || pathname.startsWith("/app/api/")) {
+      return handleStoreApi(request, env, ctx);
+    }
     const ownerChatId = env.OWNER_CHAT_ID ? Number(env.OWNER_CHAT_ID) : undefined;
-    const bot = new RudeBot(env.BOT_TOKEN, JSON.parse(env.BOT_INFO), buildStorage(env), ownerChatId);
+    const bot = new RudeBot(env.BOT_TOKEN, JSON.parse(env.BOT_INFO), buildStorage(env), ownerChatId, env.PUBLIC_URL);
     return bot.handleUpdate(request);
   },
 

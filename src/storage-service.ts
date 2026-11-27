@@ -4,6 +4,7 @@ import type { SpankChain } from "./durable-objects/spank-chain.js";
 import type { ChatPause } from "./durable-objects/chat-pause.js";
 import type { RudeMessages } from "./durable-objects/rude-messages.js";
 import type {
+  BottleListing,
   FishPick,
   FishUse,
   Fishing,
@@ -12,20 +13,32 @@ import type {
   FishingLeaderboard,
   HeldFish,
   TakeFishByIdResult,
+  ThrowBottleResult,
 } from "./durable-objects/fishing.js";
-import type { Store, StoreCard, StoreItem, StoreSaleResult, StoreTapResult } from "./durable-objects/store.js";
+import type {
+  Store,
+  StoreBuyResult,
+  StoreCard,
+  StoreChargeResult,
+  StoreItem,
+  StoreSaleResult,
+  StoreTapResult,
+} from "./durable-objects/store.js";
+import type { BottleDistance } from "./bottles.js";
 import type { AnglerGear } from "./gear.js";
 import type { CastGear } from "./fishing-math.js";
 import type {
   Pet,
   PetAdoptResult,
+  PetFundDonateResult,
+  PetFundStatus,
   PetGraveyardEntry,
   PetInteractResult,
+  PetKillResult,
   PetLookup,
   PetPeek,
   PetStatus,
-  PetWarning,
-  PetEulogy,
+  PetTickResult,
 } from "./durable-objects/pet.js";
 import type { PetRegistry } from "./durable-objects/pet-registry.js";
 import { type FeatureKey, type FeatureFlags, resolveFeatures } from "./features.js";
@@ -389,6 +402,29 @@ export class StorageService {
     return this.fishingStub(chatId).returnFish(fishId);
   }
 
+  throwBottle(
+    chatId: number,
+    input: { authorId: number; authorName: string; text: string; distance: BottleDistance }
+  ): Promise<ThrowBottleResult> {
+    return this.fishingStub(chatId).throwBottle(input);
+  }
+
+  countBottlesInWater(chatId: number, authorId: number): Promise<number> {
+    return this.fishingStub(chatId).bottlesInWater(authorId);
+  }
+
+  listBottles(chatId: number): Promise<BottleListing> {
+    return this.fishingStub(chatId).listBottles();
+  }
+
+  removeBottle(chatId: number, bottleId: number): Promise<boolean> {
+    return this.fishingStub(chatId).removeBottle(bottleId);
+  }
+
+  getBottleAuthor(chatId: number, bottleId: number): Promise<{ authorName: string; authorId: number } | null> {
+    return this.fishingStub(chatId).bottleAuthor(bottleId);
+  }
+
   private fishingStub(chatId: number) {
     return this.fishingNs.get(this.fishingNs.idFromName(`fishing_${chatId}`));
   }
@@ -399,6 +435,10 @@ export class StorageService {
 
   quoteFish(chatId: number, fish: { species: string; weight: number }): Promise<number> {
     return this.storeStub(chatId).quoteFish(chatId, fish);
+  }
+
+  quoteFishes(chatId: number, fish: { species: string; weight: number }[]): Promise<number[]> {
+    return this.storeStub(chatId).quoteFishes(chatId, fish);
   }
 
   sellFish(chatId: number, input: { userId: number; firstName: string; fish: HeldFish }): Promise<StoreSaleResult> {
@@ -421,6 +461,29 @@ export class StorageService {
     return this.storeStub(chatId).tapGear(input);
   }
 
+  buyStoreGear(chatId: number, input: { userId: number; firstName: string; item: StoreItem }): Promise<StoreBuyResult> {
+    return this.storeStub(chatId).buyGear(input);
+  }
+
+  chargeWallet(
+    chatId: number,
+    input: { userId: number; firstName: string; amount: number; source: string; label: string }
+  ): Promise<StoreChargeResult> {
+    return this.storeStub(chatId).charge(input);
+  }
+
+  refundWallet(chatId: number, input: { userId: number; firstName: string; amount: number; source: string; label: string }): Promise<number> {
+    return this.storeStub(chatId).refund(input);
+  }
+
+  recordStoreCard(chatId: number, messageId: number, threadId: number | null): Promise<void> {
+    return this.storeStub(chatId).recordCard(messageId, threadId);
+  }
+
+  getLatestStoreCard(chatId: number): Promise<{ messageId: number; threadId: number | null } | null> {
+    return this.storeStub(chatId).latestCard();
+  }
+
   private storeStub(chatId: number) {
     return this.storeNs.get(this.storeNs.idFromName(`store_${chatId}`));
   }
@@ -441,7 +504,7 @@ export class StorageService {
     return this.petStub(chatId).interact(input);
   }
 
-  tickPet(chatId: number, awake: boolean): Promise<{ pet: PetStatus | null; eulogy?: PetEulogy; warnings: PetWarning[] }> {
+  tickPet(chatId: number, awake: boolean): Promise<PetTickResult> {
     return this.petStub(chatId).tick(awake);
   }
 
@@ -453,12 +516,20 @@ export class StorageService {
     return this.petStub(chatId).graveyard(limit);
   }
 
-  killPet(chatId: number): Promise<PetLookup> {
-    return this.petStub(chatId).kill();
+  killPet(chatId: number, name?: string): Promise<PetKillResult> {
+    return this.petStub(chatId).kill(name);
   }
 
   revivePet(chatId: number): Promise<PetStatus | null> {
     return this.petStub(chatId).revive();
+  }
+
+  getPetFund(chatId: number): Promise<PetFundStatus> {
+    return this.petStub(chatId).fundStatus();
+  }
+
+  donateToPetFund(chatId: number, input: { userId: number; firstName: string; amount: number }): Promise<PetFundDonateResult> {
+    return this.petStub(chatId).donateToFund(input);
   }
 
   private petStub(chatId: number) {

@@ -5,21 +5,25 @@
 //   price per lb = FISH_BASE_PER_LB * index, rounded to 0.01 (the number the /store card shows)
 //   index        = exp(PRICE_SIGMA * level), clamped to [PRICE_MIN, PRICE_MAX]
 //   level        = the average of the last PRICE_WINDOW_DAYS days' normal deviates, rescaled to N(0, 1)
-// So, like the tide, neighboring days share most of their inputs and prices drift rather than jump. Each
+// The window is short on purpose, so the market is lively: each day shares only half its input with the day before,
+// a typical day moves about a third, and about 1 day in 10 the price doubles or halves (a boom or a crash). Each
 // chat's prices come from TIDE_SECRET with their own salt (see Store.fishPriceIndex), and turn over with
 // the fishing day at 5am ET. Weight already counts linearly here, while the pet's food from a fish only
 // grows with its square root (see foodForFish), so big fish are better sold and small ones better fed.
 // At these numbers a typical fish sells for about 5 beans, and a chat landing ~2.6 fish a day earns about
-// 20 beans a day if it sells everything (the sim checks this).
+// 20 beans a day at a typical day's price if it sells everything (the sim checks this). Swingier prices average a
+// little higher than the typical day (a log-normal's mean grows with its spread), so the long-run average is about
+// 23.
 import type { FishTier } from "./fishing-math.js";
 
 export const STORE_CONFIG = {
   FISH_BASE_PER_LB: 0.35,
-  PRICE_WINDOW_DAYS: 7,
-  // At 0.35, 9 days in 10 land between about 0.56x and 1.78x base, and a typical day moves 10-13%.
-  PRICE_SIGMA: 0.35,
-  PRICE_MIN: 0.5,
-  PRICE_MAX: 2,
+  PRICE_WINDOW_DAYS: 2,
+  // With a 2-day window, 9 days in 10 land between about 0.37x and 2.7x base, a typical day moves about 37%, and
+  // about 1 day in 10 moves 100% or more.
+  PRICE_SIGMA: 0.6,
+  PRICE_MIN: 0.3,
+  PRICE_MAX: 3,
   // Never printed anywhere: people work it out from what rare fish sell for.
   TIER_MULTIPLIER: { common: 1, rare: 3, legendary: 10 } satisfies Record<FishTier, number>,
   // Even a minnow is worth something.

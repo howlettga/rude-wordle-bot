@@ -58,16 +58,16 @@ export interface CastFactors {
   quality: number;
 }
 
-// What an angler's gear does to a cast (see gear.ts for where the numbers come from). quality multiplies
-// cast quality (the rod); lakeRelief is the share of today's earlier casts the lake doesn't count against
-// you (the boat: you fish away from the crowd, but never better than an empty lake); junk multiplies the
-// junk chance (worms). NO_GEAR changes nothing.
+// What an angler's gear does to a cast (see gear.ts for where the numbers come from). rolls is how many times the
+// fish's weight is rolled, keeping the biggest (the rod; see rollCatch). lakeRelief is the share of today's earlier
+// casts the lake doesn't count against you (the boat: you fish away from the crowd, but never better than an
+// empty lake). junk multiplies the junk chance (worms). NO_GEAR changes nothing.
 export interface CastGear {
-  quality: number;
+  rolls: number;
   lakeRelief: number;
   junk: number;
 }
-export const NO_GEAR: CastGear = { quality: 1, lakeRelief: 0, junk: 1 };
+export const NO_GEAR: CastGear = { rolls: 1, lakeRelief: 0, junk: 1 };
 
 export function waitFactor(daysWaited: number): number {
   const table = FISHING_CONFIG.WAIT_FACTOR;
@@ -86,13 +86,28 @@ export function castFactors(input: { daysWaited: number; tide: Tide; castsToday:
   const wait = waitFactor(input.daysWaited);
   const tide = tideMultiplier(input.tide);
   const lake = lakeFactor(input.castsToday * (1 - gear.lakeRelief));
-  return { wait, tide, lake, quality: Math.max(FISHING_CONFIG.Q_FLOOR, wait * tide * lake * gear.quality) };
+  return { wait, tide, lake, quality: Math.max(FISHING_CONFIG.Q_FLOOR, wait * tide * lake) };
 }
 
 // junkMultiplier: worms (see CastGear.junk) scale the final chance down.
 export function junkChance(quality: number, junkMultiplier = 1): number {
   const { JUNK_BASE, JUNK_SLOPE, JUNK_MAX } = FISHING_CONFIG;
   return junkMultiplier * Math.min(JUNK_MAX, Math.max(JUNK_BASE, JUNK_BASE + JUNK_SLOPE * (1 - quality)));
+}
+
+// The catch's weight with a rod's extra rolls (CastGear.rolls): rolls the weight that many times and keeps the
+// biggest. A fractional count is a chance of one more roll: 1.5 is a second roll half the time. Keeping the best
+// of N lifts every catch a lot (the best of 2 is about 1.5x a single roll's typical fish, the best of 3 about
+// 1.85x) while lifting trophies only somewhat (a 1-in-100 fish about 1.15x and 1.3x), since the top of the curve
+// is already rare.
+export function rollCatch(quality: number, rolls = 1, random: () => number = Math.random): number {
+  const whole = Math.max(1, Math.floor(rolls));
+  const count = whole + (random() < rolls - whole ? 1 : 0);
+  let best = 0;
+  for (let i = 0; i < count; i++) {
+    best = Math.max(best, rollWeight(quality, random));
+  }
+  return best;
 }
 
 // Log-normal around MEDIAN_LB * quality. Rounded to 0.1 lb, never below MIN_LB.

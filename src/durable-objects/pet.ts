@@ -3,10 +3,12 @@ import type { Env } from "../main.js";
 import {
   CAR_CRASH_CHANCE,
   CAR_TRICK,
+  MAX_PET_SLOTS,
   PARK_TRICK,
   PARKING_LAWSUIT_MOOD,
   PET_CONFIG,
   PET_FOODS,
+  PET_FUND,
   PET_TRICKS,
   rollPlayOutcome,
   type PetRarity,
@@ -62,7 +64,7 @@ export interface PetEulogy {
 // loneliness show up as the pet begging in /fish replies instead (see peek).
 export type PetWarning = { type: "dying"; hoursLeft: number };
 
-// How the living pet is doing right now, for the begging line in /fish replies (see peek).
+// How the neediest living pet is doing right now, for the begging line in /fish replies (see peek).
 export interface PetPeek {
   name: string;
   species: string;
@@ -71,14 +73,48 @@ export interface PetPeek {
   mood: number;
 }
 
-// Anything that settles the pet can discover it died since the last look (the meters are lazy — see
-// pet-math.ts). That call returns the eulogy exactly once, and whoever made it posts it.
-export type PetLookup = { pet: PetStatus | null; eulogy?: PetEulogy };
+// Anything that settles the pets can discover one died since the last look (the meters are lazy — see
+// pet-math.ts). That call returns each eulogy exactly once, and whoever made it posts them.
+export type PetLookup = { pets: PetStatus[]; eulogies: PetEulogy[] }; // living pets, oldest first
 
-export type PetAdoptResult = { ok: true; pet: PetStatus; eulogy?: PetEulogy } | { ok: false; type: "ALREADY_HAS_PET"; pet: PetStatus };
+// How much room the chat has for pets, and how the fund toward the next slot is going (see PET_FUND).
+export interface PetFundStatus {
+  slots: number; // unlocked
+  maxSlots: number; // MAX_PET_SLOTS
+  livingPets: number;
+  raised: number; // toward the next goal
+  goal: number | null; // the next goal, or null once every slot is unlocked
+}
 
+// A slot a donation just unlocked, with who gave the most toward it (at most PET_FUND.TOP_DONORS).
+export interface PetFundUnlock {
+  slot: number;
+  goal: number;
+  topDonors: { firstName: string; amount: number }[];
+}
+
+export type PetFundDonateResult =
+  | { ok: true; fund: PetFundStatus; unlocked: PetFundUnlock[] } // usually 0 or 1 unlocks; can be more
+  | { ok: false; reason: "MAXED" } // every slot already unlocked
+  | { ok: false; reason: "TOO_MUCH"; max: number }; // more than is left across all goals
+
+export type PetAdoptResult =
+  | { ok: true; pet: PetStatus; eulogies: PetEulogy[] }
+  | { ok: false; type: "FULL"; pets: PetStatus[]; fund: PetFundStatus };
+
+export type PetTickResult = { pets: PetStatus[]; eulogies: PetEulogy[]; warnings: { petId: number; warning: PetWarning }[] };
+
+// eulogies: any deaths the kill's settle noticed on its own (posted like a lookup's), besides the one it caused.
+export type PetKillResult = { eulogies: PetEulogy[] } & (
+  | { eulogy: PetEulogy }
+  | { needsName: true; pets: string[] } // several living pets and no name: these are their names
+  | { notFound: true }
+);
+
+// livingPets on a successful tap is how many pets the chat has right now, so the card it turns into knows
+// whether to offer the way back to the summary (see pet.ts).
 export type PetInteractResult =
-  | { result: "OK" | "OVERFED"; pet: PetStatus }
+  | { result: "OK" | "OVERFED"; pet: PetStatus; livingPets: number }
   | { result: "COOLDOWN"; pet: PetStatus; retryInSeconds: number }
   | { result: "GONE"; eulogy: PetEulogy } // died right before this tap
   | { result: "KILLED"; eulogy: PetEulogy } // this tap killed it (performing CAR_TRICK — see CAR_CRASH_CHANCE)
@@ -135,8 +171,9 @@ const WARN_DYING = 3;
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 
-// One per chat (idFromName(`pet_${chatId}`)): the living pet (at most one — rows with died_at NULL),
-// every past pet for /graveyard, and per-person caretaking history for cooldowns and eulogy blame.
+// One per chat (idFromName(`pet_${chatId}`)): the living pets (rows with died_at NULL — at most as many as
+// the chat has slots), every past pet for /graveyard, per-person caretaking history for cooldowns and
+// eulogy blame, and the pet fund that buys more slots (see PET_FUND).
 export class Pet extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -232,14 +269,41 @@ export class Pet extends DurableObject<Env> {
       this.ctx.storage.sql.exec(`ALTER TABLE pets ADD COLUMN last_action_trick TEXT`);
       this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (5)`);
     }
+
+    if (version < 6) {
+      // The pet fund. slots is how many pets can be alive at once; raised counts toward the next goal, and
+      // starts over at 0 each time one is reached. A chat's existing pet (if any) is its one pet in slot 1.
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE pet_fund (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          slots INTEGER NOT NULL DEFAULT 1,
+          raised INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+      this.ctx.storage.sql.exec(`INSERT INTO pet_fund (id) VALUES (1)`);
+      // One row per donation per slot: a donation that crosses a goal is split, each part recorded against
+      // the slot it went toward, so each unlock's thank-you names who actually paid for that one.
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE fund_donations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          first_name TEXT NOT NULL,
+          amount INTEGER NOT NULL,
+          slot INTEGER NOT NULL,
+          at INTEGER NOT NULL
+        )
+      `);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (6)`);
+    }
   }
 
   async lookup(): Promise<PetLookup> {
-    const { row, eulogy } = this.settle(nowSec());
-    return { pet: row ? this.status(row) : null, ...(eulogy && { eulogy }) };
+    const { rows, eulogies } = this.settle(nowSec());
+    return { pets: rows.map((row) => this.status(row)), eulogies };
   }
 
-  // Fails if a living pet already exists — two people finishing /adopt at once can't both get one.
+  // Fails if every slot already has a living pet — two people finishing /adopt for the last slot at once
+  // can't both get one.
   async adopt(input: {
     name: string;
     species: string;
@@ -250,9 +314,10 @@ export class Pet extends DurableObject<Env> {
     threadId: number | null;
   }): Promise<PetAdoptResult> {
     const now = nowSec();
-    const { row, eulogy } = this.settle(now);
-    if (row) {
-      return { ok: false, type: "ALREADY_HAS_PET", pet: this.status(row) };
+    const { rows, eulogies } = this.settle(now);
+    const fund = this.fund();
+    if (rows.length >= fund.slots) {
+      return { ok: false, type: "FULL", pets: rows.map((row) => this.status(row)), fund: fundStatus(fund, rows.length) };
     }
 
     const inserted = this.ctx.storage.sql
@@ -271,11 +336,12 @@ export class Pet extends DurableObject<Env> {
         now
       )
       .one();
-    return { ok: true, pet: this.status(inserted), ...(eulogy && { eulogy }) };
+    return { ok: true, pet: this.status(inserted), eulogies };
   }
 
   // feedAmount: how much food a feed adds — set by the caller, since it depends on the fish being fed
-  // (see foodForFish), or PET_CONFIG.FEED_AMOUNT when the chat has fishing switched off.
+  // (see foodForFish), or PET_CONFIG.FEED_AMOUNT when the chat has fishing switched off. Settles only the
+  // pet being tapped; any others are left for the next lookup to notice.
   async interact(input: {
     petId: number;
     action: PetInput;
@@ -284,11 +350,17 @@ export class Pet extends DurableObject<Env> {
     feedAmount: number;
   }): Promise<PetInteractResult> {
     const now = nowSec();
-    const { row, eulogy } = this.settle(now);
+    const living = this.ctx.storage.sql
+      .exec<PetRow>(`SELECT * FROM pets WHERE id = ? AND died_at IS NULL`, input.petId)
+      .toArray()[0];
+    if (!living) {
+      return { result: "STALE" };
+    }
+    const { row, eulogy } = this.settleOne(living, now);
     if (eulogy) {
       return { result: "GONE", eulogy };
     }
-    if (!row || row.id !== input.petId) {
+    if (!row) {
       return { result: "STALE" };
     }
 
@@ -408,52 +480,41 @@ export class Pet extends DurableObject<Env> {
       return { result: "KILLED", eulogy: this.eulogy(row.id) };
     }
 
-    return { result: kind === "overfed" ? "OVERFED" : "OK", pet: this.status(updated) };
+    return { result: kind === "overfed" ? "OVERFED" : "OK", pet: this.status(updated), livingPets: this.livingCount(now) };
   }
 
-  // The hourly check (see PetComposer.runHourlyCheck). Settles the pet — which is where deaths get
-  // noticed if nobody's looked in a while — and returns the "dying" warning if it's newly due (once per
-  // hunger spell; a feed resets it). awake is whether it may post right now; one that comes due overnight
-  // just waits for the morning.
-  async tick(awake: boolean): Promise<{ pet: PetStatus | null; eulogy?: PetEulogy; warnings: PetWarning[] }> {
+  // The hourly check (see PetComposer.runHourlyCheck). Settles every pet — which is where deaths get
+  // noticed if nobody's looked in a while — and returns each one's "dying" warning if it's newly due (once
+  // per hunger spell; a feed resets it). awake is whether it may post right now; one that comes due
+  // overnight just waits for the morning.
+  async tick(awake: boolean): Promise<PetTickResult> {
     const now = nowSec();
-    const { row, eulogy } = this.settle(now);
-    if (!row) {
-      return { pet: null, ...(eulogy && { eulogy }), warnings: [] };
+    const { rows, eulogies } = this.settle(now);
+    const warnings: PetTickResult["warnings"] = [];
+    for (const row of rows) {
+      if (awake && warnLevelFor(row.food) === WARN_DYING && row.warn_level < WARN_DYING) {
+        const starveAt = (row.food_empty_since ?? now) + PET_CONFIG.STARVE_AFTER_EMPTY_HOURS * 3600;
+        warnings.push({ petId: row.id, warning: { type: "dying", hoursLeft: Math.max(1, Math.round((starveAt - now) / 3600)) } });
+        this.ctx.storage.sql.exec(`UPDATE pets SET warn_level = ? WHERE id = ?`, WARN_DYING, row.id);
+      }
     }
-
-    const warnings: PetWarning[] = [];
-    if (awake && warnLevelFor(row.food) === WARN_DYING && row.warn_level < WARN_DYING) {
-      const starveAt = (row.food_empty_since ?? now) + PET_CONFIG.STARVE_AFTER_EMPTY_HOURS * 3600;
-      warnings.push({ type: "dying", hoursLeft: Math.max(1, Math.round((starveAt - now) / 3600)) });
-      this.ctx.storage.sql.exec(`UPDATE pets SET warn_level = ? WHERE id = ?`, WARN_DYING, row.id);
-    }
-    return { pet: this.status(row), warnings };
+    return { pets: rows.map((row) => this.status(row)), eulogies, warnings };
   }
 
-  // A read-only look at the living pet as of now. Changes nothing: if it has died since anyone last
-  // looked, this returns null and leaves the death for the next real lookup (or the hourly check) to
-  // record and announce, so the eulogy is never lost.
+  // A read-only look at the neediest living pet as of now (lowest food, then lowest mood). Changes
+  // nothing: a pet that has died since anyone last looked is skipped, and its death left for the next real
+  // lookup (or the hourly check) to record and announce, so the eulogy is never lost.
   async peek(): Promise<PetPeek | null> {
-    const row = this.ctx.storage.sql.exec<PetRow>(`SELECT * FROM pets WHERE died_at IS NULL LIMIT 1`).toArray()[0];
-    if (!row) {
-      return null;
-    }
     const now = nowSec();
-    const shift = row.frozen_at !== null ? now - row.frozen_at : 0;
-    const meters = advanceMeters(
-      {
-        food: row.food,
-        mood: row.mood,
-        at: row.updated_at + shift,
-        foodEmptySince: row.food_empty_since !== null ? row.food_empty_since + shift : null,
-        moodEmptySince: row.mood_empty_since !== null ? row.mood_empty_since + shift : null,
-      },
-      now
-    );
-    if (petFate(meters)) {
+    const alive = this.livingRows()
+      .map((row) => ({ row, meters: projectMeters(row, now) }))
+      .filter(({ meters }) => !petFate(meters))
+      .sort((a, b) => a.meters.food - b.meters.food || a.meters.mood - b.meters.mood);
+    const neediest = alive[0];
+    if (!neediest) {
       return null;
     }
+    const { row, meters } = neediest;
     return { name: row.name, species: row.species, emoji: row.emoji, food: meters.food, mood: meters.mood };
   }
 
@@ -481,22 +542,28 @@ export class Pet extends DurableObject<Env> {
       }));
   }
 
-  // Owner-only (see PetComposer): mercy, or testing.
-  async kill(): Promise<PetLookup> {
+  // Owner-only (see PetComposer): mercy, or testing. With one living pet the name is optional; with
+  // several it has to match one of them (ignoring case — the oldest, if two share it).
+  async kill(name?: string): Promise<PetKillResult> {
     const now = nowSec();
-    const { row, eulogy } = this.settle(now);
-    if (eulogy || !row) {
-      return { pet: null, ...(eulogy && { eulogy }) };
+    const { rows, eulogies } = this.settle(now);
+    const wanted = name?.trim().toLowerCase();
+    if (!wanted && rows.length > 1) {
+      return { eulogies, needsName: true, pets: rows.map((row) => row.name) };
+    }
+    const row = wanted ? rows.find((r) => r.name.toLowerCase() === wanted) : rows[0];
+    if (!row) {
+      return { eulogies, notFound: true };
     }
     this.ctx.storage.sql.exec(`UPDATE pets SET died_at = ?, cause = 'put_down' WHERE id = ?`, now, row.id);
-    return { pet: null, eulogy: this.eulogy(row.id) };
+    return { eulogies, eulogy: this.eulogy(row.id) };
   }
 
-  // Owner-only: brings the most recent dead pet back at full meters, in case a bug killed it. No-op if a
-  // pet is alive.
+  // Owner-only: brings the most recent dead pet back at full meters, in case a bug killed it. No-op if
+  // every slot already has a living pet.
   async revive(): Promise<PetStatus | null> {
     const now = nowSec();
-    if (this.settle(now).row) {
+    if (this.settle(now).rows.length >= this.fund().slots) {
       return null;
     }
     const revived = this.ctx.storage.sql
@@ -512,30 +579,111 @@ export class Pet extends DurableObject<Env> {
     return revived ? this.status(revived) : null;
   }
 
-  // Brings the living pet's meters up to `now`, thawing it first if the hourly check froze it. If it
-  // died in the meantime, records that (at the moment it actually happened, not now) and returns the
-  // eulogy — this is the only place a pet dies on its own.
-  private settle(now: number): { row: PetRow | null; eulogy?: PetEulogy } {
-    let row = this.ctx.storage.sql.exec<PetRow>(`SELECT * FROM pets WHERE died_at IS NULL LIMIT 1`).toArray()[0];
-    if (!row) {
-      return { row: null };
+  async fundStatus(): Promise<PetFundStatus> {
+    return fundStatus(this.fund(), this.livingCount(nowSec()));
+  }
+
+  // A store-page donation (the beans are already charged — see the store API, which refunds them if this
+  // refuses). Fills the current goal, and anything past it carries into the next, possibly unlocking more
+  // than one slot at once; each part is recorded against the slot it went toward. Refuses outright once
+  // every slot is unlocked, or if it's more than every remaining goal still needs.
+  async donateToFund(input: { userId: number; firstName: string; amount: number }): Promise<PetFundDonateResult> {
+    if (!Number.isInteger(input.amount) || input.amount <= 0) {
+      throw new Error(`Bad pet fund donation: ${input.amount}`);
+    }
+    const now = nowSec();
+    let { slots, raised } = this.fund();
+    if (slots >= MAX_PET_SLOTS) {
+      return { ok: false, reason: "MAXED" };
+    }
+    const max = PET_FUND.SLOT_GOALS.slice(slots - 1).reduce((sum, goal) => sum + goal, 0) - raised;
+    if (input.amount > max) {
+      return { ok: false, reason: "TOO_MUCH", max };
     }
 
-    if (row.frozen_at !== null) {
-      const shift = now - row.frozen_at;
-      row = {
-        ...row,
-        updated_at: row.updated_at + shift,
-        food_empty_since: row.food_empty_since !== null ? row.food_empty_since + shift : null,
-        mood_empty_since: row.mood_empty_since !== null ? row.mood_empty_since + shift : null,
-        frozen_at: null,
-      };
+    const unlocked: PetFundUnlock[] = [];
+    let left = input.amount;
+    while (left > 0 && slots < MAX_PET_SLOTS) {
+      const goal = PET_FUND.SLOT_GOALS[slots - 1]!;
+      const part = Math.min(left, goal - raised);
+      this.ctx.storage.sql.exec(
+        `INSERT INTO fund_donations (user_id, first_name, amount, slot, at) VALUES (?, ?, ?, ?, ?)`,
+        input.userId,
+        input.firstName,
+        part,
+        slots + 1,
+        now
+      );
+      left -= part;
+      raised += part;
+      if (raised >= goal) {
+        slots += 1;
+        raised = 0;
+        unlocked.push({ slot: slots, goal, topDonors: this.topDonors(slots) });
+      }
     }
+    this.ctx.storage.sql.exec(`UPDATE pet_fund SET slots = ?, raised = ? WHERE id = 1`, slots, raised);
+    return { ok: true, fund: fundStatus({ slots, raised }, this.livingCount(now)), unlocked };
+  }
 
-    const meters: PetMeters = advanceMeters(
-      { food: row.food, mood: row.mood, at: row.updated_at, foodEmptySince: row.food_empty_since, moodEmptySince: row.mood_empty_since },
-      now
-    );
+  // Who gave the most toward one slot, by total, under the name they last gave with. Ties go to whoever
+  // gave first.
+  private topDonors(slot: number): PetFundUnlock["topDonors"] {
+    return this.ctx.storage.sql
+      .exec<{ first_name: string; total: number }>(
+        `SELECT
+           (SELECT first_name FROM fund_donations AS latest WHERE latest.user_id = d.user_id ORDER BY latest.id DESC LIMIT 1) AS first_name,
+           SUM(amount) AS total
+         FROM fund_donations AS d
+         WHERE slot = ?
+         GROUP BY user_id
+         ORDER BY total DESC, MIN(id)
+         LIMIT ?`,
+        slot,
+        PET_FUND.TOP_DONORS
+      )
+      .toArray()
+      .map((row) => ({ firstName: row.first_name, amount: row.total }));
+  }
+
+  private fund(): { slots: number; raised: number } {
+    const row = this.ctx.storage.sql.exec<{ slots: number; raised: number }>(`SELECT slots, raised FROM pet_fund WHERE id = 1`).toArray()[0];
+    return row ?? { slots: 1, raised: 0 };
+  }
+
+  private livingRows(): PetRow[] {
+    return this.ctx.storage.sql.exec<PetRow>(`SELECT * FROM pets WHERE died_at IS NULL ORDER BY adopted_at, id`).toArray();
+  }
+
+  // How many pets are alive as of now, without settling anyone: one that has died unnoticed doesn't count,
+  // but its death is left for the next settle to record and announce.
+  private livingCount(now: number): number {
+    return this.livingRows().filter((row) => !petFate(projectMeters(row, now))).length;
+  }
+
+  // Settles every living pet (see settleOne), oldest first, collecting the eulogies of any that died (in
+  // the order they died).
+  private settle(now: number): { rows: PetRow[]; eulogies: PetEulogy[] } {
+    const rows: PetRow[] = [];
+    const eulogies: PetEulogy[] = [];
+    for (const living of this.livingRows()) {
+      const { row, eulogy } = this.settleOne(living, now);
+      if (row) {
+        rows.push(row);
+      }
+      if (eulogy) {
+        eulogies.push(eulogy);
+      }
+    }
+    return { rows, eulogies: eulogies.sort((a, b) => a.diedAt - b.diedAt) };
+  }
+
+  // Brings one living pet's meters up to `now`, thawing it first if the hourly check froze it. If it died
+  // in the meantime, records that (at the moment it actually happened, not now) and returns the eulogy —
+  // this is the only place a pet dies on its own. It only ever sees pets with died_at NULL, so each death
+  // is recorded, and its eulogy returned, once.
+  private settleOne(row: PetRow, now: number): { row: PetRow | null; eulogy?: PetEulogy } {
+    const meters = projectMeters(row, now);
     const fate = petFate(meters);
 
     this.ctx.storage.sql.exec(
@@ -563,6 +711,7 @@ export class Pet extends DurableObject<Env> {
         updated_at: meters.at,
         food_empty_since: meters.foodEmptySince,
         mood_empty_since: meters.moodEmptySince,
+        frozen_at: null,
       },
     };
   }
@@ -612,6 +761,32 @@ export class Pet extends DurableObject<Env> {
   private status(row: PetRow): PetStatus {
     return toStatusRow(row, this.knownTricks(row.id).length);
   }
+}
+
+// A living pet's meters as of `now`. A frozen pet (see freeze) has every timestamp shifted forward by how
+// long it's been frozen first, so the time it spent frozen doesn't count.
+function projectMeters(row: PetRow, now: number): PetMeters {
+  const shift = row.frozen_at !== null ? now - row.frozen_at : 0;
+  return advanceMeters(
+    {
+      food: row.food,
+      mood: row.mood,
+      at: row.updated_at + shift,
+      foodEmptySince: row.food_empty_since !== null ? row.food_empty_since + shift : null,
+      moodEmptySince: row.mood_empty_since !== null ? row.mood_empty_since + shift : null,
+    },
+    now
+  );
+}
+
+function fundStatus(fund: { slots: number; raised: number }, livingPets: number): PetFundStatus {
+  return {
+    slots: fund.slots,
+    maxSlots: MAX_PET_SLOTS,
+    livingPets,
+    raised: fund.raised,
+    goal: fund.slots < MAX_PET_SLOTS ? (PET_FUND.SLOT_GOALS[fund.slots - 1] ?? null) : null,
+  };
 }
 
 function warnLevelFor(food: number): number {

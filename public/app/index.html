@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <title>General Store</title>
+    <!-- Telegram's Mini App script: sets window.Telegram.WebApp and the --tg-theme-* CSS variables. -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <main id="app" class="app">
+      <header class="header">
+        <h1 class="title">🏪 General Store <span class="mock-tag" id="mock-tag" hidden>Mock data</span></h1>
+        <p class="who" id="who" hidden></p>
+        <div class="stats" id="stats" hidden>
+          <div class="stat">
+            <span class="stat-label">Your beans</span>
+            <span class="stat-value" id="balance"></span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Market price</span>
+            <span class="stat-value" id="price"></span>
+            <span class="stat-note" id="price-change"></span>
+          </div>
+        </div>
+      </header>
+
+      <!-- Loading, error, and "fishing is off" messages. -->
+      <section class="message" id="message" hidden>
+        <p class="message-text" id="message-text"></p>
+        <button type="button" class="retry" id="retry" hidden>Try again</button>
+      </section>
+
+      <div id="store" hidden>
+        <section class="section" aria-labelledby="bucket-heading">
+          <h2 class="section-title" id="bucket-heading">🪣 Bucket <span class="count" id="bucket-count"></span></h2>
+          <ul class="list" id="bucket"></ul>
+          <p class="empty" id="bucket-empty" hidden>Your bucket's empty. Go /fish.</p>
+          <p class="bucket-note" id="bucket-old" hidden>Some of these have been in there a while.</p>
+        </section>
+
+        <section class="section" aria-labelledby="gear-heading">
+          <h2 class="section-title" id="gear-heading">🧰 Gear</h2>
+          <ul class="list" id="gear"></ul>
+        </section>
+
+        <section class="section" aria-labelledby="worms-heading">
+          <h2 class="section-title" id="worms-heading">🪱 Worms <span class="count" id="worms-count"></span></h2>
+          <ul class="list" id="worms"></ul>
+        </section>
+
+        <!-- Hidden until the state has a petFund block (it's null with the pet feature off). Once every slot is
+             unlocked, only the "Every pet slot is unlocked." line shows. -->
+        <section class="section" id="fund-section" aria-labelledby="fund-heading" hidden>
+          <h2 class="section-title" id="fund-heading">🐾 Pet fund</h2>
+          <div class="compose" id="fund-box">
+            <div class="fund-open" id="fund-open">
+              <div class="fund-bar" id="fund-bar" role="progressbar" aria-labelledby="fund-progress" aria-valuemin="0">
+                <div class="fund-fill" id="fund-fill"></div>
+              </div>
+              <p class="fund-progress" id="fund-progress"></p>
+              <p class="fund-slots" id="fund-slots"></p>
+              <div class="chips fund-chips" id="fund-amounts" role="group" aria-label="How much to chip in"></div>
+            </div>
+            <p class="fund-done" id="fund-done" hidden>Every pet slot is unlocked.</p>
+          </div>
+        </section>
+
+        <!-- Hidden until the state has a bottles block. The distance options sit above the note, so they stay in view
+             while the on-screen keyboard is up, and the counter sits inside the note's box for the same reason. -->
+        <section class="section" id="bottle-section" aria-labelledby="bottle-heading" hidden>
+          <h2 class="section-title" id="bottle-heading">🍾 Message in a bottle <span class="count" id="bottle-price"></span></h2>
+          <div class="compose" id="bottle-compose">
+            <p class="compose-intro">
+              Write a note and throw it out to sea. No one will know it was you.
+            </p>
+            <p class="compose-limit" id="bottle-limit" hidden>
+              Too many of your bottles are out there already. Wait till someone finds one.
+            </p>
+            <div class="chips" id="bottle-distances" role="group" aria-label="How far to throw it"></div>
+            <div class="note-box">
+              <textarea
+                class="note"
+                id="bottle-text"
+                rows="3"
+                maxlength="200"
+                placeholder="Your note…"
+                aria-label="Your note"
+                aria-describedby="bottle-meter"
+              ></textarea>
+              <div class="note-meter" id="bottle-meter">
+                <span class="note-lines" id="bottle-lines" aria-live="polite"></span>
+                <span class="note-count" id="bottle-count">0/200</span>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <!-- Short confirmations and errors after a sale or purchase. -->
+    <div class="notice" id="notice" role="status" aria-live="polite" hidden></div>
+
+    <!-- Mock mode only: a stand-in for Telegram's bottom button, which doesn't render outside Telegram. -->
+    <div class="mock-bar" id="mock-bar" hidden>
+      <button type="button" class="mock-main" id="mock-main"></button>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
