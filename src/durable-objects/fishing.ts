@@ -8,7 +8,7 @@ import {
   hintFor,
   lakeTier,
   rollTrash,
-  rollWeight,
+  rollCatch,
   speciesForWeight,
   tideFor,
   type CastGear,
@@ -264,7 +264,7 @@ export class Fishing extends DurableObject<Env> {
       return { ok: true, kind: "trash", ...trash, highTide, lake, hint: hintFor(factors), date: today, castsToday };
     }
 
-    const weight = rollWeight(factors.quality);
+    const weight = rollCatch(factors.quality, input.gear?.rolls);
     const { species, emoji } = speciesForWeight(weight);
 
     // Judged against the leaderboard as it stood before this catch.

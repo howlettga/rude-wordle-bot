@@ -2,8 +2,10 @@
 // CastGear in fishing-math.ts). Pure data, no runtime imports, so scripts/sim-fishing.mjs can load it.
 //
 // Two upgrade lines, bought one tier at a time and kept forever, plus worms, which are used up:
-//   🎣 Rod  - bigger fish: a small boost to cast quality on every cast. Kept small on purpose, so the
-//             leaderboard stays about fishing, not shopping (the sim checks records don't run away).
+//   🎣 Rod  - bigger fish: each catch's weight is rolled more than once and the biggest kept (see rollCatch).
+//             Fiberglass rolls twice half the time, Carbon twice, Legendary three times. That's a big lift to
+//             everyday catches (a Legendary rod's typical fish is about 1.85x) and a smaller one to trophies, so
+//             the leaderboard stays about fishing more than shopping (the sim checks records don't run away).
 //   🚣 Boat - fish away from the crowd: the lake counts only part of today's earlier casts against you.
 //             It never makes the lake better than empty, so early casters aren't beaten, only matched.
 //   🪱 Worms - one per cast, used automatically on your next /fish: half the junk. Cheap, so one tap buys
@@ -19,7 +21,7 @@ export type GearLine = "rod" | "boat";
 export interface GearTier {
   name: string;
   price: number;
-  effect: number; // rod: quality multiplier; boat: lake relief (0-1)
+  effect: number; // rod: weight rolls per catch, keeping the biggest (see rollCatch); boat: lake relief (0-1)
 }
 
 export const GEAR_LINES: Record<GearLine, { emoji: string; pitch: string; tiers: GearTier[] }> = {
@@ -28,9 +30,9 @@ export const GEAR_LINES: Record<GearLine, { emoji: string; pitch: string; tiers:
     pitch: "bigger fish on every cast",
     tiers: [
       { name: "Basic rod", price: 0, effect: 1 },
-      { name: "Fiberglass rod", price: 40, effect: 1.05 },
-      { name: "Carbon rod", price: 350, effect: 1.1 },
-      { name: "Legendary rod", price: 1500, effect: 1.2 },
+      { name: "Fiberglass rod", price: 40, effect: 1.5 },
+      { name: "Carbon rod", price: 350, effect: 2 },
+      { name: "Legendary rod", price: 1500, effect: 3 },
     ],
   },
   boat: {
@@ -61,9 +63,9 @@ export interface AnglerGear {
 export const STARTER_GEAR: AnglerGear = { rod: 0, boat: 0, worms: 0 };
 
 // What this gear does to a cast. useWorm: whether this cast gets one of the angler's worms.
-export function castGear(gear: AnglerGear, useWorm: boolean): { quality: number; lakeRelief: number; junk: number } {
+export function castGear(gear: AnglerGear, useWorm: boolean): { rolls: number; lakeRelief: number; junk: number } {
   return {
-    quality: GEAR_LINES.rod.tiers[gear.rod]?.effect ?? 1,
+    rolls: GEAR_LINES.rod.tiers[gear.rod]?.effect ?? 1,
     lakeRelief: GEAR_LINES.boat.tiers[gear.boat]?.effect ?? 0,
     junk: useWorm ? WORMS.junkMultiplier : 1,
   };
