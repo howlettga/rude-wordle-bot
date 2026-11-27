@@ -82,6 +82,12 @@ export interface BottleListing {
 
 export type ThrowBottleResult = { ok: true } | { ok: false; reason: "LIMIT" };
 
+// See anglerStatus.
+export interface AnglerStatus {
+  daysSinceLastCast: number | null;
+  castsToday: number;
+}
+
 export interface FishingLeaderboardEntry extends FishingCatch {
   userId: number;
   firstName: string;
@@ -506,6 +512,19 @@ export class Fishing extends DurableObject<Env> {
       )
       .toArray()
       .map((row) => ({ id: row.id, species: row.species, emoji: row.emoji, weight: row.weight, daysHeld: row.days_held }));
+  }
+
+  // For the store page's tide chart: whole fishing days since this angler's last cast (0 = cast today, null = never
+  // cast), and how many casts the whole chat has made today. Read-only, one synchronous look at both.
+  async anglerStatus(userId: number): Promise<AnglerStatus> {
+    const today = fishingDay(easternParts(new Date())).date;
+    const angler = this.ctx.storage.sql
+      .exec<{ last_cast_date: string }>(`SELECT last_cast_date FROM anglers WHERE user_id = ?`, userId)
+      .toArray()[0];
+    const castsToday =
+      this.ctx.storage.sql.exec<{ casts: number }>(`SELECT casts FROM lake_days WHERE date = ?`, today).toArray()[0]?.casts ?? 0;
+    // At least 0: a cast stamped with what is now tomorrow's date (see cast) still counts as today's.
+    return { daysSinceLastCast: angler ? Math.max(0, daysBetween(angler.last_cast_date, today)) : null, castsToday };
   }
 
   async setWindow(days: number | null): Promise<void> {

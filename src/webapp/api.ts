@@ -4,7 +4,10 @@ import { buildStorage } from "../build-storage.js";
 import type { StorageService } from "../storage-service.js";
 import type { StoreBuyResult, StoreItem } from "../durable-objects/store.js";
 import type { PetFundStatus, PetFundUnlock } from "../durable-objects/pet.js";
-import { GEAR_LINES, WORMS, type GearLine } from "../gear.js";
+import type { AnglerStatus } from "../durable-objects/fishing.js";
+import { GEAR_LINES, TIDE_CHART_ITEM, WORMS, type GearLine } from "../gear.js";
+import { easternParts } from "../eastern-time.js";
+import { bestCastDay, fishingDay, lakeTier, spotRest, tideForecast, type SpotRest } from "../fishing-math.js";
 import { BOTTLE_CONFIG, BOTTLE_DISTANCES, LITTER_LINES, cleanBottleText, isBottleDistance } from "../bottles.js";
 import { PET_FUND } from "../pet-config.js";
 import { formatBeans } from "../store-math.js";
@@ -22,16 +25,18 @@ import { signStoreLink, verifyStoreLink } from "./store-link.js";
 //   4. The chat has the store feature on.
 // The page never sends a chat id; it only ever comes from the signed link.
 //
-//   GET  /app/api/state  the player's wallet, bucket (with quotes), gear and worms, today's fish price, and the pet
-//                        fund (null with the pet feature off)
+//   GET  /app/api/state  the player's wallet, bucket (with quotes), gear and worms, today's fish price, the pet fund
+//                        (null with the pet feature off), and their tide chart (null with fishing off; only the
+//                        price unless they have one running)
 //   POST /app/api/sell   { fishId } sells that fish, the same take-then-pay as the card's Sell buttons
 //   POST /app/api/buy    { item: "rod" | "boat" | "worms" } buys it now (the page asks before it calls this)
 //   POST /app/api/bottle { text, distance: "shore" | "buoys" | "sea" } pays for a message in a bottle and throws it
 //                        out to sea (see bottles.ts)
 //   POST /app/api/fund   { amount } chips in to the pet fund (see PET_FUND in pet-config.ts); reaching a goal posts a
 //                        celebration in the chat
+//   POST /app/api/chart  (no body) buys a tide chart, or adds its days to the one running (see TIDE_CHART_ITEM)
 // A sale, a rod or boat upgrade, a bottle, or a donation also edits the chat's latest /store card (its activity line),
-// after the response.
+// after the response. A tide chart is private, so it doesn't.
 
 const ROUTES: Record<string, { method: "GET" | "POST"; handle: (session: Session, request: Request) => Promise<Response> }> = {
   "/app/api/state": { method: "GET", handle: (session) => getState(session) },
@@ -39,6 +44,7 @@ const ROUTES: Record<string, { method: "GET" | "POST"; handle: (session: Session
   "/app/api/buy": { method: "POST", handle: (session, request) => buy(session, request) },
   "/app/api/bottle": { method: "POST", handle: (session, request) => throwBottle(session, request) },
   "/app/api/fund": { method: "POST", handle: (session, request) => chipIn(session, request) },
+  "/app/api/chart": { method: "POST", handle: (session) => buyTideChart(session) },
 };
 
 // Plain text for the player: the page shows message as it is.
@@ -164,12 +170,14 @@ async function isMember(env: Env, chatId: number, userId: number): Promise<boole
 
 async function getState(session: Session): Promise<Response> {
   const { storage, chatId, user, fishing, pet } = session;
-  const [card, wallet, held, bottlesOut, fund] = await Promise.all([
+  const [card, wallet, held, bottlesOut, fund, chartUntil, angler] = await Promise.all([
     storage.getStoreCard(chatId),
     storage.getWallet(chatId, user.id),
     fishing ? storage.getFishBucket(chatId, user.id) : Promise.resolve([]),
     fishing ? storage.countBottlesInWater(chatId, user.id) : Promise.resolve(0),
     pet ? storage.getPetFund(chatId) : Promise.resolve(null),
+    fishing ? storage.getChartUntil(chatId, user.id) : Promise.resolve(null),
+    fishing ? storage.getAnglerStatus(chatId, user.id) : Promise.resolve(null),
   ]);
   const quotes = held.length > 0 ? await storage.quoteFishes(chatId, held) : [];
   const bucket = held.map((fish, i) => ({
@@ -209,7 +217,52 @@ async function getState(session: Session): Promise<Response> {
       distances: Object.entries(BOTTLE_DISTANCES).map(([id, { emoji, label }]) => ({ id, emoji, label })),
     },
     petFund: fund ? petFundJson(fund) : null,
+    tideChart: angler ? tideChartJson(session, chartUntil, angler) : null,
   });
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+// A fishing day's weekday ("Thu"), from its date: day 0 of the epoch was a Thursday.
+const weekdayOf = (dayNumber: number) => WEEKDAYS[new Date(dayNumber * 86_400_000).getUTCDay()]!;
+const SPOT_METER: Record<SpotRest, number> = { fished_out: 0, overfished: 1, recovering: 2, almost: 3, rested: 4 };
+// Days of rest that make a spot fully rested (spotRest's "rested").
+const RESTED_AFTER_DAYS = 4;
+
+// The page's tideChart block. Without a chart running it's only the price and days, so the forecast, the spot, and
+// the lake never leave the server unpaid for.
+function tideChartJson(session: Session, chartUntil: number | null, angler: AnglerStatus) {
+  const { price, days } = TIDE_CHART_ITEM;
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (chartUntil === null || chartUntil <= nowSec) {
+    return { price, days, active: false };
+  }
+  const { dayNumber } = fishingDay(easternParts(new Date()));
+  const forecast = tideForecast(session.env.TIDE_SECRET, session.chatId, dayNumber);
+  const { daysSinceLastCast, castsToday } = angler;
+  const best = bestCastDay(forecast, daysSinceLastCast);
+  const rest = spotRest(daysSinceLastCast);
+  return {
+    price,
+    days,
+    active: true,
+    until: chartUntil,
+    daysLeft: daysLeft(chartUntil, nowSec),
+    forecast: forecast.map((day, i) => ({ weekday: weekdayOf(day.dayNumber), tide: day.tide, exact: day.exact, best: i === best })),
+    spot: {
+      rest,
+      meter: SPOT_METER[rest],
+      restedOn:
+        daysSinceLastCast === null || daysSinceLastCast >= RESTED_AFTER_DAYS
+          ? null
+          : weekdayOf(dayNumber + RESTED_AFTER_DAYS - daysSinceLastCast),
+    },
+    lake: lakeTier(castsToday),
+  };
+}
+
+// Whole days left on a chart, rounded up, so a chart bought just now says the full 7.
+function daysLeft(until: number, nowSec: number): number {
+  return Math.ceil((until - nowSec) / 86_400);
 }
 
 // The page's petFund block: the fund's status plus the amounts it offers. goal is null once every slot is unlocked.
@@ -391,6 +444,24 @@ async function chipIn(session: Session, request: Request): Promise<Response> {
     ctx.waitUntil(celebrate());
   }
   return json(200, { balance: charged.balance, fund: petFundJson(donated.fund), unlocked: donated.unlocked.length });
+}
+
+// One synchronous step in the Store DO: pay, and start the chart or add its days to the one running. Nothing to refund,
+// since nothing happens in another DO.
+async function buyTideChart(session: Session): Promise<Response> {
+  const { storage, chatId, user } = session;
+  if (!session.fishing) {
+    return fail(409, "FISHING_OFF", MESSAGES.FISHING_OFF);
+  }
+  const result = await storage.buyTideChart(chatId, { userId: user.id, firstName: user.first_name });
+  if (!result.ok) {
+    return fail(
+      409,
+      "CANT_AFFORD",
+      `A tide chart costs ${formatBeans(TIDE_CHART_ITEM.price)}. You have ${formatBeans(result.balance)}. Sell some fish.`
+    );
+  }
+  return json(200, { balance: result.balance, until: result.until, daysLeft: daysLeft(result.until, Math.floor(Date.now() / 1000)) });
 }
 
 // Plain text:

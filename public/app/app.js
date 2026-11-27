@@ -7,6 +7,7 @@
 //   POST /app/api/buy  { item }    buy the next rod or boat tier, or one worm
 //   POST /app/api/bottle { text, distance }  pay for a message in a bottle and throw it out to sea
 //   POST /app/api/fund { amount }  chip in to the pet fund (see docs/pet-fund-plan.md, package P)
+//   POST /app/api/chart            buy a 🗺️ tide chart, or add 7 days to one (see docs/tide-chart-plan.md, package P)
 // Tapping a row selects it, and Telegram's bottom button (MainButton) does the action. Typing a bottle note (or picking
 // how far to throw it) makes the bottle the selection instead, and picking a pet fund amount makes that the selection.
 // After every sale or purchase the page re-fetches state, so it always shows what the server has.
@@ -18,7 +19,8 @@
 // in a mock session is refused with a littering quip, the way the real API answers a player's 4th bottle in the water.
 // The pet fund starts at 🫘40 of 🫘100 and chipping in moves it for real (crossing a goal unlocks a slot); &fund=full
 // starts with every slot unlocked, &fund=almost with 🫘10 left in the whole fund (so bigger amounts are refused), and
-// &fund=off hides it, as with the pet feature off.
+// &fund=off hides it, as with the pet feature off. The tide chart starts active with 5 days left; &chart=off starts without
+// one, and buying (or extending) it works.
 //
 // All text from the API goes into the page with textContent, never innerHTML.
 "use strict";
@@ -33,6 +35,18 @@
   const NOTICE_MS_PER_CHAR = 55; // long errors (like the littering quip) stay up long enough to read in full
   // Errors that mean the page can't be used at all; anything else is shown as a notice and the page stays up.
   const FATAL = new Set(["BAD_SESSION", "SESSION_EXPIRED", "BAD_LINK", "LINK_EXPIRED", "NOT_A_MEMBER", "STORE_OFF"]);
+  // The tide chart's words. Tide labels are short so seven columns fit across a phone.
+  const TIDE_ICONS = { low: "🪨", normal: "〰️", high: "🌊", king: "👑" };
+  const TIDE_LABELS = { low: "Low", normal: "Normal", high: "High", king: "King" };
+  const SPOT_LABELS = {
+    fished_out: "Fished out",
+    overfished: "Overfished",
+    recovering: "Recovering",
+    almost: "Almost rested",
+    rested: "Fully rested",
+  };
+  const SPOT_METER = { fished_out: 0, overfished: 1, recovering: 2, almost: 3, rested: 4 };
+  const LAKE_LABELS = { fresh: "Fresh", calm: "Calm", busy: "Busy", crowded: "Crowded", fished_out: "Fished out" };
 
   const params = new URLSearchParams(window.location.search);
   const MOCK = params.get("mock") === "1";
@@ -43,6 +57,7 @@
 
   let state = null; // the last GET /app/api/state response
   // { kind: "fish", id } | { kind: "gear", line } | { kind: "worms" } | { kind: "bottle" } | { kind: "fund", amount }
+  // | { kind: "chart" }
   let selected = null;
   let bottleDistance = null; // the picked distance id for the bottle note; kept while something else is selected
   let busy = false;
@@ -282,6 +297,20 @@
         },
       };
     }
+    if (selected.kind === "chart") {
+      const chart = state.tideChart;
+      if (!chart) return null;
+      if (state.balance < chart.price) return { label: "Not enough beans", active: false };
+      return {
+        label: (chart.active ? "Add " + plural(chart.days, "day") : "Buy a tide chart") + " for " + beans(chart.price),
+        active: true,
+        path: "/app/api/chart",
+        clear: true,
+        done() {
+          return "🗺️ Here's your chart.";
+        },
+      };
+    }
     if (selected.kind === "worms") {
       const worms = state.worms;
       if (worms.count >= worms.max) return { label: "Your worm can is full", active: false };
@@ -377,6 +406,34 @@
       gear: Array.isArray(data.gear) ? data.gear : [],
       bottles: normalizeBottles(data.bottles),
       petFund: normalizePetFund(data.petFund),
+      tideChart: normalizeTideChart(data.tideChart),
+    };
+  }
+
+  // null (no buy row, no section) unless the state has a tideChart block; it's null with fishing off. The forecast,
+  // spot, and lake are only there while the chart is active, and only active with a usable forecast shows the section.
+  function normalizeTideChart(chart) {
+    if (!chart || typeof chart !== "object" || typeof chart.price !== "number") return null;
+    const days = typeof chart.days === "number" && chart.days > 0 ? chart.days : 7;
+    if (chart.active !== true) {
+      return { price: chart.price, days, active: false, daysLeft: 0, forecast: [], spot: null, lake: null };
+    }
+    const forecast = Array.isArray(chart.forecast)
+      ? chart.forecast.filter((day) => day && typeof day.tide === "string" && TIDE_ICONS[day.tide])
+      : [];
+    const spot = chart.spot && typeof chart.spot === "object" && SPOT_LABELS[chart.spot.rest] ? chart.spot : null;
+    return {
+      price: chart.price,
+      days,
+      active: true,
+      daysLeft: typeof chart.daysLeft === "number" && chart.daysLeft > 0 ? chart.daysLeft : 0,
+      forecast,
+      spot: spot && {
+        rest: spot.rest,
+        meter: typeof spot.meter === "number" ? Math.max(0, Math.min(4, spot.meter)) : SPOT_METER[spot.rest],
+        restedOn: typeof spot.restedOn === "string" && spot.restedOn ? spot.restedOn : null,
+      },
+      lake: typeof chart.lake === "string" && LAKE_LABELS[chart.lake] ? chart.lake : null,
     };
   }
 
@@ -444,6 +501,7 @@
     }
     $("message").hidden = true;
     $("store").hidden = false;
+    renderChart();
     renderBucket();
     renderGear();
     renderWorms();
@@ -517,7 +575,66 @@
     );
   }
 
+  // The 7 day columns, the spot and the lake, and the days left. Predicted days get a "~" and softer colours, and the
+  // best day to cast gets a ★ and a highlight.
+  function renderChart() {
+    const chart = state.tideChart;
+    const show = !!chart && chart.active && chart.forecast.length > 0;
+    $("chart-section").hidden = !show;
+    if (!show) return;
+    $("chart-days").replaceChildren(
+      ...chart.forecast.map((day) => {
+        const weekday = typeof day.weekday === "string" ? day.weekday : "";
+        const exact = day.exact !== false;
+        const best = day.best === true;
+        const column = el("li", "tide" + (exact ? "" : " predicted") + (best ? " best" : ""));
+        const label = TIDE_LABELS[day.tide];
+        column.setAttribute(
+          "aria-label",
+          weekday + ": " + label.toLowerCase() + " tide" + (exact ? "" : ", predicted") + (best ? ", best day to cast" : "")
+        );
+        column.append(
+          el("span", "tide-day", (best ? "★" : "") + weekday),
+          el("span", "tide-icon", TIDE_ICONS[day.tide]),
+          el("span", "tide-label", (exact ? "" : "~") + label)
+        );
+        return column;
+      })
+    );
+
+    const spot = chart.spot;
+    const meter = spot ? spot.meter : 0;
+    $("spot-meter").setAttribute("aria-valuenow", String(meter));
+    $("spot-meter").hidden = !spot;
+    $("spot-meter")
+      .querySelectorAll(".spot-square")
+      .forEach((square, i) => square.classList.toggle("on", i < meter));
+    $("spot-label").textContent = spot ? SPOT_LABELS[spot.rest] : "Unknown";
+    $("spot-rested").textContent = spot && spot.restedOn ? "Fully rested by " + spot.restedOn : "";
+    $("spot-rested").hidden = !(spot && spot.restedOn);
+    $("lake-label").textContent = chart.lake ? LAKE_LABELS[chart.lake] : "Unknown";
+    $("chart-left").textContent = chart.daysLeft ? "Good for " + plural(chart.daysLeft, "more day") : "";
+    $("chart-left").hidden = !chart.daysLeft;
+  }
+
   function renderGear() {
+    // The tide chart goes after the rods and boats. Buying one while it's active adds days to it.
+    const chart = state.tideChart;
+    const extend = !!chart && chart.active && chart.daysLeft > 0;
+    const chartRow = chart
+      ? [
+          row({
+            key: "chart",
+            emoji: "🗺️",
+            title: "Tide chart",
+            sub: extend ? plural(chart.daysLeft, "day") + " left · add " + chart.days + " more" : "This week's tides",
+            price: beans(chart.price),
+            dim: state.balance < chart.price,
+            label: (extend ? "Add " + plural(chart.days, "day") + " to your tide chart" : "Buy a tide chart") + " for " +
+              beans(chart.price),
+          }),
+        ]
+      : [];
     $("gear").replaceChildren(
       ...state.gear.map((gear) => {
         if (!gear.next) {
@@ -532,7 +649,8 @@
           dim: state.balance < gear.next.price,
           label: "Upgrade to " + gear.next.name + " for " + beans(gear.next.price),
         });
-      })
+      }),
+      ...chartRow
     );
   }
 
@@ -677,6 +795,7 @@
     if (selected.kind === "gear") return "gear:" + selected.line;
     if (selected.kind === "bottle") return "bottle";
     if (selected.kind === "fund") return "fund:" + selected.amount;
+    if (selected.kind === "chart") return "chart";
     return "worms";
   }
 
@@ -707,6 +826,8 @@
       selected = { kind: "gear", line: key.slice(5) };
     } else if (key.startsWith("fund:")) {
       selected = { kind: "fund", amount: Number(key.slice(5)) };
+    } else if (key === "chart") {
+      selected = { kind: "chart" };
     } else {
       selected = { kind: "worms" };
     }
@@ -781,6 +902,19 @@
     almost: { slots: 3, raised: 2490 },
   };
 
+  // The example from the tide chart contract (docs/tide-chart-plan.md): exact for 3 days, a predicted king tide on
+  // Sunday as the best day, and a spot rested by then. Same price and length as TIDE_CHART_ITEM in src/gear.ts.
+  const MOCK_CHART = { price: 15, days: 7 };
+  const MOCK_FORECAST = [
+    { weekday: "Thu", tide: "high", exact: true, best: false },
+    { weekday: "Fri", tide: "normal", exact: true, best: false },
+    { weekday: "Sat", tide: "normal", exact: true, best: false },
+    { weekday: "Sun", tide: "king", exact: false, best: true },
+    { weekday: "Mon", tide: "high", exact: false, best: false },
+    { weekday: "Tue", tide: "normal", exact: false, best: false },
+    { weekday: "Wed", tide: "low", exact: false, best: false },
+  ];
+
   const mockBalance = Number(params.get("balance"));
   const mockFundStart = MOCK_FUND_START[params.get("fund")] || { slots: 1, raised: 40 };
 
@@ -798,6 +932,7 @@
     pets: params.get("fund") !== "off", // the pet feature, which the fund needs
     fundSlots: mockFundStart.slots,
     fundRaised: mockFundStart.raised, // toward the next goal
+    chartDaysLeft: params.get("chart") === "off" ? 0 : 5, // 0 = no tide chart
     bucket:
       params.get("empty") === "1"
         ? []
@@ -833,6 +968,26 @@
     };
   }
 
+  // The state's tideChart block: null with fishing off, just the price and length without a chart.
+  function mockTideChart() {
+    if (!mock.fishing) return null;
+    if (!mock.chartDaysLeft) return { price: MOCK_CHART.price, days: MOCK_CHART.days, active: false };
+    return {
+      price: MOCK_CHART.price,
+      days: MOCK_CHART.days,
+      active: true,
+      until: mockChartUntil(),
+      daysLeft: mock.chartDaysLeft,
+      forecast: MOCK_FORECAST,
+      spot: { rest: "overfished", meter: 1, restedOn: "Sun" },
+      lake: "busy",
+    };
+  }
+
+  function mockChartUntil() {
+    return Math.floor(Date.now() / 1000) + mock.chartDaysLeft * 86400;
+  }
+
   function mockState() {
     const gear = ["rod", "boat"].map((line) => {
       const spec = MOCK_GEAR[line];
@@ -856,6 +1011,7 @@
         gear,
         bottles: { price: 5, maxChars: 200, maxLines: 3, atLimit: mock.bottlesAtLimit, distances: MOCK_BOTTLE_DISTANCES },
         petFund: mockPetFund(),
+        tideChart: mockTideChart(),
       })
     );
   }
@@ -942,6 +1098,16 @@
         goal = MOCK_FUND_GOALS[mock.fundSlots - 1];
       }
       return { balance: mock.balance, fund: mockPetFund(), unlocked };
+    }
+    // Buying while one is active adds 7 days to it.
+    if (method === "POST" && path === "/app/api/chart") {
+      if (mock.balance < MOCK_CHART.price) {
+        const message = "A tide chart costs " + beans(MOCK_CHART.price) + ". You have " + beans(mock.balance) + ". Sell some fish.";
+        fail(409, "CANT_AFFORD", message);
+      }
+      mock.balance -= MOCK_CHART.price;
+      mock.chartDaysLeft += MOCK_CHART.days;
+      return { balance: mock.balance, until: mockChartUntil(), daysLeft: mock.chartDaysLeft };
     }
     return fail(404, "NOT_FOUND", "Not found.");
   }

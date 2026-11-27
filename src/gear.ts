@@ -54,6 +54,15 @@ export const WORMS = {
   junkMultiplier: 0.5,
 } as const;
 
+// 🗺️ Tide chart, bought on the store page only: this week's tides (see tideForecast in fishing-math.ts), how rested
+// the owner's spot is, and how busy the lake is, for days from purchase. Buying while one is active adds days to it.
+// Private to its owner, so it never shows on the card's activity line.
+export const TIDE_CHART_ITEM = {
+  emoji: "🗺️",
+  price: 15,
+  days: 7,
+} as const;
+
 export interface AnglerGear {
   rod: number; // tier index into GEAR_LINES.rod.tiers
   boat: number;

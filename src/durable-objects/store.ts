@@ -3,7 +3,7 @@ import type { Env } from "../main.js";
 import { easternParts } from "../eastern-time.js";
 import { fishingDay, seededNormal, speciesTier } from "../fishing-math.js";
 import { STORE_CONFIG, fishPriceIndex, fishPricePerLb, fishSalePrice } from "../store-math.js";
-import { GEAR_LINES, STARTER_GEAR, WORMS, type AnglerGear, type GearLine } from "../gear.js";
+import { GEAR_LINES, STARTER_GEAR, TIDE_CHART_ITEM, WORMS, type AnglerGear, type GearLine } from "../gear.js";
 import type { HeldFish } from "./fishing.js";
 
 export interface StoreFishPrice {
@@ -43,6 +43,9 @@ export const BUY_CONFIRM_SECONDS = 15;
 
 // A purchase that isn't gear (a message in a bottle, a pet fund donation), from charge.
 export type StoreChargeResult = { ok: true; balance: number } | { ok: false; balance: number };
+
+// A tide chart bought on the store page (see buyTideChart). until is epoch seconds.
+export type TideChartBuyResult = { ok: true; until: number; balance: number } | { ok: false; reason: "CANT_AFFORD"; balance: number };
 
 export interface StoreSaleResult {
   amount: number;
@@ -133,6 +136,13 @@ export class Store extends DurableObject<Env> {
         )
       `);
       this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (3)`);
+    }
+
+    if (version < 4) {
+      // The tide chart (see TIDE_CHART_ITEM in gear.ts): epoch seconds it's good until, NULL if never bought. Kept
+      // with the gear, so a chart bought by someone with starter gear gets a gear row with the starter tiers.
+      this.ctx.storage.sql.exec(`ALTER TABLE gear ADD COLUMN chart_until INTEGER`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (4)`);
     }
   }
 
@@ -300,6 +310,42 @@ export class Store extends DurableObject<Env> {
   // Takes amount out of the wallet for something that isn't gear (source says what, e.g. 'bottle'), or refuses if
   // the balance is short. Synchronous inside, so nothing can spend the same beans between the check and the debit.
   async charge(input: { userId: number; firstName: string; amount: number; source: string; label: string }): Promise<StoreChargeResult> {
+    return this.debit(input);
+  }
+
+  // A tide chart (see TIDE_CHART_ITEM): charges for it and pushes chart_until out by its days, from now or from
+  // when the current one runs out, whichever is later. One synchronous step, so a double tap can't pay once and
+  // extend twice. Its ledger rows (source 'chart') never show on the card's activity line (see card).
+  async buyTideChart(input: { userId: number; firstName: string }): Promise<TideChartBuyResult> {
+    const now = Math.floor(Date.now() / 1000);
+    const charged = this.debit({ ...input, amount: TIDE_CHART_ITEM.price, source: "chart", label: "Tide chart" });
+    if (!charged.ok) {
+      return { ok: false, reason: "CANT_AFFORD", balance: charged.balance };
+    }
+    const until = Math.max(now, this.chartUntilOf(input.userId) ?? 0) + TIDE_CHART_ITEM.days * 24 * 60 * 60;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO gear (user_id, chart_until) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET chart_until = excluded.chart_until`,
+      input.userId,
+      until
+    );
+    return { ok: true, until, balance: charged.balance };
+  }
+
+  // When this angler's tide chart runs out (epoch seconds, maybe already past), or null if they never bought one.
+  async chartUntil(userId: number): Promise<number | null> {
+    return this.chartUntilOf(userId);
+  }
+
+  private chartUntilOf(userId: number): number | null {
+    return (
+      this.ctx.storage.sql
+        .exec<{ chart_until: number | null }>(`SELECT chart_until FROM gear WHERE user_id = ?`, userId)
+        .toArray()[0]?.chart_until ?? null
+    );
+  }
+
+  // charge's body, synchronous so buyTideChart can debit and write in the same step.
+  private debit(input: { userId: number; firstName: string; amount: number; source: string; label: string }): StoreChargeResult {
     const { userId, amount } = input;
     if (!Number.isSafeInteger(amount) || amount <= 0) {
       throw new Error(`charge amount must be a positive integer, got ${amount}`);

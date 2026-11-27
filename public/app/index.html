@@ -34,6 +34,38 @@
       </section>
 
       <div id="store" hidden>
+        <!-- Hidden unless the player owns an active tide chart (the state only carries the forecast when they do). Seven
+             day columns, then their spot and the lake, then how long the chart lasts. -->
+        <section class="section" id="chart-section" aria-labelledby="chart-heading" hidden>
+          <h2 class="section-title" id="chart-heading">🗺️ Tide chart</h2>
+          <div class="chart">
+            <ol class="tides" id="chart-days" aria-label="This week's tides"></ol>
+            <div class="chart-facts">
+              <div class="chart-fact">
+                <span class="chart-fact-label">Your spot</span>
+                <div
+                  class="spot-meter"
+                  id="spot-meter"
+                  role="meter"
+                  aria-label="How rested your spot is"
+                  aria-valuemin="0"
+                  aria-valuemax="4"
+                >
+                  <span class="spot-square"></span><span class="spot-square"></span>
+                  <span class="spot-square"></span><span class="spot-square"></span>
+                </div>
+                <span class="chart-fact-value" id="spot-label"></span>
+                <span class="chart-fact-note" id="spot-rested" hidden></span>
+              </div>
+              <div class="chart-fact">
+                <span class="chart-fact-label">The lake</span>
+                <span class="chart-fact-value" id="lake-label"></span>
+              </div>
+            </div>
+            <p class="chart-footer" id="chart-left"></p>
+          </div>
+        </section>
+
         <section class="section" aria-labelledby="bucket-heading">
           <h2 class="section-title" id="bucket-heading">🪣 Bucket <span class="count" id="bucket-count"></span></h2>
           <ul class="list" id="bucket"></ul>

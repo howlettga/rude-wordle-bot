@@ -4,6 +4,7 @@ import type { SpankChain } from "./durable-objects/spank-chain.js";
 import type { ChatPause } from "./durable-objects/chat-pause.js";
 import type { RudeMessages } from "./durable-objects/rude-messages.js";
 import type {
+  AnglerStatus,
   BottleListing,
   FishPick,
   FishUse,
@@ -23,6 +24,7 @@ import type {
   StoreItem,
   StoreSaleResult,
   StoreTapResult,
+  TideChartBuyResult,
 } from "./durable-objects/store.js";
 import type { BottleDistance } from "./bottles.js";
 import type { AnglerGear } from "./gear.js";
@@ -425,6 +427,10 @@ export class StorageService {
     return this.fishingStub(chatId).bottleAuthor(bottleId);
   }
 
+  getAnglerStatus(chatId: number, userId: number): Promise<AnglerStatus> {
+    return this.fishingStub(chatId).anglerStatus(userId);
+  }
+
   private fishingStub(chatId: number) {
     return this.fishingNs.get(this.fishingNs.idFromName(`fishing_${chatId}`));
   }
@@ -474,6 +480,14 @@ export class StorageService {
 
   refundWallet(chatId: number, input: { userId: number; firstName: string; amount: number; source: string; label: string }): Promise<number> {
     return this.storeStub(chatId).refund(input);
+  }
+
+  buyTideChart(chatId: number, input: { userId: number; firstName: string }): Promise<TideChartBuyResult> {
+    return this.storeStub(chatId).buyTideChart(input);
+  }
+
+  getChartUntil(chatId: number, userId: number): Promise<number | null> {
+    return this.storeStub(chatId).chartUntil(userId);
   }
 
   recordStoreCard(chatId: number, messageId: number, threadId: number | null): Promise<void> {

@@ -217,6 +217,88 @@ export function tideMultiplier(tide: Tide): number {
   return TIDE_TIERS.find((tier) => tier.tide === tide)!.multiplier;
 }
 
+// The 🗺️ Tide chart (bought in the store page; see TIDE_CHART_ITEM in gear.ts): today plus the next DAYS - 1
+// fishing days. Tides are deterministic, so the first EXACT_DAYS are simply the real thing, king tides included.
+// Past that the chart only forecasts: day 4 is right PREDICTED_ACCURACY[0] of the time, day 5 [1], and so on, and
+// otherwise shows a neighbouring tide, one step up or down (low can only miss upward, king only downward). Whether
+// it's right, and which way it misses, are hashes of the secret, the chat, the day forecast, and the day it's
+// viewed: the same all day, redrawn each morning, so a given day's forecast sharpens as it gets closer.
+export const TIDE_CHART = {
+  DAYS: 7,
+  EXACT_DAYS: 3,
+  PREDICTED_ACCURACY: [0.8, 0.7, 0.6, 0.5], // days 4, 5, 6, 7
+} as const;
+
+export interface TideForecastDay {
+  dayNumber: number;
+  tide: Tide;
+  exact: boolean;
+}
+
+// todayDayNumber is the fishing day (see fishingDay). Without a secret, every day is "normal" and exact, the same
+// as what /fish sees.
+export function tideForecast(secret: string | undefined, chatId: number, todayDayNumber: number): TideForecastDay[] {
+  const order = TIDE_TIERS.map((tier) => tier.tide);
+  const days: TideForecastDay[] = [];
+  for (let offset = 0; offset < TIDE_CHART.DAYS; offset++) {
+    const dayNumber = todayDayNumber + offset;
+    if (!secret) {
+      days.push({ dayNumber, tide: "normal", exact: true });
+      continue;
+    }
+    const tide = tideFor(secret, chatId, dayNumber);
+    const accuracy = TIDE_CHART.PREDICTED_ACCURACY[offset - TIDE_CHART.EXACT_DAYS];
+    if (accuracy === undefined) {
+      days.push({ dayNumber, tide, exact: true });
+      continue;
+    }
+    // seededNormal is below inverseNormalCdf(p) with probability exactly p.
+    const key = `${secret}:chart:${chatId}:${dayNumber}:${todayDayNumber}`;
+    if (seededNormal(key) < inverseNormalCdf(accuracy)) {
+      days.push({ dayNumber, tide, exact: false });
+      continue;
+    }
+    const index = order.indexOf(tide);
+    const step = index === 0 ? 1 : index === order.length - 1 ? -1 : seededNormal(`${key}:way`) < 0 ? -1 : 1;
+    days.push({ dayNumber, tide: order[index + step]!, exact: false });
+  }
+  return days;
+}
+
+// How rested an angler's spot is for a cast right now, by days since their last cast (0 = cast today, so the next
+// cast is tomorrow; null = never cast, which counts as fully rested like FIRST_CAST_WAIT_DAYS). Same steps as
+// WAIT_FACTOR: 1, 2, 3, then 4+ days.
+export type SpotRest = "fished_out" | "overfished" | "recovering" | "almost" | "rested";
+const SPOT_RESTS: SpotRest[] = ["fished_out", "overfished", "recovering", "almost", "rested"];
+
+export function spotRest(daysSinceLastCast: number | null): SpotRest {
+  if (daysSinceLastCast === null) {
+    return "rested";
+  }
+  return SPOT_RESTS[Math.min(SPOT_RESTS.length - 1, Math.max(0, Math.floor(daysSinceLastCast)))]!;
+}
+
+// Index into the forecast of the best day to cast: the highest waitFactor(days rested by then) x tideMultiplier, using
+// the tide the chart shows, so the ★ never gives away more than the chart itself. Assumes no casts in between.
+// Today is out if the angler has already cast today. Ties go to the earliest day; null if no day qualifies.
+export function bestCastDay(forecast: TideForecastDay[], daysSinceLastCast: number | null): number | null {
+  let best: number | null = null;
+  let bestScore = -Infinity;
+  forecast.forEach((day, index) => {
+    const rested = daysSinceLastCast === null ? FISHING_CONFIG.FIRST_CAST_WAIT_DAYS : daysSinceLastCast + index;
+    if (rested < 1) {
+      return;
+    }
+    const score = waitFactor(rested) * tideMultiplier(day.tide);
+    // The margin keeps float noise (0.7 x 2 against 1 x 1.4) from breaking a tie the wrong way.
+    if (score > bestScore + 1e-9) {
+      best = index;
+      bestScore = score;
+    }
+  });
+  return best;
+}
+
 // A line from `lines` for the step-th use under `key` (e.g. chat + date + which set). Each key gets its own
 // fixed shuffle, and consecutive steps walk through it, so nothing repeats until the whole set has been
 // used, and a different key (tomorrow) gets a different order. Deterministic: no state to store.

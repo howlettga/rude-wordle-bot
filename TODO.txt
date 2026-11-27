@@ -34,6 +34,8 @@ Store & fishing (next)
 - Sale-driven prices: each sale knocks today's fish price down a little, recovering the next day.
 - Gifting fish or beans to other people.
 - Sell junk for a bean, or junk collections for the museum.
+- Garden - seeds/design/watering
+- timing based on actual dawn
 
 Maybe
 - stock splitting

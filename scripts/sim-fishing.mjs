@@ -1,7 +1,7 @@
 // Simulates /fish with the real math in src/fishing-math.ts (Node 24+ runs the .ts import directly), prints
 // the odds tables, and checks them against the tuning targets. Run after changing FISHING_CONFIG, the tide
 // multipliers, the pet's fish food, the store's prices, gear, or bottles: `npm run sim:fishing`. Exits non-zero if a target is missed.
-import { FISHING_CONFIG, castFactors, junkChance, lakeTier, rollCatch, rollWeight, rotatingLine, speciesForWeight, speciesTier } from "../src/fishing-math.ts";
+import { FISHING_CONFIG, TIDE_CHART, bestCastDay, castFactors, junkChance, lakeTier, rollCatch, rollWeight, rotatingLine, speciesForWeight, speciesTier, tideFor, tideForecast } from "../src/fishing-math.ts";
 import { STORE_CONFIG, fishPriceIndex, fishPricePerLb, fishSalePrice } from "../src/store-math.ts";
 import { GEAR_LINES, castGear } from "../src/gear.ts";
 import { HIGH_TIDE_LINES, HINT_LINES, JUNK_LINES, LAKE_LINES } from "../src/fishing-lines.ts";
@@ -283,6 +283,55 @@ check(
   `cleanBottleText trims, normalizes, and enforces ${BOTTLE_CONFIG.MAX_CHARS} characters and ${BOTTLE_CONFIG.MAX_LINES} lines`
 );
 check(LITTER_LINES.length >= 4, `at least 4 littering quips (${LITTER_LINES.length})`);
+
+// The tide chart (tideForecast): the first EXACT_DAYS are the real tides, and later days are right about as often as
+// PREDICTED_ACCURACY says, missing by one step otherwise. Over 300 chats x 200 viewing days: 60,000 forecasts per day.
+const CHART_SECRET = "sim-tide-secret";
+const TIDE_ORDER = ["low", "normal", "high", "king"];
+const chartHits = TIDE_CHART.PREDICTED_ACCURACY.map(() => 0);
+let chartViews = 0;
+let exactOk = true;
+let missesAdjacent = true;
+let stable = true;
+let bestOk = true;
+for (let chat = 0; chat < 300; chat++) {
+  const chatId = -1_000_000_000_000 - chat * 7919;
+  for (let today = 20_000; today < 20_200; today++) {
+    const forecast = tideForecast(CHART_SECRET, chatId, today);
+    chartViews++;
+    forecast.forEach((day, i) => {
+      const truth = tideFor(CHART_SECRET, chatId, today + i);
+      if (day.dayNumber !== today + i) exactOk = false;
+      if (i < TIDE_CHART.EXACT_DAYS) {
+        if (!day.exact || day.tide !== truth) exactOk = false;
+        return;
+      }
+      if (day.exact) exactOk = false;
+      if (day.tide === truth) chartHits[i - TIDE_CHART.EXACT_DAYS]++;
+      else if (Math.abs(TIDE_ORDER.indexOf(day.tide) - TIDE_ORDER.indexOf(truth)) !== 1) missesAdjacent = false;
+    });
+    if (forecast.length !== TIDE_CHART.DAYS) exactOk = false;
+    if (chat < 30 && JSON.stringify(tideForecast(CHART_SECRET, chatId, today)) !== JSON.stringify(forecast)) stable = false;
+    if (bestCastDay(forecast, 0) === 0) bestOk = false;
+  }
+}
+const noSecret = tideForecast(undefined, -42, 20_000);
+const hitRates = chartHits.map((hits) => hits / chartViews);
+console.log(`\nTide chart (${chartViews.toLocaleString("en-US")} forecasts)`);
+console.log(`  predicted days 4-7 right: ${hitRates.map((rate) => `${(rate * 100).toFixed(1)}%`).join(" / ")}`);
+check(
+  exactOk && noSecret.every((day) => day.tide === "normal" && day.exact),
+  `the chart's first ${TIDE_CHART.EXACT_DAYS} days always equal tideFor (and every day is normal without a secret)`
+);
+check(
+  missesAdjacent && hitRates.every((rate, i) => Math.abs(rate - TIDE_CHART.PREDICTED_ACCURACY[i]) <= 0.03),
+  `predicted days are right within 3 points of ${TIDE_CHART.PREDICTED_ACCURACY.map((a) => `${a * 100}%`).join(" / ")}, and miss by one step`
+);
+check(stable, `the forecast for a day is the same on every call that viewing day`);
+check(
+  bestOk && bestCastDay([{ dayNumber: 0, tide: "king", exact: true }], 0) === null,
+  `bestCastDay never picks today after a cast today`
+);
 
 if (failures.length > 0) {
   console.log(`\n${failures.length} target(s) missed.`);
