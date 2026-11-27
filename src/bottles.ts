@@ -11,7 +11,7 @@ export const BOTTLE_CONFIG = {
   PRICE: 5,
   MAX_CHARS: 200,
   MAX_LINES: 3,
-  MAX_IN_WATER: 3, // per author: thrown and not yet caught or removed
+  MAX_IN_WATER: 5, // per author: thrown and not yet caught or removed
   CATCH_CHANCE: 0.35,
 } as const;
 
@@ -55,16 +55,20 @@ export function washUpTime(distance: BottleDistance, thrownAtSec: number, random
   return thrownAtSec + minHours * 3600 + Math.floor(random() * (spanSec + 1));
 }
 
-// For a throw that would put a 4th of your bottles in the water. Plain text; the page shows it in full.
-export const LITTER_LINES: readonly string[] = [
-  "🚯 You've already got 3 bottles bobbing around out there. The fish are drafting a lawsuit. Wait till someone finds one.",
-  "🚯 Three bottles in the lake is littering. Four is a Superfund site.",
-  "🚯 The lake is not your recycling bin. Three bottles out is plenty. Wait till someone finds one.",
-  "🚯 A turtle just got your second bottle stuck on its head. You don't get a fourth.",
+// For a throw that would put one more than MAX_IN_WATER of your bottles in the water. Plain text; the page shows it
+// in full. {limit} and {next} are filled in from MAX_IN_WATER, so changing the limit never leaves a quip stale.
+const LITTER_TEMPLATES = [
+  "🚯 You've already got {limit} bottles bobbing around out there. The fish are drafting a lawsuit. Wait till someone finds one.",
+  "🚯 {limit} bottles in the lake is littering. {next} is a Superfund site.",
+  "🚯 The lake is not your recycling bin. {limit} bottles out is plenty. Wait till someone finds one.",
+  "🚯 A turtle just got one of your bottles stuck on its head. You don't get another.",
   "🚯 The ducks are nesting in your bottles now. Stop. Wait till someone reels one in.",
-  "🚯 Three bottles out already. The lake has started a GoFundMe to clean up after you.",
-  "🚯 Easy, Exxon. Three bottles in the water is your limit until somebody fishes one out.",
+  "🚯 {limit} bottles out already. The lake has started a GoFundMe to clean up after you.",
+  "🚯 Easy, Exxon. {limit} bottles in the water is your limit until somebody fishes one out.",
 ];
+export const LITTER_LINES: readonly string[] = LITTER_TEMPLATES.map((line) =>
+  line.replaceAll("{limit}", String(BOTTLE_CONFIG.MAX_IN_WATER)).replaceAll("{next}", String(BOTTLE_CONFIG.MAX_IN_WATER + 1))
+);
 
 export function isBottleDistance(value: unknown): value is BottleDistance {
   return value === "shore" || value === "buoys" || value === "sea";

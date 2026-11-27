@@ -51,6 +51,23 @@
           <ul class="list" id="worms"></ul>
         </section>
 
+        <!-- Hidden until the state has a petFund block (it's null with the pet feature off). Once every slot is
+             unlocked, only the "Every pet slot is unlocked." line shows. -->
+        <section class="section" id="fund-section" aria-labelledby="fund-heading" hidden>
+          <h2 class="section-title" id="fund-heading">🐾 Pet fund</h2>
+          <div class="compose" id="fund-box">
+            <div class="fund-open" id="fund-open">
+              <div class="fund-bar" id="fund-bar" role="progressbar" aria-labelledby="fund-progress" aria-valuemin="0">
+                <div class="fund-fill" id="fund-fill"></div>
+              </div>
+              <p class="fund-progress" id="fund-progress"></p>
+              <p class="fund-slots" id="fund-slots"></p>
+              <div class="chips fund-chips" id="fund-amounts" role="group" aria-label="How much to chip in"></div>
+            </div>
+            <p class="fund-done" id="fund-done" hidden>Every pet slot is unlocked.</p>
+          </div>
+        </section>
+
         <!-- Hidden until the state has a bottles block. The distance options sit above the note, so they stay in view
              while the on-screen keyboard is up, and the counter sits inside the note's box for the same reason. -->
         <section class="section" id="bottle-section" aria-labelledby="bottle-heading" hidden>

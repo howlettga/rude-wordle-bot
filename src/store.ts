@@ -350,6 +350,9 @@ function formatCard(card: StoreCard, fishing: boolean): string {
   } else if (activity?.kind === "bottle") {
     // Anonymous on purpose: whoever threw it is never named anywhere (see bottles.ts).
     sections.push(`<i>🍾 Someone threw a bottle out to sea.</i>`);
+  } else if (activity?.kind === "fund") {
+    const { firstName, amount } = activity;
+    sections.push(`<i>🐾 ${escapeHtml(firstName)} chipped in ${formatBeans(amount)} to the pet fund.</i>`);
   }
   return sections.join("\n\n");
 }

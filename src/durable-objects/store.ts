@@ -11,12 +11,13 @@ export interface StoreFishPrice {
   yesterdayPerLb: number;
 }
 
-// The card's latest-activity line: a sale, someone upgrading their gear (worms aren't news), or a message in a
-// bottle going out to sea, which stays anonymous, so it carries no name.
+// The card's latest-activity line: a sale, someone upgrading their gear (worms aren't news), a message in a
+// bottle going out to sea, which stays anonymous, so it carries no name, or someone chipping in to the pet fund.
 export type StoreActivity =
   | { kind: "sale"; firstName: string; label: string; amount: number } // label e.g. "14.2 lb carp"
   | { kind: "upgrade"; firstName: string; label: string; line: GearLine } // label e.g. "Carbon rod"
-  | { kind: "bottle" };
+  | { kind: "bottle" }
+  | { kind: "fund"; firstName: string; amount: number };
 
 export interface StoreCard {
   fish: StoreFishPrice;
@@ -40,7 +41,7 @@ export type StoreBuyResult = Exclude<StoreTapResult, { kind: "CONFIRM" }>;
 
 export const BUY_CONFIRM_SECONDS = 15;
 
-// A flat-price purchase that isn't gear (a message in a bottle), from charge.
+// A purchase that isn't gear (a message in a bottle, a pet fund donation), from charge.
 export type StoreChargeResult = { ok: true; balance: number } | { ok: false; balance: number };
 
 export interface StoreSaleResult {
@@ -135,14 +136,15 @@ export class Store extends DurableObject<Env> {
     }
   }
 
-  // A bottle that was refunded (it never went in the water; see refund) isn't news.
+  // A bottle or pet fund donation that was refunded (it never went in the water, or the fund refused it; see refund)
+  // isn't news.
   async card(chatId: number): Promise<StoreCard> {
     const row = this.ctx.storage.sql
       .exec<{ first_name: string; label: string; delta: number; reason: string; source: string }>(
         `SELECT first_name, label, delta, reason, source FROM ledger l
          WHERE reason = 'sale'
             OR (reason = 'buy' AND source IN ('rod', 'boat'))
-            OR (reason = 'buy' AND source = 'bottle'
+            OR (reason = 'buy' AND source IN ('bottle', 'fund')
                 AND NOT EXISTS (SELECT 1 FROM ledger r WHERE r.reason = 'refund' AND r.item_id = l.id))
          ORDER BY id DESC LIMIT 1`
       )
@@ -153,7 +155,9 @@ export class Store extends DurableObject<Env> {
         ? { kind: "sale", firstName: row.first_name, label: row.label, amount: row.delta }
         : row.source === "bottle"
           ? { kind: "bottle" }
-          : { kind: "upgrade", firstName: row.first_name, label: row.label, line: row.source as GearLine };
+          : row.source === "fund"
+            ? { kind: "fund", firstName: row.first_name, amount: -row.delta } // a buy's delta is negative
+            : { kind: "upgrade", firstName: row.first_name, label: row.label, line: row.source as GearLine };
     return { fish: this.fishPrice(chatId), lastActivity };
   }
 

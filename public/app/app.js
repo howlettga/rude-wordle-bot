@@ -6,15 +6,19 @@
 //   POST /app/api/sell { fishId }  sell one fish
 //   POST /app/api/buy  { item }    buy the next rod or boat tier, or one worm
 //   POST /app/api/bottle { text, distance }  pay for a message in a bottle and throw it out to sea
+//   POST /app/api/fund { amount }  chip in to the pet fund (see docs/pet-fund-plan.md, package P)
 // Tapping a row selects it, and Telegram's bottom button (MainButton) does the action. Typing a bottle note (or picking
-// how far to throw it) makes the bottle the selection instead. After every sale or purchase the page re-fetches state,
-// so it always shows what the server has.
+// how far to throw it) makes the bottle the selection instead, and picking a pet fund amount makes that the selection.
+// After every sale or purchase the page re-fetches state, so it always shows what the server has.
 //
 // /app/?mock=1 runs on built-in fixture data with faked sell and buy responses, for reviewing the page in a normal
 // browser, and draws a stand-in for the bottom button (MainButton only renders inside Telegram). Extra mock switches:
 // &fishing=0 (fishing off), &empty=1 (empty bucket), &error=LINK_EXPIRED (or any error code: the state request fails),
 // &balance=3 (start with that many beans), &bottlelimit=1 (start with too many bottles out there). The 3rd bottle thrown
 // in a mock session is refused with a littering quip, the way the real API answers a player's 4th bottle in the water.
+// The pet fund starts at 🫘40 of 🫘100 and chipping in moves it for real (crossing a goal unlocks a slot); &fund=full
+// starts with every slot unlocked, &fund=almost with 🫘10 left in the whole fund (so bigger amounts are refused), and
+// &fund=off hides it, as with the pet feature off.
 //
 // All text from the API goes into the page with textContent, never innerHTML.
 "use strict";
@@ -38,7 +42,8 @@
   const $ = (id) => document.getElementById(id);
 
   let state = null; // the last GET /app/api/state response
-  let selected = null; // { kind: "fish", id } | { kind: "gear", line } | { kind: "worms" } | { kind: "bottle" }
+  // { kind: "fish", id } | { kind: "gear", line } | { kind: "worms" } | { kind: "bottle" } | { kind: "fund", amount }
+  let selected = null;
   let bottleDistance = null; // the picked distance id for the bottle note; kept while something else is selected
   let busy = false;
   let noticeTimer = 0;
@@ -258,6 +263,25 @@
         },
       };
     }
+    if (selected.kind === "fund") {
+      const fund = state.petFund;
+      const amount = selected.amount;
+      if (!fund || fund.goal === null || !fund.options.includes(amount)) return null;
+      if (state.balance < amount) return { label: "Not enough beans", active: false };
+      return {
+        label: "Chip in " + beans(amount),
+        active: true,
+        path: "/app/api/fund",
+        body: { amount },
+        clear: true,
+        done(result) {
+          if (typeof result.unlocked === "number" && result.unlocked > 0) {
+            return "🎉 You unlocked room for another pet! Use /adopt.";
+          }
+          return "🐾 Thanks for chipping in.";
+        },
+      };
+    }
     if (selected.kind === "worms") {
       const worms = state.worms;
       if (worms.count >= worms.max) return { label: "Your worm can is full", active: false };
@@ -352,6 +376,23 @@
       worms: data.worms || { count: 0, max: 0, price: 0 },
       gear: Array.isArray(data.gear) ? data.gear : [],
       bottles: normalizeBottles(data.bottles),
+      petFund: normalizePetFund(data.petFund),
+    };
+  }
+
+  // null (and the section stays hidden) unless the state has a petFund block. goal is null once every slot is unlocked.
+  function normalizePetFund(fund) {
+    if (!fund || typeof fund !== "object") return null;
+    const count = (value, fallback) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback);
+    const options = Array.isArray(fund.options) ? fund.options.filter((n) => typeof n === "number" && n > 0) : [];
+    const slots = count(fund.slots, 1);
+    return {
+      raised: count(fund.raised, 0),
+      goal: typeof fund.goal === "number" && fund.goal > 0 ? fund.goal : null,
+      slots,
+      maxSlots: Math.max(count(fund.maxSlots, slots), slots),
+      livingPets: count(fund.livingPets, 0),
+      options,
     };
   }
 
@@ -406,6 +447,7 @@
     renderBucket();
     renderGear();
     renderWorms();
+    renderFund();
     renderBottle();
     markSelection();
     updateBottom();
@@ -511,6 +553,40 @@
     );
   }
 
+  // The progress toward the next goal, the slot count, and one chip per preset amount. Picking a chip works like tapping
+  // a row (see select), so it replaces any other selection and tapping it again deselects it.
+  function renderFund() {
+    const fund = state.petFund;
+    $("fund-section").hidden = !fund;
+    const open = !!fund && fund.goal !== null;
+    if (!open && selected && selected.kind === "fund") selected = null;
+    if (!fund) return;
+    $("fund-open").hidden = !open;
+    $("fund-done").hidden = open;
+    if (!open) {
+      $("fund-amounts").replaceChildren();
+      return;
+    }
+    const raised = Math.min(fund.raised, fund.goal);
+    const bar = $("fund-bar");
+    bar.setAttribute("aria-valuemax", String(fund.goal));
+    bar.setAttribute("aria-valuenow", String(raised));
+    $("fund-fill").style.width = ((raised / fund.goal) * 100).toFixed(1) + "%";
+    $("fund-progress").textContent = beans(fund.raised) + " / " + beans(fund.goal) + " toward room for another pet";
+    $("fund-slots").textContent = "Pet slots: " + fund.slots.toLocaleString("en-US") + " of " + fund.maxSlots.toLocaleString("en-US");
+    $("fund-amounts").replaceChildren(
+      ...fund.options.map((amount) => {
+        const chip = el("button", "chip" + (state.balance < amount ? " dim" : ""));
+        chip.type = "button";
+        chip.dataset.amount = String(amount);
+        chip.setAttribute("aria-label", "Chip in " + beans(amount));
+        chip.append(el("span", "chip-label", beans(amount)));
+        chip.addEventListener("click", () => select("fund:" + amount));
+        return chip;
+      })
+    );
+  }
+
   // The note box keeps its text across re-renders; only the limits, the price, and the distance options are redrawn.
   function renderBottle() {
     const bottles = state.bottles;
@@ -600,6 +676,7 @@
     if (selected.kind === "fish") return "fish:" + selected.id;
     if (selected.kind === "gear") return "gear:" + selected.line;
     if (selected.kind === "bottle") return "bottle";
+    if (selected.kind === "fund") return "fund:" + selected.amount;
     return "worms";
   }
 
@@ -611,6 +688,12 @@
       node.setAttribute("aria-pressed", on ? "true" : "false");
     }
     $("bottle-compose").classList.toggle("selected", key === "bottle");
+    for (const chip of document.querySelectorAll(".chip[data-amount]")) {
+      const on = key === "fund:" + chip.dataset.amount;
+      chip.classList.toggle("selected", on);
+      chip.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+    $("fund-box").classList.toggle("selected", !!key && key.startsWith("fund:"));
   }
 
   // Tapping a row selects it; tapping it again deselects it.
@@ -622,6 +705,8 @@
       selected = { kind: "fish", id: Number(key.slice(5)) };
     } else if (key.startsWith("gear:")) {
       selected = { kind: "gear", line: key.slice(5) };
+    } else if (key.startsWith("fund:")) {
+      selected = { kind: "fund", amount: Number(key.slice(5)) };
     } else {
       selected = { kind: "worms" };
     }
@@ -684,11 +769,20 @@
 
   // Stand-ins for LITTER_LINES in src/bottles.ts, so the refusal can be reviewed at full length.
   const MOCK_LITTER_LINES = [
-    "🚯 You've already got 3 bottles bobbing around out there. The fish are drafting a lawsuit. Wait till someone finds one.",
-    "🚯 Three bottles in the lake is littering. Four is a Superfund site.",
+    "🚯 You've already got 5 bottles bobbing around out there. The fish are drafting a lawsuit. Wait till someone finds one.",
+    "🚯 5 bottles in the lake is littering. 6 is a Superfund site.",
   ];
 
+  // Same as PET_FUND in src/pet-config.ts: the goals that unlock slots 2, 3, and 4, and the preset amounts.
+  const MOCK_FUND_GOALS = [100, 1000, 2500];
+  const MOCK_FUND_OPTIONS = [10, 25, 50, 100];
+  const MOCK_FUND_START = {
+    full: { slots: 4, raised: 0 },
+    almost: { slots: 3, raised: 2490 },
+  };
+
   const mockBalance = Number(params.get("balance"));
+  const mockFundStart = MOCK_FUND_START[params.get("fund")] || { slots: 1, raised: 40 };
 
   const mock = {
     firstName: "Galen",
@@ -701,6 +795,9 @@
     worms: 2,
     bottleThrows: 0, // this session's throw attempts; the 3rd is refused as littering
     bottlesAtLimit: params.get("bottlelimit") === "1",
+    pets: params.get("fund") !== "off", // the pet feature, which the fund needs
+    fundSlots: mockFundStart.slots,
+    fundRaised: mockFundStart.raised, // toward the next goal
     bucket:
       params.get("empty") === "1"
         ? []
@@ -721,6 +818,20 @@
     NOT_A_MEMBER: [403, "You need to be in this group to use its store."],
     STORE_OFF: [403, "The store is turned off in this chat."],
   };
+
+  // The state's petFund block, and what POST /app/api/fund returns as fund.
+  function mockPetFund() {
+    if (!mock.pets) return null;
+    const goal = MOCK_FUND_GOALS[mock.fundSlots - 1];
+    return {
+      raised: mock.fundRaised,
+      goal: goal === undefined ? null : goal,
+      slots: mock.fundSlots,
+      maxSlots: 1 + MOCK_FUND_GOALS.length,
+      livingPets: 1,
+      options: MOCK_FUND_OPTIONS,
+    };
+  }
 
   function mockState() {
     const gear = ["rod", "boat"].map((line) => {
@@ -744,6 +855,7 @@
         worms: { count: mock.worms, max: 5, price: 2 },
         gear,
         bottles: { price: 5, maxChars: 200, maxLines: 3, atLimit: mock.bottlesAtLimit, distances: MOCK_BOTTLE_DISTANCES },
+        petFund: mockPetFund(),
       })
     );
   }
@@ -806,6 +918,30 @@
       }
       mock.balance -= 5;
       return { balance: mock.balance };
+    }
+    // The same steps as the real API: check the amount, the pet switch, and the balance, then donate. Anything past a
+    // goal carries into the next one, and every goal crossed unlocks a slot.
+    if (method === "POST" && path === "/app/api/fund") {
+      const amount = body.amount;
+      if (!MOCK_FUND_OPTIONS.includes(amount)) fail(400, "BAD_REQUEST", "Pick an amount.");
+      if (!mock.pets) fail(409, "PET_OFF", "Pets are off in this chat.");
+      if (mock.balance < amount) {
+        fail(409, "CANT_AFFORD", "That's " + beans(amount) + ". You have " + beans(mock.balance) + ". Sell some fish.");
+      }
+      const goals = MOCK_FUND_GOALS.slice(mock.fundSlots - 1);
+      if (!goals.length) fail(409, "MAXED", "Every pet slot is already unlocked.");
+      const left = goals.reduce((sum, goal) => sum + goal, 0) - mock.fundRaised;
+      if (amount > left) fail(409, "TOO_MUCH", "The fund only needs " + beans(left) + " more.");
+      mock.balance -= amount;
+      mock.fundRaised += amount;
+      let unlocked = 0;
+      for (let goal = MOCK_FUND_GOALS[mock.fundSlots - 1]; goal !== undefined && mock.fundRaised >= goal; ) {
+        mock.fundRaised -= goal;
+        mock.fundSlots += 1;
+        unlocked += 1;
+        goal = MOCK_FUND_GOALS[mock.fundSlots - 1];
+      }
+      return { balance: mock.balance, fund: mockPetFund(), unlocked };
     }
     return fail(404, "NOT_FOUND", "Not found.");
   }

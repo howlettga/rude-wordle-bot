@@ -30,13 +30,15 @@ import type { CastGear } from "./fishing-math.js";
 import type {
   Pet,
   PetAdoptResult,
+  PetFundDonateResult,
+  PetFundStatus,
   PetGraveyardEntry,
   PetInteractResult,
+  PetKillResult,
   PetLookup,
   PetPeek,
   PetStatus,
-  PetWarning,
-  PetEulogy,
+  PetTickResult,
 } from "./durable-objects/pet.js";
 import type { PetRegistry } from "./durable-objects/pet-registry.js";
 import { type FeatureKey, type FeatureFlags, resolveFeatures } from "./features.js";
@@ -502,7 +504,7 @@ export class StorageService {
     return this.petStub(chatId).interact(input);
   }
 
-  tickPet(chatId: number, awake: boolean): Promise<{ pet: PetStatus | null; eulogy?: PetEulogy; warnings: PetWarning[] }> {
+  tickPet(chatId: number, awake: boolean): Promise<PetTickResult> {
     return this.petStub(chatId).tick(awake);
   }
 
@@ -514,12 +516,20 @@ export class StorageService {
     return this.petStub(chatId).graveyard(limit);
   }
 
-  killPet(chatId: number): Promise<PetLookup> {
-    return this.petStub(chatId).kill();
+  killPet(chatId: number, name?: string): Promise<PetKillResult> {
+    return this.petStub(chatId).kill(name);
   }
 
   revivePet(chatId: number): Promise<PetStatus | null> {
     return this.petStub(chatId).revive();
+  }
+
+  getPetFund(chatId: number): Promise<PetFundStatus> {
+    return this.petStub(chatId).fundStatus();
+  }
+
+  donateToPetFund(chatId: number, input: { userId: number; firstName: string; amount: number }): Promise<PetFundDonateResult> {
+    return this.petStub(chatId).donateToFund(input);
   }
 
   private petStub(chatId: number) {

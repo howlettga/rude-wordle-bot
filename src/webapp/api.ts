@@ -3,8 +3,10 @@ import type { Env } from "../main.js";
 import { buildStorage } from "../build-storage.js";
 import type { StorageService } from "../storage-service.js";
 import type { StoreBuyResult, StoreItem } from "../durable-objects/store.js";
+import type { PetFundStatus, PetFundUnlock } from "../durable-objects/pet.js";
 import { GEAR_LINES, WORMS, type GearLine } from "../gear.js";
 import { BOTTLE_CONFIG, BOTTLE_DISTANCES, LITTER_LINES, cleanBottleText, isBottleDistance } from "../bottles.js";
+import { PET_FUND } from "../pet-config.js";
 import { formatBeans } from "../store-math.js";
 import { renderStoreCard, storeBannerUrl, storeUrlFor, type StoreLinks } from "../store.js";
 import { random } from "../util.js";
@@ -20,19 +22,23 @@ import { signStoreLink, verifyStoreLink } from "./store-link.js";
 //   4. The chat has the store feature on.
 // The page never sends a chat id; it only ever comes from the signed link.
 //
-//   GET  /app/api/state  the player's wallet, bucket (with quotes), gear and worms, and today's fish price
+//   GET  /app/api/state  the player's wallet, bucket (with quotes), gear and worms, today's fish price, and the pet
+//                        fund (null with the pet feature off)
 //   POST /app/api/sell   { fishId } sells that fish, the same take-then-pay as the card's Sell buttons
 //   POST /app/api/buy    { item: "rod" | "boat" | "worms" } buys it now (the page asks before it calls this)
 //   POST /app/api/bottle { text, distance: "shore" | "buoys" | "sea" } pays for a message in a bottle and throws it
 //                        out to sea (see bottles.ts)
-// A sale, a rod or boat upgrade, or a bottle also edits the chat's latest /store card (its activity line), after the
-// response.
+//   POST /app/api/fund   { amount } chips in to the pet fund (see PET_FUND in pet-config.ts); reaching a goal posts a
+//                        celebration in the chat
+// A sale, a rod or boat upgrade, a bottle, or a donation also edits the chat's latest /store card (its activity line),
+// after the response.
 
 const ROUTES: Record<string, { method: "GET" | "POST"; handle: (session: Session, request: Request) => Promise<Response> }> = {
   "/app/api/state": { method: "GET", handle: (session) => getState(session) },
   "/app/api/sell": { method: "POST", handle: (session, request) => sell(session, request) },
   "/app/api/buy": { method: "POST", handle: (session, request) => buy(session, request) },
   "/app/api/bottle": { method: "POST", handle: (session, request) => throwBottle(session, request) },
+  "/app/api/fund": { method: "POST", handle: (session, request) => chipIn(session, request) },
 };
 
 // Plain text for the player: the page shows message as it is.
@@ -44,6 +50,7 @@ const MESSAGES = {
   NOT_A_MEMBER: "Only members of this chat can use its store.",
   STORE_OFF: "The General Store is turned off in this chat.",
   FISHING_OFF: "Fishing is turned off in this chat, so there's nothing to sell or buy.",
+  PET_OFF: "The group pet is turned off in this chat, so there's no pet fund.",
   NOT_YOURS: "That's not your fish.",
   GONE: "That fish is already gone.",
   NOT_FOUND: "There's nothing here.",
@@ -58,6 +65,7 @@ interface Session {
   chatId: number;
   user: { id: number; first_name: string };
   fishing: boolean;
+  pet: boolean;
 }
 
 function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
@@ -119,7 +127,15 @@ async function authenticate(request: Request, env: Env, ctx: ExecutionContext): 
     return fail(403, "STORE_OFF", MESSAGES.STORE_OFF);
   }
 
-  return { env, ctx, storage, chatId, user: { id: user.id, first_name: user.first_name }, fishing: features.fishing.enabled };
+  return {
+    env,
+    ctx,
+    storage,
+    chatId,
+    user: { id: user.id, first_name: user.first_name },
+    fishing: features.fishing.enabled,
+    pet: features.pet.enabled,
+  };
 }
 
 // Telegram refusing the lookup (user or chat not found, bot no longer in the chat) counts as not a member; anything
@@ -147,12 +163,13 @@ async function isMember(env: Env, chatId: number, userId: number): Promise<boole
 }
 
 async function getState(session: Session): Promise<Response> {
-  const { storage, chatId, user, fishing } = session;
-  const [card, wallet, held, bottlesOut] = await Promise.all([
+  const { storage, chatId, user, fishing, pet } = session;
+  const [card, wallet, held, bottlesOut, fund] = await Promise.all([
     storage.getStoreCard(chatId),
     storage.getWallet(chatId, user.id),
     fishing ? storage.getFishBucket(chatId, user.id) : Promise.resolve([]),
     fishing ? storage.countBottlesInWater(chatId, user.id) : Promise.resolve(0),
+    pet ? storage.getPetFund(chatId) : Promise.resolve(null),
   ]);
   const quotes = held.length > 0 ? await storage.quoteFishes(chatId, held) : [];
   const bucket = held.map((fish, i) => ({
@@ -191,7 +208,14 @@ async function getState(session: Session): Promise<Response> {
       // No hint (the wash-up ranges) on purpose: how long a throw takes is part of the mystery.
       distances: Object.entries(BOTTLE_DISTANCES).map(([id, { emoji, label }]) => ({ id, emoji, label })),
     },
+    petFund: fund ? petFundJson(fund) : null,
   });
+}
+
+// The page's petFund block: the fund's status plus the amounts it offers. goal is null once every slot is unlocked.
+function petFundJson(fund: PetFundStatus) {
+  const { raised, goal, slots, maxSlots, livingPets } = fund;
+  return { raised, goal, slots, maxSlots, livingPets, options: [...PET_FUND.DONATION_OPTIONS] };
 }
 
 // The body as a JSON object, or null if it isn't one.
@@ -308,6 +332,85 @@ async function throwBottle(session: Session, request: Request): Promise<Response
   return json(200, { balance: charged.balance });
 }
 
+function isDonationOption(amount: unknown): amount is (typeof PET_FUND.DONATION_OPTIONS)[number] {
+  return typeof amount === "number" && (PET_FUND.DONATION_OPTIONS as readonly number[]).includes(amount);
+}
+
+// Same shape as throwBottle: pay first, then donate (the Store and Pet DOs are separate), and give the beans back if
+// the fund refuses (every slot already unlocked, or more than it still needs) or the donation fails. The card's
+// activity line skips a refunded donation (see Store.card). A donation that goes through is final.
+async function chipIn(session: Session, request: Request): Promise<Response> {
+  const body = await readBody(request);
+  const amount = body?.amount;
+  if (!isDonationOption(amount)) {
+    return fail(400, "BAD_REQUEST", "Pick an amount.");
+  }
+  const { env, ctx, storage, chatId, user } = session;
+  if (!session.pet) {
+    return fail(409, "PET_OFF", MESSAGES.PET_OFF);
+  }
+
+  const purchase = { userId: user.id, firstName: user.first_name, amount, source: "fund", label: "pet fund" };
+  const charged = await storage.chargeWallet(chatId, purchase);
+  if (!charged.ok) {
+    return fail(409, "CANT_AFFORD", `That's ${formatBeans(amount)}. You have ${formatBeans(charged.balance)}. Sell some fish.`);
+  }
+  let donated;
+  try {
+    donated = await storage.donateToPetFund(chatId, { userId: user.id, firstName: user.first_name, amount });
+  } catch (err) {
+    await storage.refundWallet(chatId, purchase).catch((refundErr) => console.error("fund refund failed", chatId, user.id, refundErr));
+    throw err;
+  }
+  if (!donated.ok) {
+    await storage.refundWallet(chatId, purchase);
+    return donated.reason === "MAXED"
+      ? fail(409, "MAXED", "Every pet slot is already unlocked.")
+      : fail(409, "TOO_MUCH", `The fund only needs ${formatBeans(donated.max)} more.`);
+  }
+
+  refreshLatestCard(session);
+  if (donated.unlocked.length > 0) {
+    const unlocked = donated.unlocked;
+    const celebrate = async () => {
+      // Into the latest store card's topic, if it's in one, since that's where the store lives in this chat.
+      const latest = await storage.getLatestStoreCard(chatId).catch((err) => {
+        console.error("getLatestStoreCard failed", chatId, err);
+        return null;
+      });
+      const api = new Api(env.BOT_TOKEN);
+      for (const unlock of unlocked) {
+        await api
+          .sendMessage(chatId, celebration(unlock), {
+            link_preview_options: { is_disabled: true },
+            ...(latest?.threadId != null && { message_thread_id: latest.threadId }),
+          })
+          .catch((err) => console.error("pet fund celebration failed", chatId, unlock.slot, err));
+      }
+    };
+    ctx.waitUntil(celebrate());
+  }
+  return json(200, { balance: charged.balance, fund: petFundJson(donated.fund), unlocked: donated.unlocked.length });
+}
+
+// Plain text:
+//   🎉 The pet fund hit 🫘100! There's room for another pet. Use /adopt.
+//   Thanks to Galen (🫘60), Kyle (🫘30), and Sam (🫘10).
+function celebration(unlock: PetFundUnlock): string {
+  const names = unlock.topDonors.slice(0, PET_FUND.TOP_DONORS).map(({ firstName, amount }) => `${firstName} (${formatBeans(amount)})`);
+  const headline = `🎉 The pet fund hit ${formatBeans(unlock.goal)}! There's room for another pet. Use /adopt.`;
+  if (names.length === 0) {
+    return headline;
+  }
+  const thanks =
+    names.length === 1
+      ? names[0]
+      : names.length === 2
+        ? `${names[0]} and ${names[1]}`
+        : `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+  return `${headline}\nThanks to ${thanks}.`;
+}
+
 // Plain text, like the card's gear pop-ups (see gearPopup in store.ts).
 function buyRefusal(result: Exclude<StoreBuyResult, { kind: "BOUGHT" }>): string {
   switch (result.kind) {
@@ -325,10 +428,11 @@ function buyRefusal(result: Exclude<StoreBuyResult, { kind: "BOUGHT" }>): string
 }
 
 // After the response goes out: puts the new activity line (and a freshly signed Open store link) on the chat's most
-// recent /store card. Older cards are left alone. Fishing is on here, or there'd have been no sale, upgrade, or bottle.
-// Failures, like "message is not modified" or a deleted card, are only logged.
+// recent /store card. Older cards are left alone. Fishing is on for a sale, upgrade, or bottle, but a pet fund
+// donation doesn't need it, so the card follows the chat's switch. Failures, like "message is not modified" or a
+// deleted card, are only logged.
 function refreshLatestCard(session: Session) {
-  const { env, ctx, storage, chatId } = session;
+  const { env, ctx, storage, chatId, fishing } = session;
   const refresh = async () => {
     const latest = await storage.getLatestStoreCard(chatId);
     if (!latest) {
@@ -336,7 +440,7 @@ function refreshLatestCard(session: Session) {
     }
     const [card, storeUrl] = await Promise.all([storage.getStoreCard(chatId), storeUrlFor(chatId, storeLinks(env))]);
     const links = storeLinks(env);
-    const { text, reply_markup, link_preview_options } = renderStoreCard(card, true, storeUrl, links.bannerUrl);
+    const { text, reply_markup, link_preview_options } = renderStoreCard(card, fishing, storeUrl, links.bannerUrl);
     await new Api(env.BOT_TOKEN).editMessageText(chatId, latest.messageId, text, { parse_mode: "HTML", reply_markup, link_preview_options });
   };
   ctx.waitUntil(refresh().catch((err) => console.error("store card refresh failed", chatId, err)));

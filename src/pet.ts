@@ -4,17 +4,20 @@ import { createConversation } from "@grammyjs/conversations";
 import type { Conversation } from "@grammyjs/conversations";
 import { type MyContext, replyToMessage, replyHTML, isNotCommand, CONVERSATION_TIMEOUT_MS } from "./context.js";
 import type { StorageService } from "./storage-service.js";
-import type { PetAction, PetEulogy, PetInput, PetPeek, PetStatus, PetWarning } from "./durable-objects/pet.js";
+import type { PetAction, PetEulogy, PetFundStatus, PetInput, PetPeek, PetStatus, PetWarning } from "./durable-objects/pet.js";
 import type { FishSize, HeldFish } from "./durable-objects/fishing.js";
 import { PET_CONFIG, PET_TRICKS, foodForFish, rollSpecies } from "./pet-config.js";
 import { easternParts } from "./eastern-time.js";
 import { escapeHtml, random } from "./util.js";
 
-// The "pet" feature (see features.ts): one shared pet per chat, kept alive by everyone.
-//   /adopt      -> when there's no living pet: reveals a random animal, then asks the adopter to name it
-//   /pet        -> status card (food, mood) with Feed / Pet / Play buttons that update the card in place
+// The "pet" feature (see features.ts): shared pets, kept alive by everyone. A chat starts with room for one;
+// the pet fund on the store page buys room for more (see PET_FUND).
+//   /adopt      -> when there's a free slot: reveals a random animal, then asks the adopter to name it
+//   /pet        -> status card (food, mood) with Feed / Pet / Play buttons that update the card in place.
+//                  With two or more pets, a summary of them all with a "check on" button each, which turns
+//                  the same message into that pet's card (and "◀ All pets" turns it back)
 //   /graveyard  -> past pets, how long they lived, and how they went
-//   /petkill    -> owner-only: puts the pet down (mercy, or testing)
+//   /petkill    -> owner-only: puts a pet down (mercy, or testing); needs its name if there are several
 //   /petrevive  -> owner-only: brings the last dead pet back at full meters (in case a bug killed it)
 // While the chat has fishing on, feeding costs one of the feeder's own fish: the card's Feed button is
 // three — small, medium, large — each taking that size from the tapper's bucket (see Fishing.takeFish),
@@ -32,6 +35,9 @@ const GRAVEYARD_SIZE = 10;
 // Callback data: pet:<action>:<petId>, plus :s / :m / :l for which size of fish a feed takes. Cards posted
 // before fish feeding have plain pet:feed:<id> buttons, which count as medium.
 const BUTTON_DATA = /^pet:(feed|pet|play):(\d+)(?::([sml]))?$/;
+// The switcher: pet:view:<petId> turns the summary into that pet's card, and pet:all turns it back.
+const VIEW_DATA = /^pet:view:(\d+)$/;
+const ALL_DATA = "pet:all";
 const FISH_SIZES: Record<string, FishSize> = { s: "small", m: "medium", l: "large" };
 
 export class PetComposer extends Composer<MyContext> {
@@ -47,6 +53,8 @@ export class PetComposer extends Composer<MyContext> {
     this.command("petkill", (ctx) => this.handleKill(ctx));
     this.command("petrevive", (ctx) => this.handleRevive(ctx));
     this.callbackQuery(BUTTON_DATA, (ctx) => this.handleButton(ctx));
+    this.callbackQuery(VIEW_DATA, (ctx) => this.handleView(ctx));
+    this.callbackQuery(ALL_DATA, (ctx) => this.handleAll(ctx));
   }
 
   private isOwner(ctx: MyContext): boolean {
@@ -62,15 +70,25 @@ export class PetComposer extends Composer<MyContext> {
     if (!ctx.chat || !ctx.from) {
       return;
     }
-    const { pet, eulogy } = await this.storage.getPet(ctx.chat.id);
-    if (eulogy) {
-      await this.postEulogy(ctx.api, ctx.chat.id, eulogy);
-    }
-    if (pet) {
-      await replyHTML(ctx, `You already have ${petTitle(pet)}. One pet at a time.`);
-      return;
+    const { pets, eulogies } = await this.storage.getPet(ctx.chat.id);
+    await this.postEulogies(ctx.api, ctx.chat.id, eulogies);
+    if (pets.length > 0) {
+      const fund = await this.storage.getPetFund(ctx.chat.id);
+      if (pets.length >= fund.slots) {
+        await replyHTML(ctx, `You already have ${joinList(pets.map(petTitle))}. ${await this.noRoomLine(ctx.chat.id, fund)}`);
+        return;
+      }
     }
     await ctx.conversation.enter(ADOPT_CONVERSATION);
+  }
+
+  // Why /adopt won't: a nudge toward the pet fund while there's one to chip in to (and the store's on to
+  // do it in), otherwise just no.
+  private async noRoomLine(chatId: number, fund: PetFundStatus): Promise<string> {
+    if (fund.goal !== null && (await this.storage.getChatFeatures(chatId)).store.enabled) {
+      return "No room for another pet. Chip in to the pet fund in /store.";
+    }
+    return fund.slots === 1 ? "One pet at a time." : "No room for another pet.";
   }
 
   // The species is rolled (inside external(), so the conversation's replays keep the same animal) and
@@ -108,7 +126,7 @@ export class PetComposer extends Composer<MyContext> {
         continue;
       }
 
-      const { result, fishFeeding } = await conversation.external(async () => {
+      const { result, fishFeeding, livingPets } = await conversation.external(async () => {
         const adopted = await this.storage.adoptPet(chatId, {
           name,
           species: species.species,
@@ -121,16 +139,22 @@ export class PetComposer extends Composer<MyContext> {
         if (adopted.ok) {
           await this.storage.registerPetChat(chatId);
         }
-        return { result: adopted, fishFeeding: await this.feedsOnFish(chatId) };
+        const living = adopted.ok ? (await this.storage.getPetFund(chatId)).livingPets : adopted.pets.length;
+        return { result: adopted, fishFeeding: await this.feedsOnFish(chatId), livingPets: living };
       });
 
       if (!result.ok) {
-        await replyHTML(response, `Too slow — ${petTitle(result.pet)} already lives here.`);
+        const titles = result.pets.map(petTitle);
+        await replyHTML(
+          response,
+          titles.length === 1 ? `Too slow — ${titles[0]} already lives here.` : `Too slow — ${joinList(titles)} took the last spot.`
+        );
         return;
       }
+      await this.postEulogies(response.api, chatId, result.eulogies);
       await response.reply(`🎉 Welcome home, ${petTitle(result.pet)}!\n\n${formatCard(result.pet)}`, {
         parse_mode: "HTML",
-        reply_markup: cardKeyboard(result.pet, fishFeeding),
+        reply_markup: cardKeyboard(result.pet, fishFeeding, livingPets >= 2),
         ...(threadId !== null && { message_thread_id: threadId }),
       });
       return;
@@ -141,20 +165,60 @@ export class PetComposer extends Composer<MyContext> {
     if (!ctx.chat) {
       return;
     }
-    const { pet, eulogy } = await this.storage.getPet(ctx.chat.id);
-    if (eulogy) {
-      await this.postEulogy(ctx.api, ctx.chat.id, eulogy);
+    const { pets, eulogies } = await this.storage.getPet(ctx.chat.id);
+    await this.postEulogies(ctx.api, ctx.chat.id, eulogies);
+    if (pets.length === 0) {
+      // A eulogy just posted already says so.
+      if (eulogies.length === 0) {
+        await replyToMessage(ctx, NO_PET_MESSAGE);
+      }
       return;
     }
-    if (!pet) {
-      await replyToMessage(ctx, "There's no pet here. Use /adopt to get one.");
-      return;
-    }
-    await ctx.reply(formatCard(pet), {
+    const view = petsView(pets, await this.feedsOnFish(ctx.chat.id));
+    await ctx.reply(view.text, {
       parse_mode: "HTML",
-      reply_markup: cardKeyboard(pet, await this.feedsOnFish(ctx.chat.id)),
+      ...(view.keyboard && { reply_markup: view.keyboard }),
       ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
     });
+  }
+
+  // "🔍 Check on Bingo": turns the summary into Bingo's card. If Bingo has died since, a pop-up says so and
+  // the message shows the summary of whoever's left instead.
+  private async handleView(ctx: MyContext) {
+    const match = ctx.callbackQuery?.data?.match(VIEW_DATA);
+    if (!match || !ctx.chat) {
+      return;
+    }
+    const petId = Number(match[1]);
+    const { pets, eulogies } = await this.storage.getPet(ctx.chat.id);
+    const fishFeeding = await this.feedsOnFish(ctx.chat.id);
+    const pet = pets.find((p) => p.id === petId);
+    if (pet) {
+      await this.editInto(ctx, { text: formatCard(pet), keyboard: cardKeyboard(pet, fishFeeding, pets.length >= 2) });
+      await ctx.answerCallbackQuery();
+    } else {
+      // Edit first, then the pop-up (see handleButton for why).
+      await this.editInto(ctx, petsView(pets, fishFeeding));
+      await ctx.answerCallbackQuery({ text: "That pet is no longer with us.", show_alert: true });
+    }
+    await this.postEulogies(ctx.api, ctx.chat.id, eulogies);
+  }
+
+  // "◀ All pets": back to the summary (or, if only one pet is left, its card).
+  private async handleAll(ctx: MyContext) {
+    if (!ctx.chat) {
+      return;
+    }
+    const { pets, eulogies } = await this.storage.getPet(ctx.chat.id);
+    await this.editInto(ctx, petsView(pets, await this.feedsOnFish(ctx.chat.id)));
+    await ctx.answerCallbackQuery();
+    await this.postEulogies(ctx.api, ctx.chat.id, eulogies);
+  }
+
+  private async editInto(ctx: MyContext, view: { text: string; keyboard: InlineKeyboard | null }) {
+    await ctx
+      .editMessageText(view.text, { parse_mode: "HTML", ...(view.keyboard && { reply_markup: view.keyboard }) })
+      .catch((err) => console.error(err)); // e.g. "message is not modified"
   }
 
   // Feed / Pet buttons work on any message that carries them (the card, warnings) and turn it into an
@@ -178,8 +242,10 @@ export class PetComposer extends Composer<MyContext> {
     if (action === "feed" && fishFeeding) {
       fish = await this.storage.takeFish(chatId, ctx.from.id, FISH_SIZES[match[3] ?? "m"] ?? "medium", `pet:${petId}`);
       if (!fish) {
-        const pet = await this.storage.peekPet(chatId);
+        const { pets, eulogies } = await this.storage.getPet(chatId);
+        const pet = pets.find((p) => p.id === petId);
         await ctx.answerCallbackQuery({ text: emptyBucketMessage(pet?.name ?? "The pet"), show_alert: true });
+        await this.postEulogies(ctx.api, chatId, eulogies);
         return;
       }
     }
@@ -229,7 +295,10 @@ export class PetComposer extends Composer<MyContext> {
         // can read it). The other order edits the card's buttons while the alert is open, and Telegram's
         // mobile apps then leave those buttons dead after the alert is dismissed.
         await ctx
-          .editMessageText(formatCard(result.pet), { parse_mode: "HTML", reply_markup: cardKeyboard(result.pet, fishFeeding) })
+          .editMessageText(formatCard(result.pet), {
+            parse_mode: "HTML",
+            reply_markup: cardKeyboard(result.pet, fishFeeding, result.livingPets >= 2),
+          })
           .catch((err) => console.error(err)); // e.g. "message is not modified"
         await ctx.answerCallbackQuery({ text: actionPopup(result.pet), show_alert: true });
         // Everything else stays on the card, but throwing up, biting, and learning a trick go public.
@@ -301,12 +370,19 @@ export class PetComposer extends Composer<MyContext> {
     if (!this.isOwner(ctx) || !ctx.chat) {
       return;
     }
-    const { eulogy } = await this.storage.killPet(ctx.chat.id);
-    if (!eulogy) {
+    const name = String(ctx.match ?? "").trim();
+    const result = await this.storage.killPet(ctx.chat.id, name || undefined);
+    await this.postEulogies(ctx.api, ctx.chat.id, result.eulogies);
+    if ("eulogy" in result) {
+      await this.postEulogy(ctx.api, ctx.chat.id, result.eulogy);
+    } else if ("needsName" in result) {
+      await replyToMessage(ctx, `Which one? /petkill <name>, out of: ${result.pets.join(", ")}.`);
+    } else if (name) {
+      await replyToMessage(ctx, `There's no pet named "${name}".`);
+    } else if (result.eulogies.length === 0) {
+      // (A eulogy just posted already says there's nobody left.)
       await replyToMessage(ctx, "There's no pet to put down.");
-      return;
     }
-    await this.postEulogy(ctx.api, ctx.chat.id, eulogy);
   }
 
   private async handleRevive(ctx: MyContext) {
@@ -315,12 +391,13 @@ export class PetComposer extends Composer<MyContext> {
     }
     const pet = await this.storage.revivePet(ctx.chat.id);
     if (!pet) {
-      await replyToMessage(ctx, "Nothing to revive: either a pet is alive, or the graveyard is empty.");
+      await replyToMessage(ctx, "Nothing to revive: either every pet slot is taken, or the graveyard is empty.");
       return;
     }
+    const { livingPets } = await this.storage.getPetFund(ctx.chat.id);
     await ctx.reply(`⚡ ${petTitle(pet)} is back from the dead.\n\n${formatCard(pet)}`, {
       parse_mode: "HTML",
-      reply_markup: cardKeyboard(pet, await this.feedsOnFish(ctx.chat.id)),
+      reply_markup: cardKeyboard(pet, await this.feedsOnFish(ctx.chat.id), livingPets >= 2),
       ...(ctx.message?.message_thread_id !== undefined && { message_thread_id: ctx.message.message_thread_id }),
     });
   }
@@ -332,11 +409,19 @@ export class PetComposer extends Composer<MyContext> {
     });
   }
 
+  // One message per death, in the order they happened.
+  private async postEulogies(api: Api, chatId: number, eulogies: PetEulogy[]) {
+    for (const eulogy of eulogies) {
+      await this.postEulogy(api, chatId, eulogy);
+    }
+  }
+
   /** Driven by main.ts's scheduled() handler, every hour. */
 
-  // Settles every chat's pet (catching deaths nobody's been around to notice), then posts whatever's due:
-  // a eulogy, or the "it's dying" warning (with the card's buttons attached). Chats with the feature switched off get
-  // their pet frozen instead — see the Pet DO's freeze().
+  // Settles every chat's pets (catching deaths nobody's been around to notice), then posts whatever's due:
+  // eulogies, and each pet's "it's dying" warning (with that pet's card buttons attached — no "◀ All pets",
+  // since a warning is its own message, not the switcher). Chats with the feature switched off get their
+  // pets frozen instead — see the Pet DO's freeze().
   async runHourlyCheck(api: Api): Promise<void> {
     const chatIds = await this.storage.listPetChats();
     const { hour } = easternParts(new Date());
@@ -350,18 +435,18 @@ export class PetComposer extends Composer<MyContext> {
           await this.storage.freezePet(chatId);
           continue;
         }
-        const { pet, eulogy, warnings } = await this.storage.tickPet(chatId, awake);
-        if (eulogy) {
-          await this.postEulogy(api, chatId, eulogy);
-        }
-        if (pet) {
-          for (const warning of warnings) {
-            await api.sendMessage(chatId, formatWarning(pet, warning), {
-              parse_mode: "HTML",
-              reply_markup: cardKeyboard(pet, features.fishing.enabled),
-              ...(pet.threadId !== null && { message_thread_id: pet.threadId }),
-            });
+        const { pets, eulogies, warnings } = await this.storage.tickPet(chatId, awake);
+        await this.postEulogies(api, chatId, eulogies);
+        for (const { petId, warning } of warnings) {
+          const pet = pets.find((p) => p.id === petId);
+          if (!pet) {
+            continue;
           }
+          await api.sendMessage(chatId, formatWarning(pet, warning), {
+            parse_mode: "HTML",
+            reply_markup: cardKeyboard(pet, features.fishing.enabled, false),
+            ...(pet.threadId !== null && { message_thread_id: pet.threadId }),
+          });
         }
       } catch (err) {
         console.error(err);
@@ -382,9 +467,36 @@ function petTitle(pet: { name: string; species: string; emoji: string }): string
   return `<b>${escapeHtml(pet.name)}</b> the ${pet.species} ${pet.emoji}`;
 }
 
+const NO_PET_MESSAGE = "There's no pet here. Use /adopt to get one.";
+
+// What /pet shows (and "◀ All pets" goes back to): one pet's card as it's always been, or with two or
+// more, a summary with a "check on" button each. With none (everyone died since the card was posted),
+// just the nudge to adopt, and no buttons.
+function petsView(pets: PetStatus[], fishFeeding: boolean): { text: string; keyboard: InlineKeyboard | null } {
+  const [only] = pets;
+  if (pets.length === 0 || !only) {
+    return { text: NO_PET_MESSAGE, keyboard: null };
+  }
+  if (pets.length === 1) {
+    return { text: formatCard(only), keyboard: cardKeyboard(only, fishFeeding, false) };
+  }
+  const keyboard = new InlineKeyboard();
+  for (const pet of pets) {
+    keyboard.text(`🔍 Check on ${pet.name}`, `pet:view:${pet.id}`).row();
+  }
+  return { text: formatSummary(pets), keyboard };
+}
+
+function formatSummary(pets: PetStatus[]): string {
+  const lines = pets.map(
+    (pet) => `${pet.emoji} <b>${escapeHtml(pet.name)}</b> the ${pet.species} · 🍖 ${Math.round(pet.food)}% · 💛 ${Math.round(pet.mood)}%`
+  );
+  return [`🐾 <b>The pets</b>`, ``, ...lines].join("\n");
+}
+
 // With fishing on, Feed is three buttons on their own row — which size of fish to give it, from the
-// tapper's own bucket.
-function cardKeyboard(pet: PetStatus, fishFeeding: boolean): InlineKeyboard {
+// tapper's own bucket. allPets adds a last row back to the summary, for chats with two or more pets.
+function cardKeyboard(pet: PetStatus, fishFeeding: boolean, allPets: boolean): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   if (fishFeeding) {
     keyboard
@@ -395,7 +507,8 @@ function cardKeyboard(pet: PetStatus, fishFeeding: boolean): InlineKeyboard {
   } else {
     keyboard.text("🍖 Feed", `pet:feed:${pet.id}`);
   }
-  return keyboard.text("🤚 Pet", `pet:pet:${pet.id}`).text("🎾 Play", `pet:play:${pet.id}`);
+  keyboard.text("🤚 Pet", `pet:pet:${pet.id}`).text("🎾 Play", `pet:play:${pet.id}`);
+  return allPets ? keyboard.row().text("◀ All pets", ALL_DATA) : keyboard;
 }
 
 // The tapper's own pop-up, in second person. Plain text: Telegram pop-ups don't render HTML.
@@ -621,8 +734,12 @@ function formatEulogy(e: PetEulogy): string {
 }
 
 function listNames(names: string[]): string {
-  const escaped = names.map(escapeHtml);
-  return escaped.length <= 2 ? escaped.join(" and ") : `${escaped.slice(0, -1).join(", ")}, and ${escaped[escaped.length - 1]}`;
+  return joinList(names.map(escapeHtml));
+}
+
+// "A", "A and B", "A, B, and C". Joins as-is, so escape first.
+function joinList(items: string[]): string {
+  return items.length <= 2 ? items.join(" and ") : `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
 }
 
 function formatDate(epochSec: number): string {

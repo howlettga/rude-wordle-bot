@@ -414,6 +414,64 @@ button.row:focus-visible {
   font-weight: 600;
 }
 
+/* The pet fund: a progress bar toward the next goal, the slot count, and a row of preset amounts (the bottle's chips,
+   four across). */
+
+.fund-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--hint) 22%, transparent);
+  overflow: hidden;
+}
+
+.fund-fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--button);
+  transition: width 0.4s ease;
+}
+
+.fund-progress {
+  margin: 8px 0 0;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.fund-slots {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--hint);
+  font-variant-numeric: tabular-nums;
+}
+
+.chips.fund-chips {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 0;
+}
+
+.fund-chips .chip {
+  padding: 8px 4px;
+}
+
+.fund-chips .chip-label {
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Unaffordable: greyed out, but still selectable, like a dim row. */
+.chip.dim .chip-label {
+  opacity: 0.45;
+}
+
+.fund-done {
+  margin: 0;
+  font-size: 14px;
+  color: var(--hint);
+}
+
 /* The confirmation/error toast, above Telegram's bottom button (or the mock stand-in). */
 
 .notice {
