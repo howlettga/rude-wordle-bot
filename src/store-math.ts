@@ -11,12 +11,13 @@
 // the fishing day at 5am ET. Weight already counts linearly here, while the pet's food from a fish only
 // grows with its square root (see foodForFish), so big fish are better sold and small ones better fed.
 // At these numbers a typical fish sells for about 5 beans, and a chat landing ~2.6 fish a day earns about
-// 20 beans a day if it sells everything (the sim checks this). Swingier prices average higher (a log-normal's mean
-// grows with its spread), so a bigger PRICE_SIGMA wants a lower FISH_BASE_PER_LB to keep that.
+// 20 beans a day at a typical day's price if it sells everything (the sim checks this). Swingier prices average a
+// little higher than the typical day (a log-normal's mean grows with its spread), so the long-run average is about
+// 23.
 import type { FishTier } from "./fishing-math.js";
 
 export const STORE_CONFIG = {
-  FISH_BASE_PER_LB: 0.3,
+  FISH_BASE_PER_LB: 0.35,
   PRICE_WINDOW_DAYS: 2,
   // With a 2-day window, 9 days in 10 land between about 0.37x and 2.7x base, a typical day moves about 37%, and
   // about 1 day in 10 moves 100% or more.
