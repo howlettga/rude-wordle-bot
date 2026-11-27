@@ -201,8 +201,9 @@ check(specials[specials.length - 1] === "megalodon", `the megalodon is the rares
 check(megalodonYears <= 3, `our chat still lands a megalodon within 3 years (${megalodonYears.toFixed(1)})`);
 const beansPerDay = meanSale * pct(fishPerDay, 0.5);
 check(beansPerDay >= 15 && beansPerDay <= 25, `our chat earns about 20 beans a day selling everything (${beansPerDay.toFixed(0)})`);
-check(pct(indexes, 0.05) >= 0.5 && pct(indexes, 0.95) <= 2, `fish prices stay between 0.5x and 2x base 90% of the time`);
-check(pct(moves, 0.5) <= 0.15, `prices drift, not jump: the typical day-to-day move is 15% or less (${(pct(moves, 0.5) * 100).toFixed(0)}%)`);
+check(pct(indexes, 0.05) >= 0.3 && pct(indexes, 0.95) <= 3, `fish prices stay between 0.3x and 3x base 90% of the time (${pct(indexes, 0.05).toFixed(2)}x-${pct(indexes, 0.95).toFixed(2)}x)`);
+check(pct(moves, 0.5) >= 0.2 && pct(moves, 0.5) <= 0.5, `the market is lively: the typical day-to-day move is 20-50% (${(pct(moves, 0.5) * 100).toFixed(0)}%)`);
+check(pct(moves, 0.9) >= 0.75, `about 1 day in 10 is a boom or crash: the 90th-percentile move is 75%+ (${(pct(moves, 0.9) * 100).toFixed(0)}%)`);
 
 // Flavor-line rotation (fishing-lines.ts): over a busy day, the lake line never repeats until the day has
 // been through every tier's whole set, and the order changes from day to day.
