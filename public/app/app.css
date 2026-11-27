@@ -180,6 +180,14 @@ body {
   overflow: hidden;
 }
 
+/* The quiet "been in there a while" note under the bucket. */
+.bucket-note {
+  margin: 8px 2px 0;
+  font-size: 13px;
+  font-style: italic;
+  color: var(--hint);
+}
+
 .empty {
   margin: 0;
   padding: 14px 16px;
@@ -258,10 +266,6 @@ button.row:focus-visible {
   font-size: 13px;
   color: var(--hint);
   overflow-wrap: anywhere;
-}
-
-.row-sub.old {
-  font-style: italic;
 }
 
 .row-price {
@@ -349,12 +353,6 @@ button.row:focus-visible {
 .chip-label {
   font-size: 13px;
   font-weight: 600;
-  overflow-wrap: anywhere;
-}
-
-.chip-hint {
-  font-size: 11px;
-  color: var(--hint);
   overflow-wrap: anywhere;
 }
 

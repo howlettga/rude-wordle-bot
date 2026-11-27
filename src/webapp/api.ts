@@ -188,7 +188,8 @@ async function getState(session: Session): Promise<Response> {
       maxChars: BOTTLE_CONFIG.MAX_CHARS,
       maxLines: BOTTLE_CONFIG.MAX_LINES,
       atLimit: bottlesOut >= BOTTLE_CONFIG.MAX_IN_WATER,
-      distances: Object.entries(BOTTLE_DISTANCES).map(([id, { emoji, label, hint }]) => ({ id, emoji, label, hint })),
+      // No hint (the wash-up ranges) on purpose: how long a throw takes is part of the mystery.
+      distances: Object.entries(BOTTLE_DISTANCES).map(([id, { emoji, label }]) => ({ id, emoji, label })),
     },
   });
 }

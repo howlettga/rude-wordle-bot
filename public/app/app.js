@@ -21,7 +21,9 @@
 
 (function () {
   const BEAN = "🫘";
-  const OLD_FISH_DAYS = 7; // same as the card's Wallet pop-up hint (src/store.ts)
+  // Holding any fish this long shows a quiet note under the bucket (same threshold as the card's old Wallet pop-up hint
+  // in src/store.ts). Fish don't spoil yet; it's a nudge ahead of a planned cooler.
+  const OLD_FISH_DAYS = 7;
   const NOTICE_MS = 3500;
   const ERROR_NOTICE_MS = 6000;
   const NOTICE_MS_PER_CHAR = 55; // long errors (like the littering quip) stay up long enough to read in full
@@ -458,16 +460,14 @@
     $("bucket-count").textContent = bucket.length ? "· " + bucket.length.toLocaleString("en-US") : "";
     $("bucket-empty").hidden = bucket.length > 0;
     list.hidden = bucket.length === 0;
+    $("bucket-old").hidden = !bucket.some((fish) => typeof fish.daysHeld === "number" && fish.daysHeld >= OLD_FISH_DAYS);
     list.replaceChildren(
       ...bucket.map((fish) => {
-        const old = typeof fish.daysHeld === "number" && fish.daysHeld >= OLD_FISH_DAYS;
-        const sub = pounds(fish.weight) + (old ? " · " + plural(Math.floor(fish.daysHeld), "day") + " in the bucket" : "");
         return row({
           key: "fish:" + fish.id,
           emoji: fish.emoji,
           title: fish.species,
-          sub,
-          subClass: old ? "old" : "",
+          sub: pounds(fish.weight),
           price: beans(fish.quote),
           label: "Sell " + pounds(fish.weight) + " " + fish.species + " for " + beans(fish.quote),
         });
@@ -503,7 +503,7 @@
         key: "worms",
         emoji: "🪱",
         title: "Buy a worm",
-        sub: full ? "Your worm can is full. Go use some." : "Half the junk on your next cast",
+        sub: full ? "Your worm can is full. Go use some." : "Goes on your next cast",
         price: beans(worms.price),
         dim: full || state.balance < worms.price,
         label: "Buy a worm for " + beans(worms.price),
@@ -528,8 +528,8 @@
         const chip = el("button", "chip");
         chip.type = "button";
         chip.dataset.distance = distance.id;
-        chip.setAttribute("aria-label", distance.label + ", " + distance.hint);
-        chip.append(el("span", "chip-emoji", distance.emoji), el("span", "chip-label", distance.label), el("span", "chip-hint", distance.hint));
+        chip.setAttribute("aria-label", distance.label);
+        chip.append(el("span", "chip-emoji", distance.emoji), el("span", "chip-label", distance.label));
         chip.addEventListener("click", () => pickDistance(distance.id));
         return chip;
       })
@@ -677,9 +677,9 @@
   // 140 beans: the Rowboat is affordable, the Carbon rod isn't. Quotes are weight * 0.38/lb * rarity (koi is rare: 3x).
   // Same as BOTTLE_DISTANCES in src/bottles.ts.
   const MOCK_BOTTLE_DISTANCES = [
-    { id: "shore", emoji: "🏖️", label: "Close to shore", hint: "washes up in a day or two" },
-    { id: "buoys", emoji: "🛟", label: "Past the buoys", hint: "washes up in 3 to 5 days" },
-    { id: "sea", emoji: "🌊", label: "Out to sea", hint: "washes up in a week or two" },
+    { id: "shore", emoji: "🏖️", label: "Close to shore" },
+    { id: "buoys", emoji: "🛟", label: "Past the buoys" },
+    { id: "sea", emoji: "🌊", label: "Out to sea" },
   ];
 
   // Stand-ins for LITTER_LINES in src/bottles.ts, so the refusal can be reviewed at full length.
