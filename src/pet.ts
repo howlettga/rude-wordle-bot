@@ -487,6 +487,11 @@ function petsView(pets: PetStatus[], fishFeeding: boolean): { text: string; keyb
   return { text: formatSummary(pets), keyboard };
 }
 
+// Telegram sizes a message to its longest line, and the summary's lines are short, so the title is padded with blank
+// Braille characters (U+2800: invisible, but not whitespace, so Telegram keeps them) to widen the card and its
+// buttons. Too many and the title wraps onto a second, blank line on narrow phones.
+const SUMMARY_TITLE_PAD = 20;
+
 // Each pet on two lines, its name and then its meters indented under it:
 //   🐶 Bluey the dog
 //      🍖 80% · 💛 60%
@@ -495,7 +500,7 @@ function formatSummary(pets: PetStatus[]): string {
     `${pet.emoji} <b>${escapeHtml(pet.name)}</b> the ${pet.species}`,
     `   🍖 ${Math.round(pet.food)}% · 💛 ${Math.round(pet.mood)}%`,
   ]);
-  return [`🐾 <b>The pets</b>`, ``, ...lines].join("\n");
+  return [`🐾 <b>The pets</b>${"⠀".repeat(SUMMARY_TITLE_PAD)}`, ``, ...lines].join("\n");
 }
 
 // With fishing on, Feed is three buttons on their own row — which size of fish to give it, from the
