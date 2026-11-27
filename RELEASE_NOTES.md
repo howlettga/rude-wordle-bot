@@ -2,7 +2,7 @@
 
 ## Unreleased - General Store
 
-- Pet fund: the chat pools beans in the store page toward room for another pet. Goals of 🫘100, 🫘1,000, and 🫘2,500 unlock a 2nd, 3rd, and 4th pet slot, and reaching one posts a thank-you to the top 3 donors. `/adopt` works while there's a free slot.
+- Pet fund: the chat pools beans in the store page toward room for another pet. Goals of 🫘100, 🫘750, and 🫘2,500 unlock a 2nd, 3rd, and 4th pet slot, and reaching one posts a thank-you to the top 3 donors. `/adopt` works while there's a free slot.
 - Several pets at once: `/pet` shows a summary with a button to check on each pet, and each pet's card has ◀ All pets to go back. The neediest pet begs in `/fish` replies, and `/petkill` takes a name when there's more than one.
 
 - New `/store` card: one shared message with two buttons. **Sell a fish** sells a random fish from your bucket for beans (the pop-up tells you which one). **Open store** opens the store page.

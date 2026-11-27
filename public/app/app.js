@@ -774,7 +774,7 @@
   ];
 
   // Same as PET_FUND in src/pet-config.ts: the goals that unlock slots 2, 3, and 4, and the preset amounts.
-  const MOCK_FUND_GOALS = [100, 1000, 2500];
+  const MOCK_FUND_GOALS = [100, 750, 2500];
   const MOCK_FUND_OPTIONS = [10, 25, 50, 100];
   const MOCK_FUND_START = {
     full: { slots: 4, raised: 0 },
