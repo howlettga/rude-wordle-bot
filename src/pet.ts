@@ -487,10 +487,14 @@ function petsView(pets: PetStatus[], fishFeeding: boolean): { text: string; keyb
   return { text: formatSummary(pets), keyboard };
 }
 
+// Each pet on two lines, its name and then its meters indented under it:
+//   🐶 Bluey the dog
+//      🍖 80% · 💛 60%
 function formatSummary(pets: PetStatus[]): string {
-  const lines = pets.map(
-    (pet) => `${pet.emoji} <b>${escapeHtml(pet.name)}</b> the ${pet.species} · 🍖 ${Math.round(pet.food)}% · 💛 ${Math.round(pet.mood)}%`
-  );
+  const lines = pets.flatMap((pet) => [
+    `${pet.emoji} <b>${escapeHtml(pet.name)}</b> the ${pet.species}`,
+    `   🍖 ${Math.round(pet.food)}% · 💛 ${Math.round(pet.mood)}%`,
+  ]);
   return [`🐾 <b>The pets</b>`, ``, ...lines].join("\n");
 }
 
