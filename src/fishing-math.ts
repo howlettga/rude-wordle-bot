@@ -385,6 +385,17 @@ export function speciesForWeight(weight: number, random: () => number = Math.ran
   return { species: picked.name, emoji: picked.emoji };
 }
 
+// The species the store can want as its "species of the day" (see STORE_CONFIG.DEMAND_MULTIPLIER): the commons from
+// the everyday bands (1 to 100 lb), so a day's demand is something people actually land. Tiny and huge fish never.
+export const DEMAND_SPECIES: { species: string; emoji: string }[] = SPECIES_BANDS.filter((band) => band.maxLb > 1 && band.maxLb <= 100)
+  .flatMap((band) => band.species.filter((s) => s.tier === "common"))
+  .map((s) => ({ species: s.name, emoji: s.emoji }));
+
+// Today's species of the day, from a seeded uniform value for the chat and day (see Store.demandOn).
+export function speciesOfTheDay(uniform: number): { species: string; emoji: string } {
+  return DEMAND_SPECIES[Math.min(DEMAND_SPECIES.length - 1, Math.floor(uniform * DEMAND_SPECIES.length))]!;
+}
+
 // Unknown names (none today) count as common.
 export function speciesTier(species: string): FishTier {
   for (const band of SPECIES_BANDS) {

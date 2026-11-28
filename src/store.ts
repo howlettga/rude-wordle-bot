@@ -343,7 +343,8 @@ export function renderStoreCard(
 //
 //   🏷️ Sale today: 25% off everything!
 //
-//   🐟 Fish: 🫘0.38/lb · ▲ 9%
+//   🐟 Fish: 🫘1.84/lb · ▲ 9%
+//   📈 Buying 🐟 salmon today
 //
 //   💰 Galen sold an 8.1 lb koi for 🫘9.
 function formatCard(card: StoreCard, fishing: boolean): string {
@@ -354,7 +355,9 @@ function formatCard(card: StoreCard, fishing: boolean): string {
   }
   if (fishing) {
     const { perLb, yesterdayPerLb } = card.fish;
-    sections.push(`🐟 Fish: ${formatBeanPrice(perLb)}/lb${priceChange(perLb, yesterdayPerLb)}`);
+    // The per-lb price is the only number shown; the dock fee and the species of the day's multiplier stay hidden.
+    const demand = card.demand ? `\n📈 Buying ${card.demand.emoji} ${escapeHtml(card.demand.species)} today` : "";
+    sections.push(`🐟 Fish: ${formatBeanPrice(perLb)}/lb${priceChange(perLb, yesterdayPerLb)}${demand}`);
   } else {
     sections.push(`Nothing for sale right now.`);
   }

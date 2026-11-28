@@ -53,7 +53,7 @@ export const PET_CONFIG = {
 // never lost — a pet dying just frees its slot for the next /adopt. TOP_DONORS is how many names the
 // "the fund hit 🫘100!" message thanks.
 export const PET_FUND = {
-  SLOT_GOALS: [100, 750, 2500], // beans to unlock slots 2, 3, 4
+  SLOT_GOALS: [100, 2000, 6000], // beans to unlock slots 2, 3, 4
   DONATION_OPTIONS: [10, 25, 50, 100],
   TOP_DONORS: 3,
 } as const;

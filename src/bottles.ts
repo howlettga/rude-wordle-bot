@@ -8,7 +8,7 @@
 export type BottleDistance = "shore" | "buoys" | "sea";
 
 export const BOTTLE_CONFIG = {
-  PRICE: 5,
+  PRICE: 10,
   MAX_CHARS: 200,
   MAX_LINES: 3,
   MAX_IN_WATER: 5, // per author: thrown and not yet caught or removed

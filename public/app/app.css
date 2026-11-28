@@ -718,3 +718,11 @@ button.row:focus-visible {
 body.mock {
   --mock-bar-height: 64px;
 }
+
+/* The store's species of the day, under the header stats. */
+.demand {
+  margin: 10px 2px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent, var(--tg-theme-link-color, #2481cc));
+}

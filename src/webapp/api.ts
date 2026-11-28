@@ -203,6 +203,8 @@ async function getState(session: Session): Promise<Response> {
     balance: wallet.balance,
     fishing,
     price: { perLb: card.fish.perLb, yesterdayPerLb: card.fish.yesterdayPerLb },
+    // The species of the day (shown as "Buying salmon today"); its multiplier is never sent.
+    demand: card.demand,
     bucket,
     worms: { count: wallet.gear.worms, max: WORMS.maxHeld, ...priced(WORMS.price, card.sale) },
     gear,

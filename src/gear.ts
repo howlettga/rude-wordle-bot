@@ -10,12 +10,12 @@
 //             It never makes the lake better than empty, so early casters aren't beaten, only matched.
 //   🪱 Worms - one per cast, used automatically on your next /fish: half the junk. Cheap, so one tap buys
 //             one (rods and boats take a confirming second tap).
-// Tier 0 is what everyone starts with, free. Prices are in beans, set by how many fish they take to earn
-// (an average fish sells for about 7.6 beans; the sim prints this). Rods: tier 1 about 5 fish, tier 2
-// about 45, tier 3 about 200. Boats cost more (about 8 / 80 / 330), since a boat is the bigger help: late
-// in a busy day, a yacht turns a fished-out lake back into a good one. With one cast a day, and some fish
-// going to the pet, a top tier takes most of a year or more. Tier names are stored as ledger labels, but tiers are stored by number, so names can change
-// freely; never reorder them.
+// Tier 0 is what everyone starts with, free. Prices are in beans, set by how long they take a player to earn: about
+// 25 beans a day selling everything they catch (the sim prints this). Rods: Fiberglass in about 2 days, Carbon about 2
+// weeks, Legendary about 2 months. Boats cost more (Rowboat about 2 days, Bass boat about 3 weeks, Yacht about 3
+// months), since a boat is the bigger help: late in a busy day, a yacht turns a fished-out lake back into a good one.
+// Feeding the pet some of your fish stretches all of these. Tier names are stored as ledger labels, but tiers are
+// stored by number, so names can change freely; never reorder them.
 export type GearLine = "rod" | "boat";
 
 export interface GearTier {
@@ -49,7 +49,7 @@ export const GEAR_LINES: Record<GearLine, { emoji: string; pitch: string; tiers:
 
 export const WORMS = {
   emoji: "🪱",
-  price: 2,
+  price: 5,
   maxHeld: 5,
   junkMultiplier: 0.5,
 } as const;
@@ -59,7 +59,7 @@ export const WORMS = {
 // Private to its owner, so it never shows on the card's activity line.
 export const TIDE_CHART_ITEM = {
   emoji: "🗺️",
-  price: 15,
+  price: 40,
   days: 7,
 } as const;
 

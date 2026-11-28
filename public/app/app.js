@@ -407,6 +407,7 @@
       balance: typeof data.balance === "number" ? data.balance : 0,
       fishing: data.fishing === true,
       price: data.price && typeof data.price.perLb === "number" ? data.price : null,
+      demand: data.demand && typeof data.demand.species === "string" && typeof data.demand.emoji === "string" ? data.demand : null,
       sale: data.sale && typeof data.sale.discount === "number" && data.sale.discount > 0 ? { discount: data.sale.discount } : null,
       bucket,
       worms: { ...worms, fullPrice: fullPriceOf(worms) },
@@ -536,6 +537,10 @@
 
   function renderStats() {
     $("balance").textContent = beans(state.balance);
+    // The store's species of the day: shown, but never what it pays.
+    const demand = $("demand");
+    demand.hidden = !(state.fishing && state.demand);
+    demand.textContent = state.demand ? "📈 Buying " + state.demand.emoji + " " + state.demand.species + " today" : "";
     const priceStat = $("price").parentElement;
     const note = $("price-change");
     note.textContent = "";
@@ -945,16 +950,16 @@
   ];
 
   // Same as PET_FUND in src/pet-config.ts: the goals that unlock slots 2, 3, and 4, and the preset amounts.
-  const MOCK_FUND_GOALS = [100, 750, 2500];
+  const MOCK_FUND_GOALS = [100, 2000, 6000];
   const MOCK_FUND_OPTIONS = [10, 25, 50, 100];
   const MOCK_FUND_START = {
     full: { slots: 4, raised: 0 },
-    almost: { slots: 3, raised: 2490 },
+    almost: { slots: 3, raised: 5990 },
   };
 
   // The example from the tide chart contract (docs/tide-chart-plan.md): exact for 3 days, a predicted king tide on
   // Sunday as the best day, and a spot rested by then. Same price and length as TIDE_CHART_ITEM in src/gear.ts.
-  const MOCK_CHART = { price: 15, days: 7 };
+  const MOCK_CHART = { price: 40, days: 7 };
   const MOCK_FORECAST = [
     { weekday: "Thu", tide: "high", exact: true, best: false },
     { weekday: "Fri", tide: "normal", exact: true, best: false },
@@ -966,8 +971,8 @@
   ];
 
   // Normal prices for the worm and the bottle (WORMS in src/gear.ts, BOTTLE_CONFIG.PRICE in src/bottles.ts).
-  const MOCK_WORM_PRICE = 2;
-  const MOCK_BOTTLE_PRICE = 5;
+  const MOCK_WORM_PRICE = 5;
+  const MOCK_BOTTLE_PRICE = 10;
   // &sale=1: a sale day, with the server's markdown on every purchasable price (75% of it, rounded down, at least 1).
   const MOCK_SALE = params.get("sale") === "1" ? { discount: 25 } : null;
 
@@ -987,8 +992,9 @@
     firstName: "Galen",
     balance: params.has("balance") && Number.isFinite(mockBalance) && mockBalance >= 0 ? Math.floor(mockBalance) : 140,
     fishing: params.get("fishing") !== "0",
-    perLb: 0.38,
-    yesterdayPerLb: 0.35,
+    perLb: 1.84,
+    yesterdayPerLb: 1.69,
+    demand: params.get("demand") === "0" ? null : { species: "salmon", emoji: "🐟" },
     rod: 1,
     boat: 0,
     worms: 2,
@@ -1071,6 +1077,7 @@
         balance: mock.balance,
         fishing: mock.fishing,
         price: { perLb: mock.perLb, yesterdayPerLb: mock.yesterdayPerLb },
+        demand: mock.demand,
         sale: MOCK_SALE,
         bucket: mock.fishing ? mock.bucket : [],
         worms: { count: mock.worms, max: 5, ...mockPriceFields(MOCK_WORM_PRICE) },

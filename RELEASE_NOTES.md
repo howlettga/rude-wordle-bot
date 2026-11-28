@@ -2,14 +2,16 @@
 
 ## Unreleased - General Store
 
+- A richer fish market: fish now sell for a lot more (a typical fish about 🫘30, about 🫘25 a day for a player who sells their catch), and each day the store has a species it's buying, shown on the card and in the store page, which pays extra. Worms are now 🫘5, bottles 🫘10, and the tide chart 🫘40.
+
 - Store sales: about 1 day in 10, everything you can buy in the store is 25% off for the day. The store page shows a sale banner and the marked-down prices, and the `/store` card announces it.
 
 - The fishing day now starts at real sunrise instead of 5am: about 6:00am in summer and 7:20am in winter at the default location (RDU). The owner can set a chat's own location with `/setlocation`.
 
 
-- Tide chart: 🫘15 for a week of private tide forecasts in the store page (3 days exact, then predictions that sharpen as the day gets closer, king tides included), plus how rested your fishing spot is, how busy the lake is, and a ★ on the best day to cast.
+- Tide chart: 🫘40 for a week of private tide forecasts in the store page (3 days exact, then predictions that sharpen as the day gets closer, king tides included), plus how rested your fishing spot is, how busy the lake is, and a ★ on the best day to cast.
 
-- Pet fund: the chat pools beans in the store page toward room for another pet. Goals of 🫘100, 🫘750, and 🫘2,500 unlock a 2nd, 3rd, and 4th pet slot, and reaching one posts a thank-you to the top 3 donors. `/adopt` works while there's a free slot.
+- Pet fund: the chat pools beans in the store page toward room for another pet. Goals of 🫘100, 🫘2,000, and 🫘6,000 unlock a 2nd, 3rd, and 4th pet slot, and reaching one posts a thank-you to the top 3 donors. `/adopt` works while there's a free slot.
 - Several pets at once: `/pet` shows a summary with a button to check on each pet, and each pet's card has ◀ All pets to go back. The neediest pet begs in `/fish` replies, and `/petkill` takes a name when there's more than one.
 
 - New `/store` card: one shared message with two buttons. **Sell a fish** sells a random fish from your bucket for beans (the pop-up tells you which one). **Open store** opens the store page.
@@ -19,7 +21,7 @@
 - One new rare species per weight band, about 1 catch in 10: goldfish, blobfish, koi, electric eel, alligator gar, and coelacanth. Anything from 40 lb up can very occasionally be a megalodon (about 1 fish in 1,500), the rarest and most valuable catch.
 - Gear: rods (Basic → Fiberglass → Carbon → Legendary) for bigger fish (each catch is rolled more than once and the biggest kept: a Legendary rod's typical fish is nearly twice as big), boats (Inner tube → Rowboat → Bass boat → Yacht) to fish away from a busy lake, and worms that halve the junk on your next cast, all bought in the store page.
 - A new `store` feature switch, on by default.
-- Message in a bottle: pay 🫘5 in the store page to throw an anonymous note out to sea (close to shore, past the buoys, or out to sea, for 1 day to 2 weeks of hidden drifting). Once it washes up, someone else's `/fish` has a 35% chance of reeling it in instead of a fish and reading it to the chat. At most 5 of yours in the water at once. The card says when someone throws one, never who. Owner-only `/bottles`, `/bottlepull`, and `/bottlewho` moderate them from the owner's private chat.
+- Message in a bottle: pay 🫘10 in the store page to throw an anonymous note out to sea (close to shore, past the buoys, or out to sea, for 1 day to 2 weeks of hidden drifting). Once it washes up, someone else's `/fish` has a 35% chance of reeling it in instead of a fish and reading it to the chat. At most 5 of yours in the water at once. The card says when someone throws one, never who. Owner-only `/bottles`, `/bottlepull`, and `/bottlewho` moderate them from the owner's private chat.
 
 ## Fishing v2
 

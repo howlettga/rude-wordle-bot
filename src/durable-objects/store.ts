@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../main.js";
-import { seededNormal, seededUniform, speciesTier, storedOrDefaultLocation, type GeoLocation } from "../fishing-math.js";
+import { seededNormal, seededUniform, speciesOfTheDay, speciesTier, storedOrDefaultLocation, type GeoLocation } from "../fishing-math.js";
 import { fishingDayNow } from "../fishing-day.js";
 import { nowSec } from "../util.js";
 import { STORE_CONFIG, fishPriceIndex, fishPricePerLb, fishSalePrice, saleBonus, isSaleDay, salePrice } from "../store-math.js";
@@ -24,6 +24,7 @@ export interface StoreCard {
   fish: StoreFishPrice;
   lastActivity: StoreActivity | null;
   sale: boolean; // today is a store sale day (see saleOn)
+  demand: { species: string; emoji: string } | null; // today's species of the day (see demandOn), shown on the card
 }
 
 export type StoreItem = GearLine | "worms";
@@ -186,7 +187,7 @@ export class Store extends DurableObject<Env> {
           : row.source === "fund"
             ? { kind: "fund", firstName: row.first_name, amount: -row.delta } // a buy's delta is negative
             : { kind: "upgrade", firstName: row.first_name, label: row.label, line: row.source as GearLine };
-    return { fish: this.fishPrice(chatId), lastActivity, sale: this.saleOn(chatId) };
+    return { fish: this.fishPrice(chatId), lastActivity, sale: this.saleOn(chatId), demand: this.demandOn(chatId) };
   }
 
   // Remembers a newly posted /store card, replacing the last one (older cards are left as they are).
@@ -446,13 +447,20 @@ export class Store extends DurableObject<Env> {
 
   // What this fish would sell for right now (the label on a /fish reply's Sell button).
   async quoteFish(chatId: number, fish: { species: string; weight: number }): Promise<number> {
-    return fishSalePrice(fish.weight, speciesTier(fish.species), this.fishPrice(chatId).perLb);
+    return this.pricer(chatId)(fish);
   }
 
-  // quoteFish for a whole bucket (the store page), in the same order, from one look at today's price.
+  // quoteFish for a whole bucket (the store page), in the same order, from one look at today's market.
   async quoteFishes(chatId: number, fish: { species: string; weight: number }[]): Promise<number[]> {
+    return fish.map(this.pricer(chatId));
+  }
+
+  // Today's fish prices for this chat as one function: the per-lb price, the hidden dock fee, rarity, and the species
+  // of the day, all from a single look at the market. Every quote and sale goes through this.
+  private pricer(chatId: number): (fish: { species: string; weight: number }) => number {
     const { perLb } = this.fishPrice(chatId);
-    return fish.map((one) => fishSalePrice(one.weight, speciesTier(one.species), perLb));
+    const demand = this.demandOn(chatId);
+    return (fish) => fishSalePrice(fish.weight, speciesTier(fish.species), perLb, fish.species === demand?.species);
   }
 
   // Pays for a fish the Fishing DO has already marked sold. No await in here, so the ledger check and the
@@ -468,7 +476,7 @@ export class Store extends DurableObject<Env> {
       return { amount: previous.delta, balance: this.balance(input.userId), bonus: 0 };
     }
 
-    const price = fishSalePrice(fish.weight, speciesTier(fish.species), this.fishPrice(input.chatId).perLb);
+    const price = this.pricer(input.chatId)(fish);
     const bonus = saleBonus(price, input.bonus ?? 0);
     const amount = price + bonus;
     this.ctx.storage.sql.exec(
@@ -520,6 +528,13 @@ export class Store extends DurableObject<Env> {
   private saleOn(chatId: number): boolean {
     const secret = this.env.TIDE_SECRET;
     return secret ? isSaleDay(seededUniform(`${secret}:sale:${chatId}:${this.dayNumber()}`)) : false;
+  }
+
+  // Today's species of the day in this chat (see DEMAND_SPECIES), seeded like the sale and the tide, so it's the same
+  // all day and turns over at sunrise. Without the secret there isn't one.
+  private demandOn(chatId: number): { species: string; emoji: string } | null {
+    const secret = this.env.TIDE_SECRET;
+    return secret ? speciesOfTheDay(seededUniform(`${secret}:demand:${chatId}:${this.dayNumber()}`)) : null;
   }
 
   private fishPrice(chatId: number): StoreFishPrice {
