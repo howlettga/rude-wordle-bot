@@ -8,6 +8,7 @@ import type {
   BottleListing,
   FishPick,
   FishUse,
+  FishingLocation,
   Fishing,
   FishingCastResult,
   BucketFish,
@@ -28,7 +29,7 @@ import type {
 } from "./durable-objects/store.js";
 import type { BottleDistance } from "./bottles.js";
 import type { AnglerGear } from "./gear.js";
-import type { CastGear } from "./fishing-math.js";
+import type { CastGear, GeoLocation } from "./fishing-math.js";
 import type {
   Pet,
   PetAdoptResult,
@@ -378,6 +379,16 @@ export class StorageService {
 
   getFishingLeaderboard(chatId: number): Promise<FishingLeaderboard> {
     return this.fishingStub(chatId).getLeaderboard();
+  }
+
+  // The owner's /setlocation. The Fishing DO (casts, the lake, the tide) and the Store DO (the fish price) each turn
+  // their day over at sunrise there, so both get it.
+  async setFishingLocation(chatId: number, location: GeoLocation | null): Promise<void> {
+    await Promise.all([this.fishingStub(chatId).setLocation(location), this.storeStub(chatId).setLocation(location)]);
+  }
+
+  getFishingLocation(chatId: number): Promise<FishingLocation> {
+    return this.fishingStub(chatId).getLocation();
   }
 
   setFishingWindow(chatId: number, days: number | null): Promise<void> {

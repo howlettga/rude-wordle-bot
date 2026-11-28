@@ -6,8 +6,7 @@ import type { StoreBuyResult, StoreItem } from "../durable-objects/store.js";
 import type { PetFundStatus, PetFundUnlock } from "../durable-objects/pet.js";
 import type { AnglerStatus } from "../durable-objects/fishing.js";
 import { GEAR_LINES, TIDE_CHART_ITEM, WORMS, type GearLine } from "../gear.js";
-import { easternParts } from "../eastern-time.js";
-import { bestCastDay, fishingDay, lakeTier, spotRest, tideForecast, type SpotRest } from "../fishing-math.js";
+import { bestCastDay, lakeTier, spotRest, tideForecast, type SpotRest } from "../fishing-math.js";
 import { BOTTLE_CONFIG, BOTTLE_DISTANCES, LITTER_LINES, cleanBottleText, isBottleDistance } from "../bottles.js";
 import { PET_FUND } from "../pet-config.js";
 import { formatBeans } from "../store-math.js";
@@ -236,7 +235,8 @@ function tideChartJson(session: Session, chartUntil: number | null, angler: Angl
   if (chartUntil === null || chartUntil <= nowSec) {
     return { price, days, active: false };
   }
-  const { dayNumber } = fishingDay(easternParts(new Date()));
+  // Today's fishing day comes from the Fishing DO, which knows the chat's location (the day turns over at sunrise).
+  const { dayNumber } = angler;
   const forecast = tideForecast(session.env.TIDE_SECRET, session.chatId, dayNumber);
   const { daysSinceLastCast, castsToday } = angler;
   const best = bestCastDay(forecast, daysSinceLastCast);

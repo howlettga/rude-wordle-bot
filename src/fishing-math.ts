@@ -19,7 +19,9 @@
 // Over a year, the best trophy odds come from casting every 3-5 days; casting daily lands the most fish
 // (handy for feeding the pet), just smaller ones.
 export const FISHING_CONFIG = {
-  // The fishing day (one cast each, the lake count, the tide) turns over at this Eastern hour, not midnight.
+  // The fishing day (one cast each, the lake count, the tide, the store's price) turns over at sunrise where the
+  // chat fishes (see fishingDay). Only where the sun doesn't rise that day (polar winter or summer) does it fall
+  // back to this Eastern hour.
   DAY_STARTS_HOUR_ET: 5,
 
   MEDIAN_LB: 14,
@@ -202,8 +204,8 @@ const TIDE_TIERS: { tide: Tide; below: number; multiplier: number }[] = [
   { tide: "king", below: Infinity, multiplier: 2.0 },
 ];
 
-// dayNumber: whole days since the Unix epoch, for the fishing day (so the tide turns at
-// DAY_STARTS_HOUR_ET, along with the daily cast limit).
+// dayNumber: whole days since the Unix epoch, for the fishing day (so the tide turns at sunrise, along with
+// the daily cast limit).
 export function tideFor(secret: string, chatId: number, dayNumber: number): Tide {
   let sum = 0;
   for (let day = dayNumber - TIDE_WINDOW_DAYS + 1; day <= dayNumber; day++) {
@@ -406,13 +408,69 @@ function weightedPick<T extends { weight: number }>(options: T[], random: () => 
   return options[options.length - 1]!;
 }
 
-// The fishing day as "YYYY-MM-DD" (compares correctly as a plain string) and as whole days since the
-// epoch: the Eastern calendar date (pass easternParts(now)), except before DAY_STARTS_HOUR_ET it's still
-// the day before. Done on the wall clock rather than by subtracting hours, so DST days don't turn over an
-// hour off. The store's prices turn over with it.
-export function fishingDay(eastern: { year: number; month: number; day: number; hour: number }): { date: string; dayNumber: number } {
-  const dayNumber =
-    Date.UTC(eastern.year, eastern.month - 1, eastern.day) / 86_400_000 - (eastern.hour < FISHING_CONFIG.DAY_STARTS_HOUR_ET ? 1 : 0);
+// Where a chat fishes, for its sunrise. Latitude north-positive, longitude east-positive (so the US is negative).
+export interface GeoLocation {
+  lat: number;
+  lon: number;
+}
+
+// Raleigh-Durham International Airport (RDU): 35°52'39"N, 78°47'15"W. The default when a chat hasn't set its own
+// location (/setlocation) and the FISHING_LOCATION var isn't set.
+export const DEFAULT_LOCATION: GeoLocation = { lat: 35.8775, lon: -78.7875 };
+
+// A chat's location when it hasn't set one: the FISHING_LOCATION var ("lat,lon") if it parses, else RDU.
+export function defaultLocation(env: { FISHING_LOCATION?: string | undefined }): GeoLocation {
+  return parseLocation(env.FISHING_LOCATION) ?? DEFAULT_LOCATION;
+}
+
+// "35.8775,-78.7875" (spaces allowed) to a location, or null if it isn't one.
+export function parseLocation(text: string | undefined | null): GeoLocation | null {
+  const match = text?.trim().match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
+  if (!match) {
+    return null;
+  }
+  const lat = Number(match[1]);
+  const lon = Number(match[2]);
+  return Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? { lat, lon } : null;
+}
+
+// Sunrise on a calendar date at a location, as epoch seconds (UTC), or null if the sun doesn't rise or set that
+// day. The NOAA-style sunrise equation (solar mean anomaly, equation of center, ecliptic longitude, declination,
+// hour angle for the sun's upper edge at -0.833° to allow for refraction), good to about a minute away from the
+// poles. Pure arithmetic, so it's free to call on every cast and works for any day, past or future.
+export function sunriseUtc(year: number, month: number, day: number, location: GeoLocation): number | null {
+  const rad = Math.PI / 180;
+  const jdNoon = Date.UTC(year, month - 1, day, 12) / 86_400_000 + 2440587.5;
+  const n = Math.round(jdNoon - 2451545.0 + 0.0008);
+  const meanSolarNoon = n - location.lon / 360;
+  const anomaly = (357.5291 + 0.98560028 * meanSolarNoon) % 360;
+  const center = 1.9148 * Math.sin(anomaly * rad) + 0.02 * Math.sin(2 * anomaly * rad) + 0.0003 * Math.sin(3 * anomaly * rad);
+  const eclipticLongitude = (anomaly + center + 180 + 102.9372) % 360;
+  const transit = 2451545.0 + meanSolarNoon + 0.0053 * Math.sin(anomaly * rad) - 0.0069 * Math.sin(2 * eclipticLongitude * rad);
+  const declination = Math.asin(Math.sin(eclipticLongitude * rad) * Math.sin(23.4397 * rad));
+  const cosHourAngle =
+    (Math.sin(-0.833 * rad) - Math.sin(location.lat * rad) * Math.sin(declination)) /
+    (Math.cos(location.lat * rad) * Math.cos(declination));
+  if (cosHourAngle < -1 || cosHourAngle > 1) {
+    return null;
+  }
+  const rise = transit - Math.acos(cosHourAngle) / rad / 360;
+  return Math.round((rise - 2440587.5) * 86_400);
+}
+
+// The fishing day as "YYYY-MM-DD" (compares correctly as a plain string) and as whole days since the epoch: the
+// Eastern calendar date (pass easternParts(now)), except before that date's sunrise at the chat's location it's
+// still the day before. So the day turns over at first light: about 6:00am in June and 7:20am in January at RDU,
+// later in the west of a time zone and earlier in the east. Where there's no sunrise that day, it turns over at
+// DAY_STARTS_HOUR_ET instead. The store's prices and the tide turn over with it.
+export function fishingDay(
+  eastern: { year: number; month: number; day: number; hour: number },
+  nowSec: number,
+  location: GeoLocation
+): { date: string; dayNumber: number } {
+  const sunrise = sunriseUtc(eastern.year, eastern.month, eastern.day, location);
+  const beforeDayStarts = sunrise === null ? eastern.hour < FISHING_CONFIG.DAY_STARTS_HOUR_ET : nowSec < sunrise;
+  const dayNumber = Date.UTC(eastern.year, eastern.month - 1, eastern.day) / 86_400_000 - (beforeDayStarts ? 1 : 0);
   return { date: new Date(dayNumber * 86_400_000).toISOString().slice(0, 10), dayNumber };
 }
 

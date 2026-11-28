@@ -4,6 +4,7 @@ import { easternParts } from "../eastern-time.js";
 import {
   FISHING_CONFIG,
   castFactors,
+  defaultLocation,
   fishingDay,
   hintFor,
   lakeTier,
@@ -12,6 +13,7 @@ import {
   speciesForWeight,
   tideFor,
   type CastGear,
+  type GeoLocation,
   type CatchHint,
   type LakeTier,
 } from "../fishing-math.js";
@@ -86,6 +88,13 @@ export type ThrowBottleResult = { ok: true } | { ok: false; reason: "LIMIT" };
 export interface AnglerStatus {
   daysSinceLastCast: number | null;
   castsToday: number;
+  dayNumber: number; // today's fishing day at this chat's location, for the tide chart
+}
+
+// The chat's location for its sunrise (see fishingDay), and whether it's the default rather than set by /setlocation.
+export interface FishingLocation {
+  location: GeoLocation;
+  isDefault: boolean;
 }
 
 export interface FishingLeaderboardEntry extends FishingCatch {
@@ -187,7 +196,9 @@ export class Fishing extends DurableObject<Env> {
           casts INTEGER NOT NULL
         )
       `);
-      const today = fishingDay(easternParts(new Date())).date;
+      // Not this.today(): the location columns don't exist until migration 4, so this uses the default location.
+      const migratedAt = new Date();
+      const today = fishingDay(easternParts(migratedAt), Math.floor(migratedAt.getTime() / 1000), defaultLocation(this.env)).date;
       this.ctx.storage.sql.exec(
         `INSERT INTO lake_days (date, casts) SELECT ?, COUNT(*) FROM anglers WHERE last_cast_date = ?`,
         today,
@@ -218,6 +229,14 @@ export class Fishing extends DurableObject<Env> {
       this.ctx.storage.sql.exec(`CREATE INDEX idx_bottles_status_washes_up ON bottles(status, washes_up_at)`);
       this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (3)`);
     }
+
+    if (version < 4) {
+      // Where this chat fishes, for its sunrise (see fishingDay): set by the owner's /setlocation. NULL means the
+      // default (the FISHING_LOCATION var, else RDU).
+      this.ctx.storage.sql.exec(`ALTER TABLE settings ADD COLUMN lat REAL`);
+      this.ctx.storage.sql.exec(`ALTER TABLE settings ADD COLUMN lon REAL`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (4)`);
+    }
   }
 
   // One cast per fishing day (starting DAY_STARTS_HOUR_ET, not midnight). Days waited since the angler's last
@@ -228,7 +247,7 @@ export class Fishing extends DurableObject<Env> {
   // Once the cast is used up and counted, a washed-up bottle someone else threw may take the place of the fish or
   // junk (see claimBottle), still with no await, so two casts at once can't both reel in the same one.
   async cast(input: { chatId: number; userId: number; username?: string; firstName: string; gear?: CastGear }): Promise<FishingCastResult> {
-    const { date: today, dayNumber } = fishingDay(easternParts(new Date()));
+    const { date: today, dayNumber } = this.today();
     // Without the secret, tides just stay normal rather than becoming predictable from the source code.
     const tide = this.env.TIDE_SECRET ? tideFor(this.env.TIDE_SECRET, input.chatId, dayNumber) : "normal";
     const highTide = tide === "high" || tide === "king";
@@ -517,14 +536,38 @@ export class Fishing extends DurableObject<Env> {
   // For the store page's tide chart: whole fishing days since this angler's last cast (0 = cast today, null = never
   // cast), and how many casts the whole chat has made today. Read-only, one synchronous look at both.
   async anglerStatus(userId: number): Promise<AnglerStatus> {
-    const today = fishingDay(easternParts(new Date())).date;
+    const today = this.today().date;
     const angler = this.ctx.storage.sql
       .exec<{ last_cast_date: string }>(`SELECT last_cast_date FROM anglers WHERE user_id = ?`, userId)
       .toArray()[0];
     const castsToday =
       this.ctx.storage.sql.exec<{ casts: number }>(`SELECT casts FROM lake_days WHERE date = ?`, today).toArray()[0]?.casts ?? 0;
     // At least 0: a cast stamped with what is now tomorrow's date (see cast) still counts as today's.
-    return { daysSinceLastCast: angler ? Math.max(0, daysBetween(angler.last_cast_date, today)) : null, castsToday };
+    return {
+      daysSinceLastCast: angler ? Math.max(0, daysBetween(angler.last_cast_date, today)) : null,
+      castsToday,
+      dayNumber: this.today().dayNumber,
+    };
+  }
+
+  // The owner's /setlocation: where this chat fishes, for its sunrise. null goes back to the default.
+  async setLocation(location: GeoLocation | null): Promise<void> {
+    this.ctx.storage.sql.exec(`UPDATE settings SET lat = ?, lon = ? WHERE id = 1`, location?.lat ?? null, location?.lon ?? null);
+  }
+
+  async getLocation(): Promise<FishingLocation> {
+    const row = this.ctx.storage.sql.exec<{ lat: number | null; lon: number | null }>(`SELECT lat, lon FROM settings WHERE id = 1`).one();
+    return row.lat !== null && row.lon !== null
+      ? { location: { lat: row.lat, lon: row.lon }, isDefault: false }
+      : { location: defaultLocation(this.env), isDefault: true };
+  }
+
+  // Today's fishing day at this chat's location: it turns over at sunrise there (see fishingDay).
+  private today(): { date: string; dayNumber: number } {
+    const row = this.ctx.storage.sql.exec<{ lat: number | null; lon: number | null }>(`SELECT lat, lon FROM settings WHERE id = 1`).one();
+    const location = row.lat !== null && row.lon !== null ? { lat: row.lat, lon: row.lon } : defaultLocation(this.env);
+    const now = new Date();
+    return fishingDay(easternParts(now), Math.floor(now.getTime() / 1000), location);
   }
 
   async setWindow(days: number | null): Promise<void> {

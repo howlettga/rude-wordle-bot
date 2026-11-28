@@ -2,6 +2,8 @@
 
 ## Unreleased - General Store
 
+- The fishing day now starts at real sunrise instead of 5am: about 6:00am in summer and 7:20am in winter at the default location (RDU). The owner can set a chat's own location with `/setlocation`.
+
 
 - Tide chart: 🫘15 for a week of private tide forecasts in the store page (3 days exact, then predictions that sharpen as the day gets closer, king tides included), plus how rested your fishing spot is, how busy the lake is, and a ★ on the best day to cast.
 
@@ -11,7 +13,7 @@
 - New `/store` card: one shared message with two buttons. **Sell a fish** sells a random fish from your bucket for beans (the pop-up tells you which one). **Open store** opens the store page.
 - The store page (a Telegram Mini App) opens over the chat: your whole bucket, today's price, your beans, gear, and worms. Pick exactly which fish to sell, or buy gear, and nothing gets posted in the group. The card's latest-activity line updates when you do.
 - Every fish reply from `/fish` gets a Sell button that only the catcher can use. Selling edits the reply in place.
-- Fish prices change day to day (turning over at 5am ET with the fishing day), and rare species pay more.
+- Fish prices change day to day (turning over at sunrise with the fishing day), and rare species pay more.
 - One new rare species per weight band, about 1 catch in 10: goldfish, blobfish, koi, electric eel, alligator gar, and coelacanth. Anything from 40 lb up can very occasionally be a megalodon (about 1 fish in 1,500), the rarest and most valuable catch.
 - Gear: rods (Basic → Fiberglass → Carbon → Legendary) for bigger fish (each catch is rolled more than once and the biggest kept: a Legendary rod's typical fish is nearly twice as big), boats (Inner tube → Rowboat → Bass boat → Yacht) to fish away from a busy lake, and worms that halve the junk on your next cast, all bought in the store page.
 - A new `store` feature switch, on by default.

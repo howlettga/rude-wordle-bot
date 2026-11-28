@@ -3,7 +3,8 @@ import { type MyContext, replyToMessage, replyHTML } from "./context.js";
 import type { StorageService } from "./storage-service.js";
 import type { BottleListing, FishingLeaderboardEntry } from "./durable-objects/fishing.js";
 import type { FeatureFlags } from "./features.js";
-import { rotatingLine } from "./fishing-math.js";
+import { FISHING_CONFIG, parseLocation, rotatingLine, sunriseUtc, type GeoLocation } from "./fishing-math.js";
+import { easternParts } from "./eastern-time.js";
 import { HIGH_TIDE_LINES, HINT_LINES, JUNK_LINES, LAKE_LINES } from "./fishing-lines.js";
 import { petDesireLine } from "./pet.js";
 import { fishingSellButton } from "./store.js";
@@ -28,6 +29,9 @@ import { escapeHtml, weightArticle } from "./util.js";
 //   /fishing                      -> leaderboard: everyone's heaviest catch, ranked by weight
 //   /fishingwindow <days>|forever -> owner-only: how far back the leaderboard looks (default forever)
 //   /resetfishing                 -> owner-only: leaderboard starts over; nothing is deleted
+//   /setlocation [lat, lon|default] -> owner-only: where this chat fishes. The fishing day turns over at sunrise
+//                                    there (see fishingDay). With no argument, shows the current one and
+//                                    today's sunrise
 //   /bottles                      -> owner-only: this chat's bottles in the water and the last few found
 //   /bottlepull <id>              -> owner-only: takes a bottle out of the water before anyone finds it
 //   /bottlewho <id>               -> owner-only: who wrote that bottle
@@ -59,6 +63,7 @@ export class FishingComposer extends Composer<MyContext> {
     this.command("fishing", (ctx) => this.sendLeaderboard(ctx));
     this.command("fishingwindow", (ctx) => this.handleSetWindow(ctx));
     this.command("resetfishing", (ctx) => this.handleReset(ctx));
+    this.command("setlocation", (ctx) => this.handleSetLocation(ctx));
     this.command("bottles", (ctx) => this.handleBottles(ctx));
     this.command("bottlepull", (ctx) => this.handleBottlePull(ctx));
     this.command("bottlewho", (ctx) => this.handleBottleWho(ctx));
@@ -229,6 +234,37 @@ export class FishingComposer extends Composer<MyContext> {
     await replyToMessage(ctx, `Leaderboard window set to ${days === null ? "forever" : `the last ${days} days`}.`);
   }
 
+  // The location is shown rounded to 2 decimal places (about a kilometre), since the reply goes to the whole chat.
+  private async handleSetLocation(ctx: MyContext) {
+    if (!this.isOwner(ctx) || !ctx.chat) {
+      return;
+    }
+    const chatId = ctx.chat.id;
+    const arg = String(ctx.match ?? "").trim();
+    const usage = "Usage: /setlocation <latitude>, <longitude> (e.g. 35.88, -78.79), or /setlocation default";
+
+    if (arg === "") {
+      const { location, isDefault } = await this.storage.getFishingLocation(chatId);
+      await replyToMessage(ctx, `${describeLocation(location, isDefault)}
+${usage}`);
+      return;
+    }
+    if (arg.toLowerCase() === "default") {
+      await this.storage.setFishingLocation(chatId, null);
+      const { location } = await this.storage.getFishingLocation(chatId);
+      await replyToMessage(ctx, `Back to the default. ${describeLocation(location, true)}`);
+      return;
+    }
+    const location = parseLocation(arg);
+    if (!location) {
+      await replyToMessage(ctx, `That's not a location.
+${usage}`);
+      return;
+    }
+    await this.storage.setFishingLocation(chatId, location);
+    await replyToMessage(ctx, `Location set. ${describeLocation(location, false)}`);
+  }
+
   private async handleReset(ctx: MyContext) {
     if (!this.isOwner(ctx) || !ctx.chat) {
       return;
@@ -344,4 +380,20 @@ function formatBottles(where: string, listing: BottleListing): string {
 function formatEntry(entry: FishingLeaderboardEntry, index: number): string {
   const place = MEDALS[index] ?? `${index + 1}.`;
   return `${place} ${escapeHtml(entry.firstName)} — ${entry.weight.toFixed(1)} lbs ${entry.species} ${entry.emoji}`;
+}
+
+// "Fishing at 35.88, -78.79 (the default). Today's sunrise, when the fishing day turns over: 7:03 AM ET."
+function describeLocation(location: GeoLocation, isDefault: boolean): string {
+  const where = `Fishing at ${location.lat.toFixed(2)}, ${location.lon.toFixed(2)}${isDefault ? " (the default)" : ""}.`;
+  const today = easternParts(new Date());
+  const sunrise = sunriseUtc(today.year, today.month, today.day, location);
+  const when =
+    sunrise === null
+      ? `No sunrise there today, so the fishing day turns over at ${FISHING_CONFIG.DAY_STARTS_HOUR_ET} AM ET.`
+      : `Today's sunrise, when the fishing day turns over: ${new Date(sunrise * 1000).toLocaleTimeString("en-US", {
+          timeZone: "America/New_York",
+          hour: "numeric",
+          minute: "2-digit",
+        })} ET.`;
+  return `${where} ${when}`;
 }

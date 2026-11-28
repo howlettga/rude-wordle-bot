@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../main.js";
 import { easternParts } from "../eastern-time.js";
-import { fishingDay, seededNormal, speciesTier } from "../fishing-math.js";
+import { defaultLocation, fishingDay, seededNormal, speciesTier, type GeoLocation } from "../fishing-math.js";
 import { STORE_CONFIG, fishPriceIndex, fishPricePerLb, fishSalePrice, saleBonus } from "../store-math.js";
 import { GEAR_LINES, STARTER_GEAR, TIDE_CHART_ITEM, WORMS, type AnglerGear, type GearLine } from "../gear.js";
 import type { HeldFish } from "./fishing.js";
@@ -144,6 +144,20 @@ export class Store extends DurableObject<Env> {
       // with the gear, so a chart bought by someone with starter gear gets a gear row with the starter tiers.
       this.ctx.storage.sql.exec(`ALTER TABLE gear ADD COLUMN chart_until INTEGER`);
       this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (4)`);
+    }
+
+    if (version < 5) {
+      // This chat's location for its sunrise, so the fish price turns over with the fishing day (see fishingDay).
+      // A copy of the Fishing DO's: the owner's /setlocation writes both. NULL means the default.
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE store_settings (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          lat REAL,
+          lon REAL
+        )
+      `);
+      this.ctx.storage.sql.exec(`INSERT INTO store_settings (id) VALUES (1)`);
+      this.ctx.storage.sql.exec(`INSERT INTO _schema_migrations (id) VALUES (5)`);
     }
   }
 
@@ -472,8 +486,16 @@ export class Store extends DurableObject<Env> {
     );
   }
 
+  // The owner's /setlocation (see the Fishing DO's, which it mirrors). null goes back to the default.
+  async setLocation(location: GeoLocation | null): Promise<void> {
+    this.ctx.storage.sql.exec(`UPDATE store_settings SET lat = ?, lon = ? WHERE id = 1`, location?.lat ?? null, location?.lon ?? null);
+  }
+
   private fishPrice(chatId: number): StoreFishPrice {
-    const { dayNumber } = fishingDay(easternParts(new Date()));
+    const row = this.ctx.storage.sql.exec<{ lat: number | null; lon: number | null }>(`SELECT lat, lon FROM store_settings WHERE id = 1`).one();
+    const location = row.lat !== null && row.lon !== null ? { lat: row.lat, lon: row.lon } : defaultLocation(this.env);
+    const now = new Date();
+    const { dayNumber } = fishingDay(easternParts(now), Math.floor(now.getTime() / 1000), location);
     return {
       perLb: fishPricePerLb(this.fishPriceIndex(chatId, dayNumber)),
       yesterdayPerLb: fishPricePerLb(this.fishPriceIndex(chatId, dayNumber - 1)),

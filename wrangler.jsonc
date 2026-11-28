@@ -42,7 +42,9 @@
   ],
   // Plain (non-secret) settings. vars aren't inherited by environments, so dev sets its own below.
   "vars": {
-    "PUBLIC_URL": "https://rude-bot.howlettga.workers.dev"
+    "PUBLIC_URL": "https://rude-bot.howlettga.workers.dev",
+    // Default "lat,lon" for the fishing day's sunrise (chats can override it with /setlocation): RDU airport.
+    "FISHING_LOCATION": "35.8775,-78.7875"
   },
   // Cron Triggers always run in UTC (no timezone support), and every job is scheduled in Eastern time,
   // which shifts against UTC across DST. So this is one hourly trigger, and main.ts's scheduled() checks
@@ -78,7 +80,8 @@
     "dev": {
       "name": "rude-bot-dev",
       "vars": {
-        "PUBLIC_URL": "https://rude-bot-dev.howlettga.workers.dev"
+        "PUBLIC_URL": "https://rude-bot-dev.howlettga.workers.dev",
+        "FISHING_LOCATION": "35.8775,-78.7875"
       },
       "durable_objects": {
         "bindings": [
