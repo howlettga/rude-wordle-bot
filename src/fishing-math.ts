@@ -483,6 +483,12 @@ export function fishingDay(
   return { date: new Date(dayNumber * 86_400_000).toISOString().slice(0, 10), dayNumber };
 }
 
+// A uniform value in (0, 1) from a secret and a key, for yes/no rolls that must come out the same every time
+// they're computed (like whether today is a store sale day).
+export function seededUniform(key: string): number {
+  return (cyrb53(key) + 0.5) / 2 ** 53;
+}
+
 // Normal deviates from a secret, for the tide and the store's prices: hash -> uniform -> N(0, 1).
 export function seededNormal(key: string): number {
   return inverseNormalCdf((cyrb53(key) + 0.5) / 2 ** 53);

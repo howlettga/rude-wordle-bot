@@ -338,14 +338,20 @@ export function renderStoreCard(
   return { text: formatCard(card, fishing), reply_markup: cardKeyboard(fishing, storeUrl), link_preview_options };
 }
 
-// Title, today's price, and the latest activity, each separated by a blank line:
+// Title, the sale line on a sale day, today's price, and the latest activity, each separated by a blank line:
 //   🏪 General Store
+//
+//   🏷️ Sale today: 25% off everything!
 //
 //   🐟 Fish: 🫘0.38/lb · ▲ 9%
 //
 //   💰 Galen sold an 8.1 lb koi for 🫘9.
 function formatCard(card: StoreCard, fishing: boolean): string {
   const sections = [`🏪 <b>General Store</b>`];
+  if (card.sale) {
+    // The one public nudge on a sale day; the details (what costs what) are in the store page.
+    sections.push(`🏷️ <b>Sale today: ${Math.round(STORE_CONFIG.SALE_DISCOUNT * 100)}% off everything!</b>`);
+  }
   if (fishing) {
     const { perLb, yesterdayPerLb } = card.fish;
     sections.push(`🐟 Fish: ${formatBeanPrice(perLb)}/lb${priceChange(perLb, yesterdayPerLb)}`);

@@ -9,7 +9,7 @@ import { GEAR_LINES, TIDE_CHART_ITEM, WORMS, type GearLine } from "../gear.js";
 import { bestCastDay, lakeTier, spotRest, tideForecast, type SpotRest } from "../fishing-math.js";
 import { BOTTLE_CONFIG, BOTTLE_DISTANCES, LITTER_LINES, cleanBottleText, isBottleDistance } from "../bottles.js";
 import { PET_FUND } from "../pet-config.js";
-import { formatBeans } from "../store-math.js";
+import { formatBeans, STORE_CONFIG, salePrice } from "../store-math.js";
 import { buildStoreLinks, renderStoreCard, storeUrlFor, type StoreLinks } from "../store.js";
 import { nowSec, random } from "../util.js";
 import { validateInitData } from "./init-data.js";
@@ -195,7 +195,7 @@ async function getState(session: Session): Promise<Response> {
       line,
       emoji,
       current: (tiers[tier] ?? tiers[0]!).name,
-      next: next ? { name: next.name, price: next.price, pitch } : null,
+      next: next ? { name: next.name, ...priced(next.price, card.sale), pitch } : null,
     };
   });
   return json(200, {
@@ -204,11 +204,11 @@ async function getState(session: Session): Promise<Response> {
     fishing,
     price: { perLb: card.fish.perLb, yesterdayPerLb: card.fish.yesterdayPerLb },
     bucket,
-    worms: { count: wallet.gear.worms, max: WORMS.maxHeld, price: WORMS.price },
+    worms: { count: wallet.gear.worms, max: WORMS.maxHeld, ...priced(WORMS.price, card.sale) },
     gear,
     // atLimit is the only thing the page learns about the player's own bottles: there's no history, by design.
     bottles: {
-      price: BOTTLE_CONFIG.PRICE,
+      ...priced(BOTTLE_CONFIG.PRICE, card.sale),
       maxChars: BOTTLE_CONFIG.MAX_CHARS,
       maxLines: BOTTLE_CONFIG.MAX_LINES,
       atLimit: bottlesOut >= BOTTLE_CONFIG.MAX_IN_WATER,
@@ -216,8 +216,15 @@ async function getState(session: Session): Promise<Response> {
       distances: Object.entries(BOTTLE_DISTANCES).map(([id, { emoji, label }]) => ({ id, emoji, label })),
     },
     petFund: fund ? petFundJson(fund) : null,
-    tideChart: angler ? tideChartJson(session, chartUntil, angler) : null,
+    tideChart: angler ? tideChartJson(session, chartUntil, angler, card.sale) : null,
+    sale: card.sale ? { discount: Math.round(STORE_CONFIG.SALE_DISCOUNT * 100) } : null,
   });
+}
+
+// A purchasable price for the page: price is what it costs today, and on a sale day fullPrice is the normal price
+// (for the struck-through display). The Store DO applies the same discount when the purchase actually happens.
+function priced(price: number, onSale: boolean): { price: number; fullPrice?: number } {
+  return onSale ? { price: salePrice(price, true), fullPrice: price } : { price };
 }
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
@@ -229,11 +236,12 @@ const RESTED_AFTER_DAYS = 4;
 
 // The page's tideChart block. Without a chart running it's only the price and days, so the forecast, the spot, and
 // the lake never leave the server unpaid for.
-function tideChartJson(session: Session, chartUntil: number | null, angler: AnglerStatus) {
-  const { price, days } = TIDE_CHART_ITEM;
+function tideChartJson(session: Session, chartUntil: number | null, angler: AnglerStatus, onSale: boolean) {
+  const { days } = TIDE_CHART_ITEM;
+  const pricing = priced(TIDE_CHART_ITEM.price, onSale);
   const now = nowSec();
   if (chartUntil === null || chartUntil <= now) {
-    return { price, days, active: false };
+    return { ...pricing, days, active: false };
   }
   // Today's fishing day comes from the Fishing DO, which knows the chat's location (the day turns over at sunrise).
   const { dayNumber } = angler;
@@ -242,7 +250,7 @@ function tideChartJson(session: Session, chartUntil: number | null, angler: Angl
   const best = bestCastDay(forecast, daysSinceLastCast);
   const rest = spotRest(daysSinceLastCast);
   return {
-    price,
+    ...pricing,
     days,
     active: true,
     until: chartUntil,
@@ -361,23 +369,21 @@ async function throwBottle(session: Session, request: Request): Promise<Response
   }
 
   const purchase = { userId: user.id, firstName: user.first_name, amount: BOTTLE_CONFIG.PRICE, source: "bottle", label: "Message in a bottle" };
-  const charged = await storage.chargeWallet(chatId, purchase);
+  const charged = await storage.chargeWallet(chatId, { ...purchase, onSale: true });
   if (!charged.ok) {
-    return fail(
-      409,
-      "CANT_AFFORD",
-      `A bottle costs ${formatBeans(BOTTLE_CONFIG.PRICE)}. You have ${formatBeans(charged.balance)}. Sell some fish.`
-    );
+    return fail(409, "CANT_AFFORD", `A bottle costs ${formatBeans(charged.amount)}. You have ${formatBeans(charged.balance)}. Sell some fish.`);
   }
+  // Refunds give back exactly what was taken, which is less than the list price on a sale day.
+  const refund = { ...purchase, amount: charged.amount };
   let thrown;
   try {
     thrown = await storage.throwBottle(chatId, { authorId: user.id, authorName: user.first_name, text: cleaned.text, distance });
   } catch (err) {
-    await storage.refundWallet(chatId, purchase).catch((refundErr) => console.error("bottle refund failed", chatId, user.id, refundErr));
+    await storage.refundWallet(chatId, refund).catch((refundErr) => console.error("bottle refund failed", chatId, user.id, refundErr));
     throw err;
   }
   if (!thrown.ok) {
-    await storage.refundWallet(chatId, purchase);
+    await storage.refundWallet(chatId, refund);
     return fail(409, "LIMIT", random([...LITTER_LINES]));
   }
 

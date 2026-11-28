@@ -475,18 +475,18 @@ export class StorageService {
   }
 
   tapStoreGear(chatId: number, input: { userId: number; firstName: string; item: StoreItem }): Promise<StoreTapResult> {
-    return this.storeStub(chatId).tapGear(input);
+    return this.storeStub(chatId).tapGear({ ...input, chatId });
   }
 
   buyStoreGear(chatId: number, input: { userId: number; firstName: string; item: StoreItem }): Promise<StoreBuyResult> {
-    return this.storeStub(chatId).buyGear(input);
+    return this.storeStub(chatId).buyGear({ ...input, chatId });
   }
 
   chargeWallet(
     chatId: number,
-    input: { userId: number; firstName: string; amount: number; source: string; label: string }
+    input: { userId: number; firstName: string; amount: number; source: string; label: string; onSale?: boolean }
   ): Promise<StoreChargeResult> {
-    return this.storeStub(chatId).charge(input);
+    return this.storeStub(chatId).charge({ ...input, chatId });
   }
 
   refundWallet(chatId: number, input: { userId: number; firstName: string; amount: number; source: string; label: string }): Promise<number> {
@@ -494,7 +494,7 @@ export class StorageService {
   }
 
   buyTideChart(chatId: number, input: { userId: number; firstName: string }): Promise<TideChartBuyResult> {
-    return this.storeStub(chatId).buyTideChart(input);
+    return this.storeStub(chatId).buyTideChart({ ...input, chatId });
   }
 
   getChartUntil(chatId: number, userId: number): Promise<number | null> {

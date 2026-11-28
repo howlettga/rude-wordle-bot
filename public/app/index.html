@@ -34,6 +34,13 @@
       </section>
 
       <div id="store" hidden>
+        <!-- Hidden unless the state has a sale (about 1 day in 10): everything you can buy is marked down. Selling fish and
+             the pet fund aren't. -->
+        <p class="sale-banner" id="sale-banner" hidden>
+          <span class="sale-emoji" aria-hidden="true">🏷️</span>
+          <span class="sale-text"><strong class="sale-lead">Sale today:</strong> <span id="sale-discount"></span></span>
+        </p>
+
         <!-- Hidden unless the player owns an active tide chart (the state only carries the forecast when they do). Seven
              day columns, then their spot and the lake, then how long the chart lasts. -->
         <section class="section" id="chart-section" aria-labelledby="chart-heading" hidden>

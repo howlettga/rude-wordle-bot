@@ -1,9 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../main.js";
-import { seededNormal, speciesTier, storedOrDefaultLocation, type GeoLocation } from "../fishing-math.js";
+import { seededNormal, seededUniform, speciesTier, storedOrDefaultLocation, type GeoLocation } from "../fishing-math.js";
 import { fishingDayNow } from "../fishing-day.js";
 import { nowSec } from "../util.js";
-import { STORE_CONFIG, fishPriceIndex, fishPricePerLb, fishSalePrice, saleBonus } from "../store-math.js";
+import { STORE_CONFIG, fishPriceIndex, fishPricePerLb, fishSalePrice, saleBonus, isSaleDay, salePrice } from "../store-math.js";
 import { GEAR_LINES, STARTER_GEAR, TIDE_CHART_ITEM, WORMS, type AnglerGear, type GearLine } from "../gear.js";
 import type { HeldFish } from "./fishing.js";
 
@@ -23,6 +23,7 @@ export type StoreActivity =
 export interface StoreCard {
   fish: StoreFishPrice;
   lastActivity: StoreActivity | null;
+  sale: boolean; // today is a store sale day (see saleOn)
 }
 
 export type StoreItem = GearLine | "worms";
@@ -43,7 +44,8 @@ export type StoreBuyResult = Exclude<StoreTapResult, { kind: "CONFIRM" }>;
 export const BUY_CONFIRM_SECONDS = 15;
 
 // A purchase that isn't gear (a message in a bottle, a pet fund donation), from charge.
-export type StoreChargeResult = { ok: true; balance: number } | { ok: false; balance: number };
+// amount is what was actually taken (after any sale discount), so a refund gives back exactly that.
+export type StoreChargeResult = { ok: true; balance: number; amount: number } | { ok: false; balance: number; amount: number };
 
 // A tide chart bought on the store page (see buyTideChart). until is epoch seconds.
 export type TideChartBuyResult = { ok: true; until: number; balance: number } | { ok: false; reason: "CANT_AFFORD"; balance: number };
@@ -184,7 +186,7 @@ export class Store extends DurableObject<Env> {
           : row.source === "fund"
             ? { kind: "fund", firstName: row.first_name, amount: -row.delta } // a buy's delta is negative
             : { kind: "upgrade", firstName: row.first_name, label: row.label, line: row.source as GearLine };
-    return { fish: this.fishPrice(chatId), lastActivity };
+    return { fish: this.fishPrice(chatId), lastActivity, sale: this.saleOn(chatId) };
   }
 
   // Remembers a newly posted /store card, replacing the last one (older cards are left as they are).
@@ -225,12 +227,12 @@ export class Store extends DurableObject<Env> {
   // A tap on a gear button (see StoreTapResult). No await in here, so a double tap can't buy twice or
   // spend beans it doesn't have. A rod or boat tap that isn't confirming a recent first tap only quotes;
   // everything else goes to purchase, which checks the price and balance again, still with no await between.
-  async tapGear(input: { userId: number; firstName: string; item: StoreItem }): Promise<StoreTapResult> {
+  async tapGear(input: { chatId: number; userId: number; firstName: string; item: StoreItem }): Promise<StoreTapResult> {
     const now = nowSec();
     const { userId, item } = input;
 
     if (item !== "worms") {
-      const offer = this.offer(this.gearOf(userId), item);
+      const offer = this.offer(this.gearOf(userId), item, this.saleOn(input.chatId));
       if (offer.kind !== "OFFER") {
         return offer;
       }
@@ -259,31 +261,34 @@ export class Store extends DurableObject<Env> {
   }
 
   // A buy from the store page: no second tap, since the page asks before it calls this.
-  async buyGear(input: { userId: number; firstName: string; item: StoreItem }): Promise<StoreBuyResult> {
+  async buyGear(input: { chatId: number; userId: number; firstName: string; item: StoreItem }): Promise<StoreBuyResult> {
     return this.purchase(input);
   }
 
   // What the next one of item costs this angler, or why there isn't one (top tier, or a full worm can).
   private offer(
     gear: AnglerGear,
-    item: StoreItem
+    item: StoreItem,
+    onSale: boolean
   ): { kind: "OFFER"; name: string; price: number } | Extract<StoreTapResult, { kind: "MAXED" | "FULL" }> {
     if (item === "worms") {
       return gear.worms >= WORMS.maxHeld
         ? { kind: "FULL", item, worms: gear.worms }
-        : { kind: "OFFER", name: "Worm", price: WORMS.price };
+        : { kind: "OFFER", name: "Worm", price: salePrice(WORMS.price, onSale) };
     }
     const tiers = GEAR_LINES[item].tiers;
     const next = tiers[gear[item] + 1];
-    return next ? { kind: "OFFER", name: next.name, price: next.price } : { kind: "MAXED", item, name: tiers[gear[item]]!.name };
+    return next
+      ? { kind: "OFFER", name: next.name, price: salePrice(next.price, onSale) }
+      : { kind: "MAXED", item, name: tiers[gear[item]]!.name };
   }
 
   // Buys item now, for tapGear (once confirmed) and buyGear. Synchronous, so nothing can run between reading
   // the gear and balance and writing the purchase. Any half-finished tap on the card is cleared either way.
-  private purchase(input: { userId: number; firstName: string; item: StoreItem }): StoreBuyResult {
+  private purchase(input: { chatId: number; userId: number; firstName: string; item: StoreItem }): StoreBuyResult {
     const { userId, item } = input;
     const gear = this.gearOf(userId);
-    const offer = this.offer(gear, item);
+    const offer = this.offer(gear, item, this.saleOn(input.chatId));
     if (offer.kind !== "OFFER") {
       return offer;
     }
@@ -325,16 +330,28 @@ export class Store extends DurableObject<Env> {
 
   // Takes amount out of the wallet for something that isn't gear (source says what, e.g. 'bottle'), or refuses if
   // the balance is short. Synchronous inside, so nothing can spend the same beans between the check and the debit.
-  async charge(input: { userId: number; firstName: string; amount: number; source: string; label: string }): Promise<StoreChargeResult> {
-    return this.debit(input);
+  // onSale: a purchase today's store sale applies to (a bottle, not a pet fund donation). The result's amount is
+  // what was actually taken, which is what a refund must give back.
+  async charge(input: {
+    chatId: number;
+    userId: number;
+    firstName: string;
+    amount: number;
+    source: string;
+    label: string;
+    onSale?: boolean;
+  }): Promise<StoreChargeResult> {
+    const amount = salePrice(input.amount, input.onSale === true && this.saleOn(input.chatId));
+    return this.debit({ ...input, amount });
   }
 
   // A tide chart (see TIDE_CHART_ITEM): charges for it and pushes chart_until out by its days, from now or from
   // when the current one runs out, whichever is later. One synchronous step, so a double tap can't pay once and
   // extend twice. Its ledger rows (source 'chart') never show on the card's activity line (see card).
-  async buyTideChart(input: { userId: number; firstName: string }): Promise<TideChartBuyResult> {
+  async buyTideChart(input: { chatId: number; userId: number; firstName: string }): Promise<TideChartBuyResult> {
     const now = nowSec();
-    const charged = this.debit({ ...input, amount: TIDE_CHART_ITEM.price, source: "chart", label: "Tide chart" });
+    const price = salePrice(TIDE_CHART_ITEM.price, this.saleOn(input.chatId));
+    const charged = this.debit({ ...input, amount: price, source: "chart", label: "Tide chart" });
     if (!charged.ok) {
       return { ok: false, reason: "CANT_AFFORD", balance: charged.balance };
     }
@@ -368,7 +385,7 @@ export class Store extends DurableObject<Env> {
     }
     const balance = this.balance(userId);
     if (balance < amount) {
-      return { ok: false, balance };
+      return { ok: false, balance, amount };
     }
     const newBalance = this.ctx.storage.sql
       .exec<{ balance: number }>(
@@ -386,7 +403,7 @@ export class Store extends DurableObject<Env> {
       input.source,
       input.label
     );
-    return { ok: true, balance: newBalance };
+    return { ok: true, balance: newBalance, amount };
   }
 
   // Gives back a charge whose purchase didn't go through (e.g. the bottle limit was hit after paying). The refund's
@@ -492,9 +509,21 @@ export class Store extends DurableObject<Env> {
     this.ctx.storage.sql.exec(`UPDATE store_settings SET lat = ?, lon = ? WHERE id = 1`, location?.lat ?? null, location?.lon ?? null);
   }
 
-  private fishPrice(chatId: number): StoreFishPrice {
+  // Today's fishing day at this chat's location (it turns over at sunrise; see fishingDay).
+  private dayNumber(): number {
     const stored = this.ctx.storage.sql.exec<{ lat: number | null; lon: number | null }>(`SELECT lat, lon FROM store_settings WHERE id = 1`).one();
-    const { dayNumber } = fishingDayNow(storedOrDefaultLocation(stored, this.env));
+    return fishingDayNow(storedOrDefaultLocation(stored, this.env)).dayNumber;
+  }
+
+  // Whether today is a sale day in this chat: about 1 day in SALE_EVERY_DAYS, seeded from the secret like the tide,
+  // so it's the same all day and can't be predicted from the source code. Without the secret, never.
+  private saleOn(chatId: number): boolean {
+    const secret = this.env.TIDE_SECRET;
+    return secret ? isSaleDay(seededUniform(`${secret}:sale:${chatId}:${this.dayNumber()}`)) : false;
+  }
+
+  private fishPrice(chatId: number): StoreFishPrice {
+    const dayNumber = this.dayNumber();
     return {
       perLb: fishPricePerLb(this.fishPriceIndex(chatId, dayNumber)),
       yesterdayPerLb: fishPricePerLb(this.fishPriceIndex(chatId, dayNumber - 1)),

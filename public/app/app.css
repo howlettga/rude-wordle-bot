@@ -7,6 +7,7 @@
   --button: var(--tg-theme-button-color, #2481cc);
   --button-text: var(--tg-theme-button-text-color, #ffffff);
   --card: var(--tg-theme-secondary-bg-color, #f2f2f7);
+  --accent: var(--tg-theme-accent-text-color, var(--tg-theme-link-color, #168acd));
   --up: #34a853;
   --down: #e5484d;
   --radius: 12px;
@@ -22,6 +23,7 @@
     --button: var(--tg-theme-button-color, #5288c1);
     --button-text: var(--tg-theme-button-text-color, #ffffff);
     --card: var(--tg-theme-secondary-bg-color, #232e3c);
+    --accent: var(--tg-theme-accent-text-color, var(--tg-theme-link-color, #6ab3f3));
   }
 }
 
@@ -148,6 +150,62 @@ body {
   background: var(--button);
   color: var(--button-text);
   cursor: pointer;
+}
+
+/* The sale banner: a tinted strip in the theme's accent colour, first thing under the stats on a sale day. */
+
+.sale-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 13%, var(--bg));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.sale-emoji {
+  flex: none;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.sale-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sale-lead {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* A sale price: today's price in the accent colour, then the normal price struck through and dimmer. In a row the two
+   stack on the right; in a section title (the bottle's price) they sit inline. */
+
+.price-now {
+  color: var(--accent);
+}
+
+.price-was {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--hint);
+  text-decoration-thickness: 1px;
+}
+
+.row-price.on-sale {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.2;
+}
+
+.count .price-was {
+  font-size: inherit;
 }
 
 /* The tide chart: seven narrow day columns (they share a 375px phone's width with no sideways scroll), then two facts

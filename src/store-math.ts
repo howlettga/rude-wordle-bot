@@ -32,6 +32,11 @@ export const STORE_CONFIG = {
   // (rounded up, so it's always at least 🫘1). Picking a specific fish in the store page, or selling a catch from
   // its /fish reply, pays the plain price. A secret: never shown or mentioned to players anywhere.
   RANDOM_SELL_BONUS: 0.1,
+  // About 1 fishing day in SALE_EVERY_DAYS (per chat, at random, seeded like the tide so it's the same all day), the
+  // store has a sale: everything you buy (rods, boats, worms, the tide chart, bottles) is SALE_DISCOUNT off, rounded
+  // down. Selling fish and pet fund donations aren't affected.
+  SALE_EVERY_DAYS: 10,
+  SALE_DISCOUNT: 0.25,
 } as const;
 
 // normals: one N(0, 1) deviate per day of the window, oldest first.
@@ -47,6 +52,16 @@ export function fishPricePerLb(index: number): number {
 
 export function fishSalePrice(weight: number, tier: FishTier, perLb: number): number {
   return Math.max(STORE_CONFIG.MIN_SALE, Math.round(weight * perLb * STORE_CONFIG.TIER_MULTIPLIER[tier]));
+}
+
+// Whether a day is a sale day, from a seeded uniform value for that chat and day (see Store.saleOn).
+export function isSaleDay(uniform: number): boolean {
+  return uniform < 1 / STORE_CONFIG.SALE_EVERY_DAYS;
+}
+
+// What something costs today: SALE_DISCOUNT off on a sale day, rounded down, never below 🫘1.
+export function salePrice(price: number, onSale: boolean): number {
+  return onSale ? Math.max(1, Math.floor(price * (1 - STORE_CONFIG.SALE_DISCOUNT))) : price;
 }
 
 // The extra beans a bonus adds to a sale, rounded up (see RANDOM_SELL_BONUS): 10% of 🫘18 is 🫘2, of 🫘3 is 🫘1.

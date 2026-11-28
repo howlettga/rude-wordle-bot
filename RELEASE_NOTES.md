@@ -2,6 +2,8 @@
 
 ## Unreleased - General Store
 
+- Store sales: about 1 day in 10, everything you can buy in the store is 25% off for the day. The store page shows a sale banner and the marked-down prices, and the `/store` card announces it.
+
 - The fishing day now starts at real sunrise instead of 5am: about 6:00am in summer and 7:20am in winter at the default location (RDU). The owner can set a chat's own location with `/setlocation`.
 
 
