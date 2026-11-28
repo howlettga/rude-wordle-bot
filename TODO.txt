@@ -19,6 +19,7 @@ Features
 
 Store & fishing (next)
 - Cooler gear + fish spoilage. Bucket -> Cooler -> Ice chest; fish lose value after a few days without one. Freshness hints already ship in sale pop-ups and the wallet, so turn spoilage on only after they've been live a while.
+- Fishing Licenses -> more fishing attempts per day / less daily cast penalty
 - More consumables, each loaded onto your next cast like worms: tide chart (privately tells you today's/tomorrow's tide), fish finder (how fished-out the lake is), shiny spinner (2x rare odds), deep-water jig (heavier fish), megalodon bait (5x megalodon odds, pricey), night permit (one extra cast today), chum bucket (everyone's next cast today gets a bonus, and the chat finds out who chummed).
 - Poaching and a wanted level. Fish over a limit, out of season, or protected species for extra beans; your wanted level rises, and the game warden can fine you, confiscate your bucket, or ban you from the lake for a few days.
 - Black market. Buys what the store won't (poached fish, protected species) and sells shady gear, at bad rates. Ties into the wanted level.

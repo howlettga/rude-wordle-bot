@@ -13,3 +13,8 @@ export function weightArticle(weightText: string): string {
   const whole = weightText.split(".")[0]!;
   return whole.startsWith("8") || whole === "11" || whole === "18" ? "an" : "a";
 }
+
+// Now, as whole seconds since the epoch: the unit every Durable Object stores times in.
+export function nowSec(): number {
+  return Math.floor(Date.now() / 1000);
+}

@@ -4,10 +4,10 @@ import type { StorageService } from "./storage-service.js";
 import type { HeldFish } from "./durable-objects/fishing.js";
 import type { StoreCard, StoreItem, StoreTapResult } from "./durable-objects/store.js";
 import { GEAR_LINES, WORMS, type AnglerGear } from "./gear.js";
-import { formatBeanPrice, formatBeans } from "./store-math.js";
+import { STORE_CONFIG, formatBeanPrice, formatBeans } from "./store-math.js";
 import type { LinkPreviewOptions } from "grammy/types";
-import { escapeHtml, random, weightArticle } from "./util.js";
-import { storeAppUrl } from "./webapp/store-link.js";
+import { escapeHtml, nowSec, random, weightArticle } from "./util.js";
+import { signStoreLink, storeAppUrl } from "./webapp/store-link.js";
 
 // The "store" feature (see features.ts): a shared General Store card, built like the pet card, so the
 // chat only ever sees one message whose buttons update it in place. Anything personal comes back as a pop-up
@@ -64,6 +64,16 @@ const BANNER_PATH = "/app/general_store.png";
 const BANNER_VERSION = 1;
 export function storeBannerUrl(publicUrl: string | undefined): string | null {
   return publicUrl ? `${publicUrl.replace(/\/+$/, "")}${BANNER_PATH}?v=${BANNER_VERSION}` : null;
+}
+
+// StoreLinks for a bot: built in one place for both the composer (bot.ts) and card edits made from the page
+// (webapp/api.ts). Each link is signed at the moment a card is posted or edited.
+export function buildStoreLinks(input: { token: string; botUsername: string | undefined; publicUrl: string | undefined }): StoreLinks {
+  return {
+    botUsername: input.botUsername,
+    signLink: (chatId) => signStoreLink(chatId, nowSec(), input.token),
+    bannerUrl: storeBannerUrl(input.publicUrl),
+  };
 }
 
 // The Open store button's URL for this chat, or null (no button) if the bot has no username or signing fails, so
@@ -180,7 +190,9 @@ export class StoreComposer extends Composer<MyContext> {
       return;
     }
 
-    const sale = await this.sell(chatId, ctx.from, fish);
+    // Taking the gamble on a random fish quietly pays RANDOM_SELL_BONUS extra. It's never mentioned: the pop-up just
+    // shows the (higher) total.
+    const sale = await this.sell(chatId, ctx.from, fish, STORE_CONFIG.RANDOM_SELL_BONUS);
     await this.refreshCard(ctx, chatId);
     const weight = fish.weight.toFixed(1);
     await ctx.answerCallbackQuery({
@@ -194,9 +206,9 @@ export class StoreComposer extends Composer<MyContext> {
 
   // Pays for a fish already taken from the bucket, and puts the fish back if the payout fails, so a
   // broken sale never just eats someone's fish.
-  private async sell(chatId: number, from: { id: number; first_name: string }, fish: HeldFish) {
+  private async sell(chatId: number, from: { id: number; first_name: string }, fish: HeldFish, bonus = 0) {
     try {
-      return await this.storage.sellFish(chatId, { userId: from.id, firstName: from.first_name, fish });
+      return await this.storage.sellFish(chatId, { userId: from.id, firstName: from.first_name, fish, bonus });
     } catch (err) {
       await this.storage.returnFish(chatId, fish.id).catch((refundErr) => console.error("returnFish failed", fish, refundErr));
       throw err;
@@ -326,14 +338,20 @@ export function renderStoreCard(
   return { text: formatCard(card, fishing), reply_markup: cardKeyboard(fishing, storeUrl), link_preview_options };
 }
 
-// Title, today's price, and the latest activity, each separated by a blank line:
+// Title, the sale line on a sale day, today's price, and the latest activity, each separated by a blank line:
 //   🏪 General Store
+//
+//   🏷️ Sale today: 25% off everything!
 //
 //   🐟 Fish: 🫘0.38/lb · ▲ 9%
 //
 //   💰 Galen sold an 8.1 lb koi for 🫘9.
 function formatCard(card: StoreCard, fishing: boolean): string {
   const sections = [`🏪 <b>General Store</b>`];
+  if (card.sale) {
+    // The one public nudge on a sale day; the details (what costs what) are in the store page.
+    sections.push(`🏷️ <b>Sale today: ${Math.round(STORE_CONFIG.SALE_DISCOUNT * 100)}% off everything!</b>`);
+  }
   if (fishing) {
     const { perLb, yesterdayPerLb } = card.fish;
     sections.push(`🐟 Fish: ${formatBeanPrice(perLb)}/lb${priceChange(perLb, yesterdayPerLb)}`);

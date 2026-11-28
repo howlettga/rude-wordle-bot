@@ -20,7 +20,11 @@
 // The pet fund starts at 🫘40 of 🫘100 and chipping in moves it for real (crossing a goal unlocks a slot); &fund=full
 // starts with every slot unlocked, &fund=almost with 🫘10 left in the whole fund (so bigger amounts are refused), and
 // &fund=off hides it, as with the pet feature off. The tide chart starts active with 5 days left; &chart=off starts without
-// one, and buying (or extending) it works.
+// one, and buying (or extending) it works. &sale=1 makes it a sale day: 25% off everything you can buy (rods, boats,
+// worms, the tide chart, bottles), with the faked purchases charging the sale price.
+//
+// On a sale day the state has sale: { discount } and every purchasable price is already today's price, with the normal
+// one alongside as fullPrice. The page only shows the markdown; the server charges it.
 //
 // All text from the API goes into the page with textContent, never innerHTML.
 "use strict";
@@ -396,18 +400,33 @@
   function normalize(data) {
     const bucket = Array.isArray(data.bucket) ? data.bucket.slice() : [];
     bucket.sort((a, b) => b.weight - a.weight);
+    const worms = data.worms || { count: 0, max: 0, price: 0 };
+    const gear = Array.isArray(data.gear) ? data.gear : [];
     return {
       firstName: typeof data.firstName === "string" ? data.firstName : "",
       balance: typeof data.balance === "number" ? data.balance : 0,
       fishing: data.fishing === true,
       price: data.price && typeof data.price.perLb === "number" ? data.price : null,
+      sale: data.sale && typeof data.sale.discount === "number" && data.sale.discount > 0 ? { discount: data.sale.discount } : null,
       bucket,
-      worms: data.worms || { count: 0, max: 0, price: 0 },
-      gear: Array.isArray(data.gear) ? data.gear : [],
+      worms: { ...worms, fullPrice: fullPriceOf(worms) },
+      gear: gear.map((g) => (g && g.next ? { ...g, next: { ...g.next, fullPrice: fullPriceOf(g.next) } } : g)),
       bottles: normalizeBottles(data.bottles),
       petFund: normalizePetFund(data.petFund),
       tideChart: normalizeTideChart(data.tideChart),
     };
+  }
+
+  // The normal price of something on sale today, or null when it isn't (fullPrice is absent, or equal to price).
+  function fullPriceOf(item) {
+    return item && typeof item.price === "number" && typeof item.fullPrice === "number" && item.fullPrice > item.price
+      ? item.fullPrice
+      : null;
+  }
+
+  // ", on sale from 🫘40" for a row's accessible label, or nothing.
+  function saleLabel(fullPrice) {
+    return fullPrice === null ? "" : ", on sale from " + beans(fullPrice);
   }
 
   // null (no buy row, no section) unless the state has a tideChart block; it's null with fishing off. The forecast,
@@ -415,8 +434,9 @@
   function normalizeTideChart(chart) {
     if (!chart || typeof chart !== "object" || typeof chart.price !== "number") return null;
     const days = typeof chart.days === "number" && chart.days > 0 ? chart.days : 7;
+    const fullPrice = fullPriceOf(chart);
     if (chart.active !== true) {
-      return { price: chart.price, days, active: false, daysLeft: 0, forecast: [], spot: null, lake: null };
+      return { price: chart.price, fullPrice, days, active: false, daysLeft: 0, forecast: [], spot: null, lake: null };
     }
     const forecast = Array.isArray(chart.forecast)
       ? chart.forecast.filter((day) => day && typeof day.tide === "string" && TIDE_ICONS[day.tide])
@@ -424,6 +444,7 @@
     const spot = chart.spot && typeof chart.spot === "object" && SPOT_LABELS[chart.spot.rest] ? chart.spot : null;
     return {
       price: chart.price,
+      fullPrice,
       days,
       active: true,
       daysLeft: typeof chart.daysLeft === "number" && chart.daysLeft > 0 ? chart.daysLeft : 0,
@@ -460,6 +481,7 @@
     if (!distances.length) return null;
     return {
       price: bottles.price,
+      fullPrice: fullPriceOf(bottles),
       maxChars: typeof bottles.maxChars === "number" && bottles.maxChars > 0 ? bottles.maxChars : 200,
       maxLines: typeof bottles.maxLines === "number" && bottles.maxLines > 0 ? bottles.maxLines : 3,
       atLimit: bottles.atLimit === true,
@@ -501,6 +523,7 @@
     }
     $("message").hidden = true;
     $("store").hidden = false;
+    renderSale();
     renderChart();
     renderBucket();
     renderGear();
@@ -534,8 +557,20 @@
     note.append(el("span", "arrow", up ? "▲" : "▼"), document.createTextNode(" from " + beansPerLb(yesterdayPerLb) + " yesterday"));
   }
 
-  // One row: emoji, title and subtitle, and a price on the right. A button when it can be selected.
-  function row({ key, emoji, title, sub, subClass, price, priceClass, dim, label }) {
+  function renderSale() {
+    const sale = state.sale;
+    $("sale-banner").hidden = !sale;
+    $("sale-discount").textContent = sale ? sale.discount.toLocaleString("en-US") + "% off everything" : "";
+  }
+
+  // Today's price, then the normal price struck through when it's on sale (fullPrice is null otherwise).
+  function salePrice(node, price, fullPrice) {
+    node.append(el("span", "price-now", price), document.createTextNode(" "), el("s", "price-was", beans(fullPrice)));
+  }
+
+  // One row: emoji, title and subtitle, and a price on the right. A button when it can be selected. With fullPrice (a
+  // number), the price is a sale price and the normal one shows struck through under it.
+  function row({ key, emoji, title, sub, subClass, price, fullPrice, priceClass, dim, label }) {
     const item = el("li");
     const node = el(key ? "button" : "div", "row" + (dim ? " dim" : ""));
     if (key) {
@@ -549,7 +584,12 @@
     main.append(el("span", "row-title", title));
     if (sub) main.append(el("span", "row-sub" + (subClass ? " " + subClass : ""), sub));
     node.append(el("span", "row-emoji", emoji), main);
-    if (price) node.append(el("span", "row-price" + (priceClass ? " " + priceClass : ""), price));
+    if (price) {
+      const onSale = typeof fullPrice === "number";
+      const tag = el("span", "row-price" + (priceClass ? " " + priceClass : "") + (onSale ? " on-sale" : ""), onSale ? undefined : price);
+      if (onSale) salePrice(tag, price, fullPrice);
+      node.append(tag);
+    }
     item.append(node);
     return item;
   }
@@ -629,9 +669,10 @@
             title: "Tide chart",
             sub: extend ? plural(chart.daysLeft, "day") + " left · add " + chart.days + " more" : "This week's tides",
             price: beans(chart.price),
+            fullPrice: chart.fullPrice,
             dim: state.balance < chart.price,
             label: (extend ? "Add " + plural(chart.days, "day") + " to your tide chart" : "Buy a tide chart") + " for " +
-              beans(chart.price),
+              beans(chart.price) + saleLabel(chart.fullPrice),
           }),
         ]
       : [];
@@ -646,8 +687,9 @@
           title: gear.current,
           sub: "Upgrade to " + gear.next.name + ": " + gear.next.pitch,
           price: beans(gear.next.price),
+          fullPrice: gear.next.fullPrice,
           dim: state.balance < gear.next.price,
-          label: "Upgrade to " + gear.next.name + " for " + beans(gear.next.price),
+          label: "Upgrade to " + gear.next.name + " for " + beans(gear.next.price) + saleLabel(gear.next.fullPrice),
         });
       }),
       ...chartRow
@@ -665,8 +707,9 @@
         title: "Buy a worm",
         sub: full ? "Your worm can is full. Go use some." : "Goes on your next cast",
         price: beans(worms.price),
+        fullPrice: worms.fullPrice,
         dim: full || state.balance < worms.price,
-        label: "Buy a worm for " + beans(worms.price),
+        label: "Buy a worm for " + beans(worms.price) + saleLabel(worms.fullPrice),
       })
     );
   }
@@ -713,7 +756,14 @@
       if (selected && selected.kind === "bottle") selected = null;
       return;
     }
-    $("bottle-price").textContent = "· " + beans(bottles.price) + " a bottle";
+    const priceNote = $("bottle-price");
+    if (bottles.fullPrice === null) {
+      priceNote.textContent = "· " + beans(bottles.price) + " a bottle";
+    } else {
+      priceNote.replaceChildren(document.createTextNode("· "));
+      salePrice(priceNote, beans(bottles.price), bottles.fullPrice);
+      priceNote.append(document.createTextNode(" a bottle"));
+    }
     $("bottle-limit").hidden = !bottles.atLimit;
     $("bottle-text").maxLength = bottles.maxChars;
     if (bottleDistance && !bottles.distances.some((d) => d.id === bottleDistance)) bottleDistance = null;
@@ -915,6 +965,21 @@
     { weekday: "Wed", tide: "low", exact: false, best: false },
   ];
 
+  // Normal prices for the worm and the bottle (WORMS in src/gear.ts, BOTTLE_CONFIG.PRICE in src/bottles.ts).
+  const MOCK_WORM_PRICE = 2;
+  const MOCK_BOTTLE_PRICE = 5;
+  // &sale=1: a sale day, with the server's markdown on every purchasable price (75% of it, rounded down, at least 1).
+  const MOCK_SALE = params.get("sale") === "1" ? { discount: 25 } : null;
+
+  function mockPrice(full) {
+    return MOCK_SALE ? Math.max(1, Math.floor((full * (100 - MOCK_SALE.discount)) / 100)) : full;
+  }
+
+  // A state price field: today's price, plus fullPrice on a sale day.
+  function mockPriceFields(full) {
+    return MOCK_SALE ? { price: mockPrice(full), fullPrice: full } : { price: full };
+  }
+
   const mockBalance = Number(params.get("balance"));
   const mockFundStart = MOCK_FUND_START[params.get("fund")] || { slots: 1, raised: 40 };
 
@@ -971,9 +1036,9 @@
   // The state's tideChart block: null with fishing off, just the price and length without a chart.
   function mockTideChart() {
     if (!mock.fishing) return null;
-    if (!mock.chartDaysLeft) return { price: MOCK_CHART.price, days: MOCK_CHART.days, active: false };
+    if (!mock.chartDaysLeft) return { ...mockPriceFields(MOCK_CHART.price), days: MOCK_CHART.days, active: false };
     return {
-      price: MOCK_CHART.price,
+      ...mockPriceFields(MOCK_CHART.price),
       days: MOCK_CHART.days,
       active: true,
       until: mockChartUntil(),
@@ -997,7 +1062,7 @@
         line,
         emoji: spec.emoji,
         current: spec.tiers[tier].name,
-        next: next ? { name: next.name, price: next.price, pitch: spec.pitch } : null,
+        next: next ? { name: next.name, ...mockPriceFields(next.price), pitch: spec.pitch } : null,
       };
     });
     return JSON.parse(
@@ -1006,10 +1071,11 @@
         balance: mock.balance,
         fishing: mock.fishing,
         price: { perLb: mock.perLb, yesterdayPerLb: mock.yesterdayPerLb },
+        sale: MOCK_SALE,
         bucket: mock.fishing ? mock.bucket : [],
-        worms: { count: mock.worms, max: 5, price: 2 },
+        worms: { count: mock.worms, max: 5, ...mockPriceFields(MOCK_WORM_PRICE) },
         gear,
-        bottles: { price: 5, maxChars: 200, maxLines: 3, atLimit: mock.bottlesAtLimit, distances: MOCK_BOTTLE_DISTANCES },
+        bottles: { ...mockPriceFields(MOCK_BOTTLE_PRICE), maxChars: 200, maxLines: 3, atLimit: mock.bottlesAtLimit, distances: MOCK_BOTTLE_DISTANCES },
         petFund: mockPetFund(),
         tideChart: mockTideChart(),
       })
@@ -1040,22 +1106,24 @@
 
     if (method === "POST" && path === "/app/api/buy") {
       if (body.item === "worms") {
+        const price = mockPrice(MOCK_WORM_PRICE);
         if (mock.worms >= 5) fail(409, "FULL", "🪱 Your worm can is full (5). Go use some.");
-        if (mock.balance < 2) fail(409, "CANT_AFFORD", "A worm costs " + beans(2) + ". You have " + beans(mock.balance) + ".");
-        mock.balance -= 2;
+        if (mock.balance < price) fail(409, "CANT_AFFORD", "A worm costs " + beans(price) + ". You have " + beans(mock.balance) + ".");
+        mock.balance -= price;
         mock.worms += 1;
-        return { name: "Worm", price: 2, balance: mock.balance, worms: mock.worms };
+        return { name: "Worm", price, balance: mock.balance, worms: mock.worms };
       }
       const spec = MOCK_GEAR[body.item];
       if (!spec) fail(400, "BAD_REQUEST", "There's nothing like that for sale.");
       const next = spec.tiers[mock[body.item] + 1];
       if (!next) fail(409, "MAXED", "You've already got the best there is.");
-      if (mock.balance < next.price) {
-        fail(409, "CANT_AFFORD", "The " + next.name + " costs " + beans(next.price) + ". You have " + beans(mock.balance) + ".");
+      const price = mockPrice(next.price);
+      if (mock.balance < price) {
+        fail(409, "CANT_AFFORD", "The " + next.name + " costs " + beans(price) + ". You have " + beans(mock.balance) + ".");
       }
-      mock.balance -= next.price;
+      mock.balance -= price;
       mock[body.item] += 1;
-      return { name: next.name, price: next.price, balance: mock.balance, worms: mock.worms };
+      return { name: next.name, price, balance: mock.balance, worms: mock.worms };
     }
     if (method === "POST" && path === "/app/api/bottle") {
       if (!MOCK_BOTTLE_DISTANCES.some((d) => d.id === body.distance)) fail(400, "BAD_REQUEST", "Pick how far to throw it.");
@@ -1063,8 +1131,9 @@
       if (!text) fail(400, "BAD_REQUEST", "Write something first.");
       if (text.length > 200) fail(400, "BAD_REQUEST", "That's too long for a bottle (200 characters max).");
       if (noteLines(text) > 3) fail(400, "BAD_REQUEST", "Keep it to 3 lines.");
-      if (mock.balance < 5) {
-        fail(409, "CANT_AFFORD", "A bottle costs " + beans(5) + ". You have " + beans(mock.balance) + ". Sell some fish.");
+      const price = mockPrice(MOCK_BOTTLE_PRICE);
+      if (mock.balance < price) {
+        fail(409, "CANT_AFFORD", "A bottle costs " + beans(price) + ". You have " + beans(mock.balance) + ". Sell some fish.");
       }
       mock.bottleThrows += 1;
       // The real API charges first and refunds on LIMIT, so the balance ends up the same as never charging.
@@ -1072,7 +1141,7 @@
         mock.bottlesAtLimit = true;
         fail(409, "LIMIT", MOCK_LITTER_LINES[Math.floor(Math.random() * MOCK_LITTER_LINES.length)]);
       }
-      mock.balance -= 5;
+      mock.balance -= price;
       return { balance: mock.balance };
     }
     // The same steps as the real API: check the amount, the pet switch, and the balance, then donate. Anything past a
@@ -1101,11 +1170,12 @@
     }
     // Buying while one is active adds 7 days to it.
     if (method === "POST" && path === "/app/api/chart") {
-      if (mock.balance < MOCK_CHART.price) {
-        const message = "A tide chart costs " + beans(MOCK_CHART.price) + ". You have " + beans(mock.balance) + ". Sell some fish.";
+      const price = mockPrice(MOCK_CHART.price);
+      if (mock.balance < price) {
+        const message = "A tide chart costs " + beans(price) + ". You have " + beans(mock.balance) + ". Sell some fish.";
         fail(409, "CANT_AFFORD", message);
       }
-      mock.balance -= MOCK_CHART.price;
+      mock.balance -= price;
       mock.chartDaysLeft += MOCK_CHART.days;
       return { balance: mock.balance, until: mockChartUntil(), daysLeft: mock.chartDaysLeft };
     }

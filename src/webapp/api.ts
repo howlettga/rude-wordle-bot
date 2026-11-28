@@ -6,15 +6,14 @@ import type { StoreBuyResult, StoreItem } from "../durable-objects/store.js";
 import type { PetFundStatus, PetFundUnlock } from "../durable-objects/pet.js";
 import type { AnglerStatus } from "../durable-objects/fishing.js";
 import { GEAR_LINES, TIDE_CHART_ITEM, WORMS, type GearLine } from "../gear.js";
-import { easternParts } from "../eastern-time.js";
-import { bestCastDay, fishingDay, lakeTier, spotRest, tideForecast, type SpotRest } from "../fishing-math.js";
+import { bestCastDay, lakeTier, spotRest, tideForecast, type SpotRest } from "../fishing-math.js";
 import { BOTTLE_CONFIG, BOTTLE_DISTANCES, LITTER_LINES, cleanBottleText, isBottleDistance } from "../bottles.js";
 import { PET_FUND } from "../pet-config.js";
-import { formatBeans } from "../store-math.js";
-import { renderStoreCard, storeBannerUrl, storeUrlFor, type StoreLinks } from "../store.js";
-import { random } from "../util.js";
+import { formatBeans, STORE_CONFIG, salePrice } from "../store-math.js";
+import { buildStoreLinks, renderStoreCard, storeUrlFor, type StoreLinks } from "../store.js";
+import { nowSec, random } from "../util.js";
 import { validateInitData } from "./init-data.js";
-import { signStoreLink, verifyStoreLink } from "./store-link.js";
+import { verifyStoreLink } from "./store-link.js";
 
 // The store page's API (public/app/ is the page; main.ts sends /app/api/* here). Same origin as the page, JSON
 // in and out, never cached. Every request carries "Authorization: tma <Telegram.WebApp.initData>", and is checked
@@ -105,11 +104,11 @@ export async function handleStoreApi(request: Request, env: Env, ctx: ExecutionC
 
 // The four checks, in order. Returns the error response for the first one that fails.
 async function authenticate(request: Request, env: Env, ctx: ExecutionContext): Promise<Session | Response> {
-  const nowSec = Math.floor(Date.now() / 1000);
+  const now = nowSec();
 
   const auth = request.headers.get("Authorization") ?? "";
   const initData = auth.startsWith("tma ") ? auth.slice("tma ".length) : null;
-  const validated = initData ? await validateInitData(initData, env.BOT_TOKEN, nowSec) : null;
+  const validated = initData ? await validateInitData(initData, env.BOT_TOKEN, now) : null;
   if (!validated?.ok) {
     return validated?.reason === "EXPIRED"
       ? fail(401, "SESSION_EXPIRED", MESSAGES.SESSION_EXPIRED)
@@ -117,7 +116,7 @@ async function authenticate(request: Request, env: Env, ctx: ExecutionContext): 
   }
   const { user, startParam } = validated;
 
-  const link = startParam === null ? null : await verifyStoreLink(startParam, env.BOT_TOKEN, nowSec);
+  const link = startParam === null ? null : await verifyStoreLink(startParam, env.BOT_TOKEN, now);
   if (!link?.ok) {
     return link?.reason === "EXPIRED" ? fail(401, "LINK_EXPIRED", MESSAGES.LINK_EXPIRED) : fail(403, "BAD_LINK", MESSAGES.BAD_LINK);
   }
@@ -196,7 +195,7 @@ async function getState(session: Session): Promise<Response> {
       line,
       emoji,
       current: (tiers[tier] ?? tiers[0]!).name,
-      next: next ? { name: next.name, price: next.price, pitch } : null,
+      next: next ? { name: next.name, ...priced(next.price, card.sale), pitch } : null,
     };
   });
   return json(200, {
@@ -205,11 +204,11 @@ async function getState(session: Session): Promise<Response> {
     fishing,
     price: { perLb: card.fish.perLb, yesterdayPerLb: card.fish.yesterdayPerLb },
     bucket,
-    worms: { count: wallet.gear.worms, max: WORMS.maxHeld, price: WORMS.price },
+    worms: { count: wallet.gear.worms, max: WORMS.maxHeld, ...priced(WORMS.price, card.sale) },
     gear,
     // atLimit is the only thing the page learns about the player's own bottles: there's no history, by design.
     bottles: {
-      price: BOTTLE_CONFIG.PRICE,
+      ...priced(BOTTLE_CONFIG.PRICE, card.sale),
       maxChars: BOTTLE_CONFIG.MAX_CHARS,
       maxLines: BOTTLE_CONFIG.MAX_LINES,
       atLimit: bottlesOut >= BOTTLE_CONFIG.MAX_IN_WATER,
@@ -217,8 +216,15 @@ async function getState(session: Session): Promise<Response> {
       distances: Object.entries(BOTTLE_DISTANCES).map(([id, { emoji, label }]) => ({ id, emoji, label })),
     },
     petFund: fund ? petFundJson(fund) : null,
-    tideChart: angler ? tideChartJson(session, chartUntil, angler) : null,
+    tideChart: angler ? tideChartJson(session, chartUntil, angler, card.sale) : null,
+    sale: card.sale ? { discount: Math.round(STORE_CONFIG.SALE_DISCOUNT * 100) } : null,
   });
+}
+
+// A purchasable price for the page: price is what it costs today, and on a sale day fullPrice is the normal price
+// (for the struck-through display). The Store DO applies the same discount when the purchase actually happens.
+function priced(price: number, onSale: boolean): { price: number; fullPrice?: number } {
+  return onSale ? { price: salePrice(price, true), fullPrice: price } : { price };
 }
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
@@ -230,23 +236,25 @@ const RESTED_AFTER_DAYS = 4;
 
 // The page's tideChart block. Without a chart running it's only the price and days, so the forecast, the spot, and
 // the lake never leave the server unpaid for.
-function tideChartJson(session: Session, chartUntil: number | null, angler: AnglerStatus) {
-  const { price, days } = TIDE_CHART_ITEM;
-  const nowSec = Math.floor(Date.now() / 1000);
-  if (chartUntil === null || chartUntil <= nowSec) {
-    return { price, days, active: false };
+function tideChartJson(session: Session, chartUntil: number | null, angler: AnglerStatus, onSale: boolean) {
+  const { days } = TIDE_CHART_ITEM;
+  const pricing = priced(TIDE_CHART_ITEM.price, onSale);
+  const now = nowSec();
+  if (chartUntil === null || chartUntil <= now) {
+    return { ...pricing, days, active: false };
   }
-  const { dayNumber } = fishingDay(easternParts(new Date()));
+  // Today's fishing day comes from the Fishing DO, which knows the chat's location (the day turns over at sunrise).
+  const { dayNumber } = angler;
   const forecast = tideForecast(session.env.TIDE_SECRET, session.chatId, dayNumber);
   const { daysSinceLastCast, castsToday } = angler;
   const best = bestCastDay(forecast, daysSinceLastCast);
   const rest = spotRest(daysSinceLastCast);
   return {
-    price,
+    ...pricing,
     days,
     active: true,
     until: chartUntil,
-    daysLeft: daysLeft(chartUntil, nowSec),
+    daysLeft: daysLeft(chartUntil, now),
     forecast: forecast.map((day, i) => ({ weekday: weekdayOf(day.dayNumber), tide: day.tide, exact: day.exact, best: i === best })),
     spot: {
       rest,
@@ -261,8 +269,8 @@ function tideChartJson(session: Session, chartUntil: number | null, angler: Angl
 }
 
 // Whole days left on a chart, rounded up, so a chart bought just now says the full 7.
-function daysLeft(until: number, nowSec: number): number {
-  return Math.ceil((until - nowSec) / 86_400);
+function daysLeft(until: number, now: number): number {
+  return Math.ceil((until - now) / 86_400);
 }
 
 // The page's petFund block: the fund's status plus the amounts it offers. goal is null once every slot is unlocked.
@@ -361,23 +369,21 @@ async function throwBottle(session: Session, request: Request): Promise<Response
   }
 
   const purchase = { userId: user.id, firstName: user.first_name, amount: BOTTLE_CONFIG.PRICE, source: "bottle", label: "Message in a bottle" };
-  const charged = await storage.chargeWallet(chatId, purchase);
+  const charged = await storage.chargeWallet(chatId, { ...purchase, onSale: true });
   if (!charged.ok) {
-    return fail(
-      409,
-      "CANT_AFFORD",
-      `A bottle costs ${formatBeans(BOTTLE_CONFIG.PRICE)}. You have ${formatBeans(charged.balance)}. Sell some fish.`
-    );
+    return fail(409, "CANT_AFFORD", `A bottle costs ${formatBeans(charged.amount)}. You have ${formatBeans(charged.balance)}. Sell some fish.`);
   }
+  // Refunds give back exactly what was taken, which is less than the list price on a sale day.
+  const refund = { ...purchase, amount: charged.amount };
   let thrown;
   try {
     thrown = await storage.throwBottle(chatId, { authorId: user.id, authorName: user.first_name, text: cleaned.text, distance });
   } catch (err) {
-    await storage.refundWallet(chatId, purchase).catch((refundErr) => console.error("bottle refund failed", chatId, user.id, refundErr));
+    await storage.refundWallet(chatId, refund).catch((refundErr) => console.error("bottle refund failed", chatId, user.id, refundErr));
     throw err;
   }
   if (!thrown.ok) {
-    await storage.refundWallet(chatId, purchase);
+    await storage.refundWallet(chatId, refund);
     return fail(409, "LIMIT", random([...LITTER_LINES]));
   }
 
@@ -461,7 +467,7 @@ async function buyTideChart(session: Session): Promise<Response> {
       `A tide chart costs ${formatBeans(TIDE_CHART_ITEM.price)}. You have ${formatBeans(result.balance)}. Sell some fish.`
     );
   }
-  return json(200, { balance: result.balance, until: result.until, daysLeft: daysLeft(result.until, Math.floor(Date.now() / 1000)) });
+  return json(200, { balance: result.balance, until: result.until, daysLeft: daysLeft(result.until, nowSec()) });
 }
 
 // Plain text:
@@ -527,9 +533,5 @@ function storeLinks(env: Env): StoreLinks {
   } catch (err) {
     console.error("BOT_INFO is not valid JSON", err);
   }
-  return {
-    botUsername,
-    signLink: (chatId) => signStoreLink(chatId, Math.floor(Date.now() / 1000), env.BOT_TOKEN),
-    bannerUrl: storeBannerUrl(env.PUBLIC_URL),
-  };
+  return buildStoreLinks({ token: env.BOT_TOKEN, botUsername, publicUrl: env.PUBLIC_URL });
 }

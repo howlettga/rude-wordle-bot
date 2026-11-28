@@ -8,6 +8,7 @@ import type {
   BottleListing,
   FishPick,
   FishUse,
+  FishingLocation,
   Fishing,
   FishingCastResult,
   BucketFish,
@@ -28,7 +29,7 @@ import type {
 } from "./durable-objects/store.js";
 import type { BottleDistance } from "./bottles.js";
 import type { AnglerGear } from "./gear.js";
-import type { CastGear } from "./fishing-math.js";
+import type { CastGear, GeoLocation } from "./fishing-math.js";
 import type {
   Pet,
   PetAdoptResult,
@@ -380,6 +381,16 @@ export class StorageService {
     return this.fishingStub(chatId).getLeaderboard();
   }
 
+  // The owner's /setlocation. The Fishing DO (casts, the lake, the tide) and the Store DO (the fish price) each turn
+  // their day over at sunrise there, so both get it.
+  async setFishingLocation(chatId: number, location: GeoLocation | null): Promise<void> {
+    await Promise.all([this.fishingStub(chatId).setLocation(location), this.storeStub(chatId).setLocation(location)]);
+  }
+
+  getFishingLocation(chatId: number): Promise<FishingLocation> {
+    return this.fishingStub(chatId).getLocation();
+  }
+
   setFishingWindow(chatId: number, days: number | null): Promise<void> {
     return this.fishingStub(chatId).setWindow(days);
   }
@@ -447,7 +458,7 @@ export class StorageService {
     return this.storeStub(chatId).quoteFishes(chatId, fish);
   }
 
-  sellFish(chatId: number, input: { userId: number; firstName: string; fish: HeldFish }): Promise<StoreSaleResult> {
+  sellFish(chatId: number, input: { userId: number; firstName: string; fish: HeldFish; bonus?: number }): Promise<StoreSaleResult> {
     return this.storeStub(chatId).sellFish({ ...input, chatId });
   }
 
@@ -464,18 +475,18 @@ export class StorageService {
   }
 
   tapStoreGear(chatId: number, input: { userId: number; firstName: string; item: StoreItem }): Promise<StoreTapResult> {
-    return this.storeStub(chatId).tapGear(input);
+    return this.storeStub(chatId).tapGear({ ...input, chatId });
   }
 
   buyStoreGear(chatId: number, input: { userId: number; firstName: string; item: StoreItem }): Promise<StoreBuyResult> {
-    return this.storeStub(chatId).buyGear(input);
+    return this.storeStub(chatId).buyGear({ ...input, chatId });
   }
 
   chargeWallet(
     chatId: number,
-    input: { userId: number; firstName: string; amount: number; source: string; label: string }
+    input: { userId: number; firstName: string; amount: number; source: string; label: string; onSale?: boolean }
   ): Promise<StoreChargeResult> {
-    return this.storeStub(chatId).charge(input);
+    return this.storeStub(chatId).charge({ ...input, chatId });
   }
 
   refundWallet(chatId: number, input: { userId: number; firstName: string; amount: number; source: string; label: string }): Promise<number> {
@@ -483,7 +494,7 @@ export class StorageService {
   }
 
   buyTideChart(chatId: number, input: { userId: number; firstName: string }): Promise<TideChartBuyResult> {
-    return this.storeStub(chatId).buyTideChart(input);
+    return this.storeStub(chatId).buyTideChart({ ...input, chatId });
   }
 
   getChartUntil(chatId: number, userId: number): Promise<number | null> {

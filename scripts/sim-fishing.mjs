@@ -1,8 +1,8 @@
 // Simulates /fish with the real math in src/fishing-math.ts (Node 24+ runs the .ts import directly), prints
 // the odds tables, and checks them against the tuning targets. Run after changing FISHING_CONFIG, the tide
 // multipliers, the pet's fish food, the store's prices, gear, or bottles: `npm run sim:fishing`. Exits non-zero if a target is missed.
-import { FISHING_CONFIG, TIDE_CHART, bestCastDay, castFactors, junkChance, lakeTier, rollCatch, rollWeight, rotatingLine, speciesForWeight, speciesTier, tideFor, tideForecast } from "../src/fishing-math.ts";
-import { STORE_CONFIG, fishPriceIndex, fishPricePerLb, fishSalePrice } from "../src/store-math.ts";
+import { DEFAULT_LOCATION, FISHING_CONFIG, TIDE_CHART, seededUniform, fishingDay, sunriseUtc, bestCastDay, castFactors, junkChance, lakeTier, rollCatch, rollWeight, rotatingLine, speciesForWeight, speciesTier, tideFor, tideForecast } from "../src/fishing-math.ts";
+import { STORE_CONFIG, fishPriceIndex, fishPricePerLb, fishSalePrice, isSaleDay, salePrice } from "../src/store-math.ts";
 import { GEAR_LINES, castGear } from "../src/gear.ts";
 import { HIGH_TIDE_LINES, HINT_LINES, JUNK_LINES, LAKE_LINES } from "../src/fishing-lines.ts";
 import { PET_CONFIG, foodForFish } from "../src/pet-config.ts";
@@ -184,6 +184,28 @@ for (let run = 0; run < 1000; run++) {
 }
 console.log(`  with everyone on top gear, the chat record after a year: ${pct(geared365, 0.5).toFixed(0)} lb`);
 
+// Sunrise (the fishing day turns over then): RDU against published times, in Eastern minutes after midnight.
+const etMinutes = (sec) => {
+  const [h, m] = new Date(sec * 1000).toLocaleTimeString("en-GB", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit" }).split(":");
+  return Number(h) * 60 + Number(m);
+};
+const sunriseChecks = [
+  ["Jun 21", 2026, 6, 21, 5 * 60 + 59],
+  ["Dec 21", 2026, 12, 21, 7 * 60 + 20],
+  ["Mar 20", 2026, 3, 20, 7 * 60 + 17],
+];
+const sunriseErrors = sunriseChecks.map(([, y, m, d, expected]) => Math.abs(etMinutes(sunriseUtc(y, m, d, DEFAULT_LOCATION)) - expected));
+const rduRise = sunriseUtc(2026, 12, 21, DEFAULT_LOCATION);
+const dayAt = (sec) => fishingDay({ year: 2026, month: 12, day: 21, hour: 7 }, sec, DEFAULT_LOCATION).dayNumber;
+console.log(`\nSunrise at RDU: ${sunriseChecks.map(([label, y, m, d]) => `${label} ${new Date(sunriseUtc(y, m, d, DEFAULT_LOCATION) * 1000).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" })}`).join(", ")}`);
+
+// Store sales: about 1 day in SALE_EVERY_DAYS per chat, seeded like the real thing.
+let saleDays = 0;
+const saleTrials = 200 * 365;
+for (let chat = 0; chat < 200; chat++) for (let day = 0; day < 365; day++) if (isSaleDay(seededUniform(`sim-secret:sale:${chat}:${day}`))) saleDays++;
+const saleRate = saleDays / saleTrials;
+console.log(`\nStore sales: ${(saleRate * 100).toFixed(1)}% of days; 25% off: 🫘40 -> ${salePrice(40, true)}, 🫘15 -> ${salePrice(15, true)}, 🫘5 -> ${salePrice(5, true)}, 🫘2 -> ${salePrice(2, true)}`);
+
 console.log("\nTargets");
 check(medians["daily, 1st cast"] >= 8, `a daily caster's typical fish is at least 8 lb (${medians["daily, 1st cast"]})`);
 check(medians["daily, low tide, fished out"] >= 3, `the worst possible cast still has a typical fish of 3+ lb (${medians["daily, low tide, fished out"]})`);
@@ -282,6 +304,11 @@ check(
     cleaned("1\n2\n3\n4") === "TOO_MANY_LINES",
   `cleanBottleText trims, normalizes, and enforces ${BOTTLE_CONFIG.MAX_CHARS} characters and ${BOTTLE_CONFIG.MAX_LINES} lines`
 );
+check(Math.max(...sunriseErrors) <= 5, `RDU sunrise is within 5 minutes of published times (worst ${Math.max(...sunriseErrors)} min)`);
+check(dayAt(rduRise - 60) === dayAt(rduRise) - 1, `the fishing day turns over at sunrise, not before`);
+check(sunriseUtc(2026, 12, 21, { lat: 69.65, lon: 18.96 }) === null, `no sunrise in polar winter (falls back to DAY_STARTS_HOUR_ET)`);
+check(Math.abs(saleRate - 1 / STORE_CONFIG.SALE_EVERY_DAYS) <= 0.01, `about 1 day in ${STORE_CONFIG.SALE_EVERY_DAYS} is a sale day (${(saleRate * 100).toFixed(1)}%)`);
+check(salePrice(40, true) === 30 && salePrice(2, true) === 1 && salePrice(1, true) === 1 && salePrice(40, false) === 40, `sale prices round down, never below 1, and only on sale days`);
 check(LITTER_LINES.length >= 4, `at least 4 littering quips (${LITTER_LINES.length})`);
 
 // The tide chart (tideForecast): the first EXACT_DAYS are the real tides, and later days are right about as often as

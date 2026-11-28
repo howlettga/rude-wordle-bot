@@ -15,6 +15,7 @@ import {
   type PlayOutcome,
 } from "../pet-config.js";
 import { advanceMeters, petFate, type PetMeters } from "../pet-math.js";
+import { nowSec } from "../util.js";
 
 // "overfed" is no longer caused by anything (it was briefly a 3% overfeed death), but a past pet may have it.
 export type PetDeathCause = "starved" | "ran_away" | "put_down" | "overfed" | "car_crash";
@@ -169,7 +170,6 @@ const WARN_HUNGRY = 1;
 const WARN_STARVING = 2;
 const WARN_DYING = 3;
 
-const nowSec = () => Math.floor(Date.now() / 1000);
 
 // One per chat (idFromName(`pet_${chatId}`)): the living pets (rows with died_at NULL — at most as many as
 // the chat has slots), every past pet for /graveyard, per-person caretaking history for cooldowns and

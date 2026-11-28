@@ -56,6 +56,9 @@ export interface Env {
   // This Worker's own public address (a plain var in wrangler.jsonc, different for dev and prod), for links back to
   // itself, like the store card's banner image. Unset (e.g. under npm run dev) just means no banner.
   PUBLIC_URL?: string;
+  // Default "lat,lon" for chats that haven't set their own with /setlocation: the fishing day turns over at sunrise
+  // there (see fishingDay in fishing-math.ts). Unset or unparseable means RDU.
+  FISHING_LOCATION?: string;
 }
 
 export default {

@@ -7,7 +7,7 @@ import type { StorageService } from "./storage-service.js";
 import type { PetAction, PetEulogy, PetFundStatus, PetInput, PetPeek, PetStatus, PetWarning } from "./durable-objects/pet.js";
 import type { FishSize, HeldFish } from "./durable-objects/fishing.js";
 import { PET_CONFIG, PET_TRICKS, foodForFish, rollSpecies } from "./pet-config.js";
-import { easternParts } from "./eastern-time.js";
+import { easternParts, formatEasternDate } from "./eastern-time.js";
 import { escapeHtml, random } from "./util.js";
 
 // The "pet" feature (see features.ts): shared pets, kept alive by everyone. A chat starts with room for one;
@@ -747,7 +747,7 @@ function joinList(items: string[]): string {
 }
 
 function formatDate(epochSec: number): string {
-  return new Date(epochSec * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" });
+  return formatEasternDate(epochSec);
 }
 
 function formatLifespan(seconds: number): string {
