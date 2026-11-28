@@ -4,7 +4,7 @@ import type { StorageService } from "./storage-service.js";
 import type { HeldFish } from "./durable-objects/fishing.js";
 import type { StoreCard, StoreItem, StoreTapResult } from "./durable-objects/store.js";
 import { GEAR_LINES, WORMS, type AnglerGear } from "./gear.js";
-import { formatBeanPrice, formatBeans } from "./store-math.js";
+import { STORE_CONFIG, formatBeanPrice, formatBeans } from "./store-math.js";
 import type { LinkPreviewOptions } from "grammy/types";
 import { escapeHtml, random, weightArticle } from "./util.js";
 import { storeAppUrl } from "./webapp/store-link.js";
@@ -180,13 +180,15 @@ export class StoreComposer extends Composer<MyContext> {
       return;
     }
 
-    const sale = await this.sell(chatId, ctx.from, fish);
+    // Taking the gamble on a random fish pays RANDOM_SELL_BONUS extra.
+    const sale = await this.sell(chatId, ctx.from, fish, STORE_CONFIG.RANDOM_SELL_BONUS);
     await this.refreshCard(ctx, chatId);
     const weight = fish.weight.toFixed(1);
+    const bonus = sale.bonus > 0 ? ` (${formatBeans(sale.bonus)} of it a lucky-dip bonus)` : "";
     await ctx.answerCallbackQuery({
       text: withFreshness(
         `${fish.emoji} The shopkeeper reached into your bucket and pulled out ${weightArticle(weight)} ${weight} lb ${fish.species}. ` +
-          `Sold for ${formatBeans(sale.amount)}. You have ${formatBeans(sale.balance)}.`
+          `Sold for ${formatBeans(sale.amount)}${bonus}. You have ${formatBeans(sale.balance)}.`
       ),
       show_alert: true,
     });
@@ -194,9 +196,9 @@ export class StoreComposer extends Composer<MyContext> {
 
   // Pays for a fish already taken from the bucket, and puts the fish back if the payout fails, so a
   // broken sale never just eats someone's fish.
-  private async sell(chatId: number, from: { id: number; first_name: string }, fish: HeldFish) {
+  private async sell(chatId: number, from: { id: number; first_name: string }, fish: HeldFish, bonus = 0) {
     try {
-      return await this.storage.sellFish(chatId, { userId: from.id, firstName: from.first_name, fish });
+      return await this.storage.sellFish(chatId, { userId: from.id, firstName: from.first_name, fish, bonus });
     } catch (err) {
       await this.storage.returnFish(chatId, fish.id).catch((refundErr) => console.error("returnFish failed", fish, refundErr));
       throw err;
@@ -371,7 +373,8 @@ function priceChange(today: number, yesterday: number): string {
 function cardKeyboard(fishing: boolean, storeUrl: string | null): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   if (fishing) {
-    keyboard.text("🐟 Sell a fish", "store:sellrandom").row();
+    const bonus = Math.round(STORE_CONFIG.RANDOM_SELL_BONUS * 100);
+    keyboard.text(bonus > 0 ? `🐟 Sell a fish +${bonus}%` : "🐟 Sell a fish", "store:sellrandom").row();
   }
   if (storeUrl !== null) {
     keyboard.url("🛒 Open store", storeUrl);

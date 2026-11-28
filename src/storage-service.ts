@@ -447,7 +447,7 @@ export class StorageService {
     return this.storeStub(chatId).quoteFishes(chatId, fish);
   }
 
-  sellFish(chatId: number, input: { userId: number; firstName: string; fish: HeldFish }): Promise<StoreSaleResult> {
+  sellFish(chatId: number, input: { userId: number; firstName: string; fish: HeldFish; bonus?: number }): Promise<StoreSaleResult> {
     return this.storeStub(chatId).sellFish({ ...input, chatId });
   }
 

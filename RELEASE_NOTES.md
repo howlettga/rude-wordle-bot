@@ -2,6 +2,8 @@
 
 ## Unreleased - General Store
 
+- The store card's random **Sell a fish** now pays a 10% lucky-dip bonus (`RANDOM_SELL_BONUS`) for taking the gamble. Picking a specific fish in the store page pays the plain price.
+
 - Tide chart: 🫘15 for a week of private tide forecasts in the store page (3 days exact, then predictions that sharpen as the day gets closer, king tides included), plus how rested your fishing spot is, how busy the lake is, and a ★ on the best day to cast.
 
 - Pet fund: the chat pools beans in the store page toward room for another pet. Goals of 🫘100, 🫘750, and 🫘2,500 unlock a 2nd, 3rd, and 4th pet slot, and reaching one posts a thank-you to the top 3 donors. `/adopt` works while there's a free slot.

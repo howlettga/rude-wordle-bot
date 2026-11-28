@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../main.js";
 import { easternParts } from "../eastern-time.js";
 import { fishingDay, seededNormal, speciesTier } from "../fishing-math.js";
-import { STORE_CONFIG, fishPriceIndex, fishPricePerLb, fishSalePrice } from "../store-math.js";
+import { STORE_CONFIG, fishPriceIndex, fishPricePerLb, fishSalePrice, saleBonus } from "../store-math.js";
 import { GEAR_LINES, STARTER_GEAR, TIDE_CHART_ITEM, WORMS, type AnglerGear, type GearLine } from "../gear.js";
 import type { HeldFish } from "./fishing.js";
 
@@ -48,8 +48,9 @@ export type StoreChargeResult = { ok: true; balance: number } | { ok: false; bal
 export type TideChartBuyResult = { ok: true; until: number; balance: number } | { ok: false; reason: "CANT_AFFORD"; balance: number };
 
 export interface StoreSaleResult {
-  amount: number;
+  amount: number; // everything paid, bonus included
   balance: number;
+  bonus: number; // the part of amount a sale bonus added (0 for a plain sale)
 }
 
 // One per chat (idFromName(`store_${chatId}`)): everyone's wallet, and a ledger of every bean in or out.
@@ -424,17 +425,20 @@ export class Store extends DurableObject<Env> {
 
   // Pays for a fish the Fishing DO has already marked sold. No await in here, so the ledger check and the
   // payout can't interleave with another sale. Selling the same fish again (a retry after the caller lost
-  // the reply) pays nothing more and reports the original sale.
-  async sellFish(input: { chatId: number; userId: number; firstName: string; fish: HeldFish }): Promise<StoreSaleResult> {
+  // the reply) pays nothing more and reports the original sale. bonus is an extra share of the price (the card's
+  // random sell passes RANDOM_SELL_BONUS); the result's bonus is how many of the beans it added.
+  async sellFish(input: { chatId: number; userId: number; firstName: string; fish: HeldFish; bonus?: number }): Promise<StoreSaleResult> {
     const { fish } = input;
     const previous = this.ctx.storage.sql
       .exec<{ delta: number }>(`SELECT delta FROM ledger WHERE reason = 'sale' AND source = 'fish' AND item_id = ?`, fish.id)
       .toArray()[0];
     if (previous) {
-      return { amount: previous.delta, balance: this.balance(input.userId) };
+      return { amount: previous.delta, balance: this.balance(input.userId), bonus: 0 };
     }
 
-    const amount = fishSalePrice(fish.weight, speciesTier(fish.species), this.fishPrice(input.chatId).perLb);
+    const price = fishSalePrice(fish.weight, speciesTier(fish.species), this.fishPrice(input.chatId).perLb);
+    const bonus = saleBonus(price, input.bonus ?? 0);
+    const amount = price + bonus;
     this.ctx.storage.sql.exec(
       `INSERT INTO ledger (user_id, first_name, delta, reason, source, item_id, label) VALUES (?, ?, ?, 'sale', 'fish', ?, ?)`,
       input.userId,
@@ -454,7 +458,7 @@ export class Store extends DurableObject<Env> {
         amount
       )
       .one().balance;
-    return { amount, balance };
+    return { amount, balance, bonus };
   }
 
   // A wallet's balance and gear, for the private Wallet pop-up.

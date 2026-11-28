@@ -28,6 +28,10 @@ export const STORE_CONFIG = {
   TIER_MULTIPLIER: { common: 1, rare: 3, legendary: 10 } satisfies Record<FishTier, number>,
   // Even a minnow is worth something.
   MIN_SALE: 1,
+  // The /store card's Sell a fish pulls a random fish from your bucket; taking the gamble pays this much extra
+  // (rounded up, so it's always at least 🫘1). Picking a specific fish in the store page, or selling a catch from
+  // its /fish reply, pays the plain price.
+  RANDOM_SELL_BONUS: 0.1,
 } as const;
 
 // normals: one N(0, 1) deviate per day of the window, oldest first.
@@ -43,6 +47,11 @@ export function fishPricePerLb(index: number): number {
 
 export function fishSalePrice(weight: number, tier: FishTier, perLb: number): number {
   return Math.max(STORE_CONFIG.MIN_SALE, Math.round(weight * perLb * STORE_CONFIG.TIER_MULTIPLIER[tier]));
+}
+
+// The extra beans a bonus adds to a sale, rounded up (see RANDOM_SELL_BONUS): 10% of 🫘18 is 🫘2, of 🫘3 is 🫘1.
+export function saleBonus(amount: number, bonus: number): number {
+  return bonus > 0 ? Math.ceil(amount * bonus) : 0;
 }
 
 // The bean is the currency sign, like a dollar sign: "🫘18", "🫘1,204". Everywhere money shows up, so
