@@ -951,7 +951,13 @@
 
   // Same as PET_FUND in src/pet-config.ts: the goals that unlock slots 2, 3, and 4, and the preset amounts.
   const MOCK_FUND_GOALS = [100, 2000, 6000];
-  const MOCK_FUND_OPTIONS = [10, 25, 50, 100];
+  // Mirrors PET_FUND.DONATION_OPTIONS in src/pet-config.ts (the page can't import server code): one list per goal.
+  const MOCK_FUND_OPTIONS = [
+    [10, 25, 50, 100],
+    [50, 100, 250, 500],
+    [100, 250, 500, 1000],
+  ];
+  const mockFundOptions = () => MOCK_FUND_OPTIONS[mock.fundSlots - 1] || [];
   const MOCK_FUND_START = {
     full: { slots: 4, raised: 0 },
     almost: { slots: 3, raised: 5990 },
@@ -1035,7 +1041,7 @@
       slots: mock.fundSlots,
       maxSlots: 1 + MOCK_FUND_GOALS.length,
       livingPets: 1,
-      options: MOCK_FUND_OPTIONS,
+      options: mockFundOptions(),
     };
   }
 
@@ -1155,7 +1161,7 @@
     // goal carries into the next one, and every goal crossed unlocks a slot.
     if (method === "POST" && path === "/app/api/fund") {
       const amount = body.amount;
-      if (!MOCK_FUND_OPTIONS.includes(amount)) fail(400, "BAD_REQUEST", "Pick an amount.");
+      if (!mockFundOptions().includes(amount)) fail(400, "BAD_REQUEST", "Pick an amount.");
       if (!mock.pets) fail(409, "PET_OFF", "Pets are off in this chat.");
       if (mock.balance < amount) {
         fail(409, "CANT_AFFORD", "That's " + beans(amount) + ". You have " + beans(mock.balance) + ". Sell some fish.");

@@ -65,6 +65,9 @@ export function fishSalePrice(weight: number, tier: FishTier, perLb: number, inD
   return Math.max(MIN_SALE, Math.round((dockFee + weight * perLb) * TIER_MULTIPLIER[tier] * demand));
 }
 
+// The sale discount as a whole percent ("25% off"), for the card and the page.
+export const SALE_PERCENT = Math.round(STORE_CONFIG.SALE_DISCOUNT * 100);
+
 // Whether a day is a sale day, from a seeded uniform value for that chat and day (see Store.saleOn).
 export function isSaleDay(uniform: number): boolean {
   return uniform < 1 / STORE_CONFIG.SALE_EVERY_DAYS;

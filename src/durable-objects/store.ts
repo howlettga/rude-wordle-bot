@@ -526,15 +526,22 @@ export class Store extends DurableObject<Env> {
   // Whether today is a sale day in this chat: about 1 day in SALE_EVERY_DAYS, seeded from the secret like the tide,
   // so it's the same all day and can't be predicted from the source code. Without the secret, never.
   private saleOn(chatId: number): boolean {
-    const secret = this.env.TIDE_SECRET;
-    return secret ? isSaleDay(seededUniform(`${secret}:sale:${chatId}:${this.dayNumber()}`)) : false;
+    const roll = this.dailyRoll(chatId, "sale");
+    return roll !== null && isSaleDay(roll);
   }
 
   // Today's species of the day in this chat (see DEMAND_SPECIES), seeded like the sale and the tide, so it's the same
   // all day and turns over at sunrise. Without the secret there isn't one.
   private demandOn(chatId: number): { species: string; emoji: string } | null {
+    const roll = this.dailyRoll(chatId, "demand");
+    return roll === null ? null : speciesOfTheDay(roll);
+  }
+
+  // A uniform roll in (0, 1) for this chat and today's fishing day, one per salt ("sale", "demand"): seeded from
+  // TIDE_SECRET, so it's the same all day and can't be predicted from the source code. null without the secret.
+  private dailyRoll(chatId: number, salt: string): number | null {
     const secret = this.env.TIDE_SECRET;
-    return secret ? speciesOfTheDay(seededUniform(`${secret}:demand:${chatId}:${this.dayNumber()}`)) : null;
+    return secret ? seededUniform(`${secret}:${salt}:${chatId}:${this.dayNumber()}`) : null;
   }
 
   private fishPrice(chatId: number): StoreFishPrice {

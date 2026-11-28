@@ -162,8 +162,8 @@ console.log(`  rare ${((tiers.rare / fishCount) * 100).toFixed(1)}% of fish; ${s
 const megalodonYears = fishCount / (bySpecies.megalodon ?? 0) / pct(fishPerDay, 0.5) / 365;
 console.log(`  our chat lands a megalodon about every ${megalodonYears.toFixed(1)} years`);
 console.log(`  a fish sells for (on a typical day): median ${pct(sales, 0.5)}, 1 in 10 ${pct(sales, 0.9)}, 1 in 100 ${pct(sales, 0.99)}, mean ${meanSale.toFixed(1)}`);
-// Our chat is 5 anglers (see rhythms), so a player's share of the chat's daily catch is a fifth.
-const beansPerPersonDay = (meanSale * pct(fishPerDay, 0.5)) / 5;
+// A player's share of our chat's daily catch: one of its anglers (see rhythms).
+const beansPerPersonDay = (meanSale * pct(fishPerDay, 0.5)) / rhythms.length;
 console.log(`  a player earns about ${beansPerPersonDay.toFixed(0)} beans a day if they sell everything (about ${(beansPerPersonDay / 2).toFixed(0)} feeding the pet half)`);
 console.log(`  biggest sales (1 in 1,000 fish): ${pct(sales, 0.999)} beans`);
 for (const [line, { tiers }] of Object.entries(GEAR_LINES)) {

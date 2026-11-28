@@ -13,6 +13,7 @@ import {
   rollPlayOutcome,
   type PetRarity,
   type PlayOutcome,
+  donationOptions,
 } from "../pet-config.js";
 import { advanceMeters, petFate, type PetMeters } from "../pet-math.js";
 import { nowSec } from "../util.js";
@@ -97,7 +98,8 @@ export interface PetFundUnlock {
 export type PetFundDonateResult =
   | { ok: true; fund: PetFundStatus; unlocked: PetFundUnlock[] } // usually 0 or 1 unlocks; can be more
   | { ok: false; reason: "MAXED" } // every slot already unlocked
-  | { ok: false; reason: "TOO_MUCH"; max: number }; // more than is left across all goals
+  | { ok: false; reason: "TOO_MUCH"; max: number } // more than is left across all goals
+  | { ok: false; reason: "BAD_AMOUNT"; options: readonly number[] }; // not one of the current tier's amounts
 
 export type PetAdoptResult =
   | { ok: true; pet: PetStatus; eulogies: PetEulogy[] }
@@ -595,6 +597,11 @@ export class Pet extends DurableObject<Env> {
     let { slots, raised } = this.fund();
     if (slots >= MAX_PET_SLOTS) {
       return { ok: false, reason: "MAXED" };
+    }
+    // Only the amounts on offer for the goal being funded (see donationOptions), checked here where the tier is known.
+    const options = donationOptions(slots);
+    if (!options.includes(input.amount)) {
+      return { ok: false, reason: "BAD_AMOUNT", options };
     }
     const max = PET_FUND.SLOT_GOALS.slice(slots - 1).reduce((sum, goal) => sum + goal, 0) - raised;
     if (input.amount > max) {

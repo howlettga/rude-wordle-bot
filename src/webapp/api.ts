@@ -8,8 +8,8 @@ import type { AnglerStatus } from "../durable-objects/fishing.js";
 import { GEAR_LINES, TIDE_CHART_ITEM, WORMS, type GearLine } from "../gear.js";
 import { bestCastDay, lakeTier, spotRest, tideForecast, type SpotRest } from "../fishing-math.js";
 import { BOTTLE_CONFIG, BOTTLE_DISTANCES, LITTER_LINES, cleanBottleText, isBottleDistance } from "../bottles.js";
-import { PET_FUND } from "../pet-config.js";
-import { formatBeans, STORE_CONFIG, salePrice } from "../store-math.js";
+import { PET_FUND, donationOptions } from "../pet-config.js";
+import { formatBeans, salePrice, SALE_PERCENT } from "../store-math.js";
 import { buildStoreLinks, renderStoreCard, storeUrlFor, type StoreLinks } from "../store.js";
 import { nowSec, random } from "../util.js";
 import { validateInitData } from "./init-data.js";
@@ -219,7 +219,7 @@ async function getState(session: Session): Promise<Response> {
     },
     petFund: fund ? petFundJson(fund) : null,
     tideChart: angler ? tideChartJson(session, chartUntil, angler, card.sale) : null,
-    sale: card.sale ? { discount: Math.round(STORE_CONFIG.SALE_DISCOUNT * 100) } : null,
+    sale: card.sale ? { discount: SALE_PERCENT } : null,
   });
 }
 
@@ -278,7 +278,7 @@ function daysLeft(until: number, now: number): number {
 // The page's petFund block: the fund's status plus the amounts it offers. goal is null once every slot is unlocked.
 function petFundJson(fund: PetFundStatus) {
   const { raised, goal, slots, maxSlots, livingPets } = fund;
-  return { raised, goal, slots, maxSlots, livingPets, options: [...PET_FUND.DONATION_OPTIONS] };
+  return { raised, goal, slots, maxSlots, livingPets, options: [...donationOptions(slots)] };
 }
 
 // The body as a JSON object, or null if it isn't one.
@@ -393,8 +393,9 @@ async function throwBottle(session: Session, request: Request): Promise<Response
   return json(200, { balance: charged.balance });
 }
 
-function isDonationOption(amount: unknown): amount is (typeof PET_FUND.DONATION_OPTIONS)[number] {
-  return typeof amount === "number" && (PET_FUND.DONATION_OPTIONS as readonly number[]).includes(amount);
+// Just the shape here: which amounts are allowed depends on the tier being funded, which the Pet DO checks.
+function isDonationOption(amount: unknown): amount is number {
+  return typeof amount === "number" && Number.isSafeInteger(amount) && amount > 0;
 }
 
 // Same shape as throwBottle: pay first, then donate (the Store and Pet DOs are separate), and give the beans back if
@@ -427,7 +428,9 @@ async function chipIn(session: Session, request: Request): Promise<Response> {
     await storage.refundWallet(chatId, purchase);
     return donated.reason === "MAXED"
       ? fail(409, "MAXED", "Every pet slot is already unlocked.")
-      : fail(409, "TOO_MUCH", `The fund only needs ${formatBeans(donated.max)} more.`);
+      : donated.reason === "TOO_MUCH"
+        ? fail(409, "TOO_MUCH", `The fund only needs ${formatBeans(donated.max)} more.`)
+        : fail(400, "BAD_REQUEST", "Pick an amount.");
   }
 
   refreshLatestCard(session);
