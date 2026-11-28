@@ -2,7 +2,6 @@
 
 ## Unreleased - General Store
 
-- The store card's random **Sell a fish** now pays a 10% lucky-dip bonus (`RANDOM_SELL_BONUS`) for taking the gamble. Picking a specific fish in the store page pays the plain price.
 
 - Tide chart: 🫘15 for a week of private tide forecasts in the store page (3 days exact, then predictions that sharpen as the day gets closer, king tides included), plus how rested your fishing spot is, how busy the lake is, and a ★ on the best day to cast.
 

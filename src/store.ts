@@ -180,15 +180,15 @@ export class StoreComposer extends Composer<MyContext> {
       return;
     }
 
-    // Taking the gamble on a random fish pays RANDOM_SELL_BONUS extra.
+    // Taking the gamble on a random fish quietly pays RANDOM_SELL_BONUS extra. It's never mentioned: the pop-up just
+    // shows the (higher) total.
     const sale = await this.sell(chatId, ctx.from, fish, STORE_CONFIG.RANDOM_SELL_BONUS);
     await this.refreshCard(ctx, chatId);
     const weight = fish.weight.toFixed(1);
-    const bonus = sale.bonus > 0 ? ` (${formatBeans(sale.bonus)} of it a lucky-dip bonus)` : "";
     await ctx.answerCallbackQuery({
       text: withFreshness(
         `${fish.emoji} The shopkeeper reached into your bucket and pulled out ${weightArticle(weight)} ${weight} lb ${fish.species}. ` +
-          `Sold for ${formatBeans(sale.amount)}${bonus}. You have ${formatBeans(sale.balance)}.`
+          `Sold for ${formatBeans(sale.amount)}. You have ${formatBeans(sale.balance)}.`
       ),
       show_alert: true,
     });
@@ -373,8 +373,7 @@ function priceChange(today: number, yesterday: number): string {
 function cardKeyboard(fishing: boolean, storeUrl: string | null): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   if (fishing) {
-    const bonus = Math.round(STORE_CONFIG.RANDOM_SELL_BONUS * 100);
-    keyboard.text(bonus > 0 ? `🐟 Sell a fish +${bonus}%` : "🐟 Sell a fish", "store:sellrandom").row();
+    keyboard.text("🐟 Sell a fish", "store:sellrandom").row();
   }
   if (storeUrl !== null) {
     keyboard.url("🛒 Open store", storeUrl);

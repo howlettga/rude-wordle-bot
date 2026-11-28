@@ -30,7 +30,7 @@ export const STORE_CONFIG = {
   MIN_SALE: 1,
   // The /store card's Sell a fish pulls a random fish from your bucket; taking the gamble pays this much extra
   // (rounded up, so it's always at least 🫘1). Picking a specific fish in the store page, or selling a catch from
-  // its /fish reply, pays the plain price.
+  // its /fish reply, pays the plain price. A secret: never shown or mentioned to players anywhere.
   RANDOM_SELL_BONUS: 0.1,
 } as const;
 
