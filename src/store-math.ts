@@ -1,8 +1,11 @@
 // The General Store's prices (see store.ts and the Store DO). Pure functions, no storage and no runtime
 // imports, so scripts/sim-fishing.mjs can load this file directly.
 //
-// Fish sell for weight * today's price per lb * a hidden multiplier for how rare the species is:
-//   price per lb = FISH_BASE_PER_LB * index, rounded to 0.01 (the number the /store card shows)
+// A fish sells for (a flat dock fee + weight * today's price per lb) * a hidden multiplier for how rare the species is,
+// tripled if it's today's species of the day:
+//   price per lb = FISH_BASE_PER_LB * index, rounded to 0.01 (the only number the /store card shows)
+//   dock fee     = FISH_DOCK_FEE * index (it swings with the market too, but it's never shown: small fish just pay
+//                  better than their weight suggests)
 //   index        = exp(PRICE_SIGMA * level), clamped to [PRICE_MIN, PRICE_MAX]
 //   level        = the average of the last PRICE_WINDOW_DAYS days' normal deviates, rescaled to N(0, 1)
 // The window is short on purpose, so the market is lively: each day shares only half its input with the day before,
@@ -10,14 +13,17 @@
 // chat's prices come from TIDE_SECRET with their own salt (see Store.fishPriceIndex), and turn over with
 // the fishing day at 5am ET. Weight already counts linearly here, while the pet's food from a fish only
 // grows with its square root (see foodForFish), so big fish are better sold and small ones better fed.
-// At these numbers a typical fish sells for about 5 beans, and a chat landing ~2.6 fish a day earns about
-// 20 beans a day at a typical day's price if it sells everything (the sim checks this). Swingier prices average a
-// little higher than the typical day (a log-normal's mean grows with its spread), so the long-run average is about
-// 23.
+// At these numbers a typical fish sells for about 30 beans, and a player earns about 25 beans a day if they sell
+// everything they catch (the sim checks this; it's about half that for someone who feeds the pet). Swingier prices
+// average a little higher than the typical day (a log-normal's mean grows with its spread).
 import type { FishTier } from "./fishing-math.js";
 
 export const STORE_CONFIG = {
-  FISH_BASE_PER_LB: 0.35,
+  FISH_BASE_PER_LB: 1.75,
+  FISH_DOCK_FEE: 5,
+  // Each chat's store wants one species a day (see DEMAND_SPECIES and Store.demandOn), shown on the card as "Buying
+  // salmon today", and pays this times as much for it. The multiplier itself is never shown.
+  DEMAND_MULTIPLIER: 3,
   PRICE_WINDOW_DAYS: 2,
   // With a 2-day window, 9 days in 10 land between about 0.37x and 2.7x base, a typical day moves about 37%, and
   // about 1 day in 10 moves 100% or more.
@@ -50,9 +56,17 @@ export function fishPricePerLb(index: number): number {
   return Math.round(STORE_CONFIG.FISH_BASE_PER_LB * index * 100) / 100;
 }
 
-export function fishSalePrice(weight: number, tier: FishTier, perLb: number): number {
-  return Math.max(STORE_CONFIG.MIN_SALE, Math.round(weight * perLb * STORE_CONFIG.TIER_MULTIPLIER[tier]));
+// inDemand: the fish is today's species of the day. The dock fee scales with the day's market the same way the per-lb
+// price does (perLb / FISH_BASE_PER_LB is the day's index).
+export function fishSalePrice(weight: number, tier: FishTier, perLb: number, inDemand = false): number {
+  const { FISH_BASE_PER_LB, FISH_DOCK_FEE, TIER_MULTIPLIER, DEMAND_MULTIPLIER, MIN_SALE } = STORE_CONFIG;
+  const dockFee = FISH_DOCK_FEE * (perLb / FISH_BASE_PER_LB);
+  const demand = inDemand ? DEMAND_MULTIPLIER : 1;
+  return Math.max(MIN_SALE, Math.round((dockFee + weight * perLb) * TIER_MULTIPLIER[tier] * demand));
 }
+
+// The sale discount as a whole percent ("25% off"), for the card and the page.
+export const SALE_PERCENT = Math.round(STORE_CONFIG.SALE_DISCOUNT * 100);
 
 // Whether a day is a sale day, from a seeded uniform value for that chat and day (see Store.saleOn).
 export function isSaleDay(uniform: number): boolean {

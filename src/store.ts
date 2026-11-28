@@ -4,7 +4,7 @@ import type { StorageService } from "./storage-service.js";
 import type { HeldFish } from "./durable-objects/fishing.js";
 import type { StoreCard, StoreItem, StoreTapResult } from "./durable-objects/store.js";
 import { GEAR_LINES, WORMS, type AnglerGear } from "./gear.js";
-import { STORE_CONFIG, formatBeanPrice, formatBeans } from "./store-math.js";
+import { SALE_PERCENT, STORE_CONFIG, formatBeanPrice, formatBeans } from "./store-math.js";
 import type { LinkPreviewOptions } from "grammy/types";
 import { escapeHtml, nowSec, random, weightArticle } from "./util.js";
 import { signStoreLink, storeAppUrl } from "./webapp/store-link.js";
@@ -343,18 +343,21 @@ export function renderStoreCard(
 //
 //   🏷️ Sale today: 25% off everything!
 //
-//   🐟 Fish: 🫘0.38/lb · ▲ 9%
+//   🐟 Fish: 🫘1.84/lb · ▲ 9%
+//   📈 Buying 🐟 salmon today
 //
 //   💰 Galen sold an 8.1 lb koi for 🫘9.
 function formatCard(card: StoreCard, fishing: boolean): string {
   const sections = [`🏪 <b>General Store</b>`];
   if (card.sale) {
     // The one public nudge on a sale day; the details (what costs what) are in the store page.
-    sections.push(`🏷️ <b>Sale today: ${Math.round(STORE_CONFIG.SALE_DISCOUNT * 100)}% off everything!</b>`);
+    sections.push(`🏷️ <b>Sale today: ${SALE_PERCENT}% off everything!</b>`);
   }
   if (fishing) {
     const { perLb, yesterdayPerLb } = card.fish;
-    sections.push(`🐟 Fish: ${formatBeanPrice(perLb)}/lb${priceChange(perLb, yesterdayPerLb)}`);
+    // The per-lb price is the only number shown; the dock fee and the species of the day's multiplier stay hidden.
+    const demand = card.demand ? `\n📈 Buying ${card.demand.emoji} ${escapeHtml(card.demand.species)} today` : "";
+    sections.push(`🐟 Fish: ${formatBeanPrice(perLb)}/lb${priceChange(perLb, yesterdayPerLb)}${demand}`);
   } else {
     sections.push(`Nothing for sale right now.`);
   }

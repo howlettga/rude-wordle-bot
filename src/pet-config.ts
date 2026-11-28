@@ -53,11 +53,23 @@ export const PET_CONFIG = {
 // never lost — a pet dying just frees its slot for the next /adopt. TOP_DONORS is how many names the
 // "the fund hit 🫘100!" message thanks.
 export const PET_FUND = {
-  SLOT_GOALS: [100, 750, 2500], // beans to unlock slots 2, 3, 4
-  DONATION_OPTIONS: [10, 25, 50, 100],
+  SLOT_GOALS: [100, 2000, 6000], // beans to unlock slots 2, 3, 4
+  // The amounts the store page offers while each goal is being funded, in the same order as SLOT_GOALS: bigger goals
+  // get bigger amounts. See donationOptions.
+  DONATION_OPTIONS: [
+    [10, 25, 50, 100],
+    [50, 100, 250, 500],
+    [100, 250, 500, 1000],
+  ],
   TOP_DONORS: 3,
 } as const;
 export const MAX_PET_SLOTS = 1 + PET_FUND.SLOT_GOALS.length;
+
+// The donation amounts on offer while a chat has `slots` unlocked (so it's funding slot `slots + 1`), or none once
+// every slot is unlocked. The Pet DO enforces these and the API sends them to the page.
+export function donationOptions(slots: number): readonly number[] {
+  return PET_FUND.DONATION_OPTIONS[slots - 1] ?? [];
+}
 
 export function foodForFish(weight: number): number {
   const { FISH_FOOD_AT_MEDIAN, FISH_FOOD_MEDIAN_LB, FISH_FOOD_MIN, FISH_FOOD_MAX } = PET_CONFIG;
