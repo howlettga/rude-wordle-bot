@@ -61,3 +61,29 @@ export function easternToUtc(year: number, month: number, day: number, hour: num
 export function toSqliteDatetime(date: Date): string {
   return date.toISOString().slice(0, 19).replace("T", " ");
 }
+
+// Human-readable Eastern times for messages, from epoch seconds. One set of formatters so every reply reads the same.
+const EASTERN_DATE = new Intl.DateTimeFormat("en-US", { timeZone: EASTERN, month: "short", day: "numeric" });
+const EASTERN_CLOCK = new Intl.DateTimeFormat("en-US", { timeZone: EASTERN, hour: "numeric", minute: "2-digit" });
+const EASTERN_DATE_TIME = new Intl.DateTimeFormat("en-US", {
+  timeZone: EASTERN,
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
+
+// "Nov 26"
+export function formatEasternDate(epochSec: number): string {
+  return EASTERN_DATE.format(new Date(epochSec * 1000));
+}
+
+// "7:03 AM"
+export function formatEasternClock(epochSec: number): string {
+  return EASTERN_CLOCK.format(new Date(epochSec * 1000));
+}
+
+// "Nov 26, 3:42 PM"
+export function formatEasternDateTime(epochSec: number): string {
+  return EASTERN_DATE_TIME.format(new Date(epochSec * 1000));
+}

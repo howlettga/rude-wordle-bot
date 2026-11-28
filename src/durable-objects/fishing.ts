@@ -1,16 +1,17 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../main.js";
-import { easternParts } from "../eastern-time.js";
+import { fishingDayNow } from "../fishing-day.js";
+import { nowSec } from "../util.js";
 import {
   FISHING_CONFIG,
   castFactors,
   defaultLocation,
-  fishingDay,
   hintFor,
   lakeTier,
   rollTrash,
   rollCatch,
   speciesForWeight,
+  storedOrDefaultLocation,
   tideFor,
   type CastGear,
   type GeoLocation,
@@ -197,8 +198,7 @@ export class Fishing extends DurableObject<Env> {
         )
       `);
       // Not this.today(): the location columns don't exist until migration 4, so this uses the default location.
-      const migratedAt = new Date();
-      const today = fishingDay(easternParts(migratedAt), Math.floor(migratedAt.getTime() / 1000), defaultLocation(this.env)).date;
+      const today = fishingDayNow(defaultLocation(this.env)).date;
       this.ctx.storage.sql.exec(
         `INSERT INTO lake_days (date, casts) SELECT ?, COUNT(*) FROM anglers WHERE last_cast_date = ?`,
         today,
@@ -344,7 +344,7 @@ export class Fishing extends DurableObject<Env> {
   // (by wash-up time) caught by this angler and returns its note. Otherwise null, and the cast goes on as normal.
   // Synchronous, so nothing can run between finding the bottle and claiming it.
   private claimBottle(userId: number, firstName: string): string | null {
-    const now = Math.floor(Date.now() / 1000);
+    const now = nowSec();
     const bottle = this.ctx.storage.sql
       .exec<{ id: number; text: string }>(
         `SELECT id, text FROM bottles WHERE status = 'drifting' AND washes_up_at <= ? AND author_id != ?
@@ -373,7 +373,7 @@ export class Fishing extends DurableObject<Env> {
     if (this.drifting(input.authorId) >= BOTTLE_CONFIG.MAX_IN_WATER) {
       return { ok: false, reason: "LIMIT" };
     }
-    const now = Math.floor(Date.now() / 1000);
+    const now = nowSec();
     this.ctx.storage.sql.exec(
       `INSERT INTO bottles (author_id, author_name, text, distance, thrown_at, washes_up_at) VALUES (?, ?, ?, ?, ?, ?)`,
       input.authorId,
@@ -399,7 +399,7 @@ export class Fishing extends DurableObject<Env> {
 
   // For the owner's /bottles: everything still in the water, next to wash up first, and the 5 most recently found.
   async listBottles(): Promise<BottleListing> {
-    const now = Math.floor(Date.now() / 1000);
+    const now = nowSec();
     const drifting = this.ctx.storage.sql
       .exec<{ id: number; distance: string; thrown_at: number; washes_up_at: number; text: string }>(
         `SELECT id, distance, thrown_at, washes_up_at, text FROM bottles WHERE status = 'drifting' ORDER BY washes_up_at ASC, id ASC`
@@ -556,18 +556,17 @@ export class Fishing extends DurableObject<Env> {
   }
 
   async getLocation(): Promise<FishingLocation> {
-    const row = this.ctx.storage.sql.exec<{ lat: number | null; lon: number | null }>(`SELECT lat, lon FROM settings WHERE id = 1`).one();
-    return row.lat !== null && row.lon !== null
-      ? { location: { lat: row.lat, lon: row.lon }, isDefault: false }
-      : { location: defaultLocation(this.env), isDefault: true };
+    const stored = this.storedLocation();
+    return { location: storedOrDefaultLocation(stored, this.env), isDefault: stored.lat === null || stored.lon === null };
   }
 
   // Today's fishing day at this chat's location: it turns over at sunrise there (see fishingDay).
   private today(): { date: string; dayNumber: number } {
-    const row = this.ctx.storage.sql.exec<{ lat: number | null; lon: number | null }>(`SELECT lat, lon FROM settings WHERE id = 1`).one();
-    const location = row.lat !== null && row.lon !== null ? { lat: row.lat, lon: row.lon } : defaultLocation(this.env);
-    const now = new Date();
-    return fishingDay(easternParts(now), Math.floor(now.getTime() / 1000), location);
+    return fishingDayNow(storedOrDefaultLocation(this.storedLocation(), this.env));
+  }
+
+  private storedLocation(): { lat: number | null; lon: number | null } {
+    return this.ctx.storage.sql.exec<{ lat: number | null; lon: number | null }>(`SELECT lat, lon FROM settings WHERE id = 1`).one();
   }
 
   async setWindow(days: number | null): Promise<void> {

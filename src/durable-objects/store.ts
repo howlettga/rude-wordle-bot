@@ -1,7 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../main.js";
-import { easternParts } from "../eastern-time.js";
-import { defaultLocation, fishingDay, seededNormal, speciesTier, type GeoLocation } from "../fishing-math.js";
+import { seededNormal, speciesTier, storedOrDefaultLocation, type GeoLocation } from "../fishing-math.js";
+import { fishingDayNow } from "../fishing-day.js";
+import { nowSec } from "../util.js";
 import { STORE_CONFIG, fishPriceIndex, fishPricePerLb, fishSalePrice, saleBonus } from "../store-math.js";
 import { GEAR_LINES, STARTER_GEAR, TIDE_CHART_ITEM, WORMS, type AnglerGear, type GearLine } from "../gear.js";
 import type { HeldFish } from "./fishing.js";
@@ -225,7 +226,7 @@ export class Store extends DurableObject<Env> {
   // spend beans it doesn't have. A rod or boat tap that isn't confirming a recent first tap only quotes;
   // everything else goes to purchase, which checks the price and balance again, still with no await between.
   async tapGear(input: { userId: number; firstName: string; item: StoreItem }): Promise<StoreTapResult> {
-    const now = Math.floor(Date.now() / 1000);
+    const now = nowSec();
     const { userId, item } = input;
 
     if (item !== "worms") {
@@ -332,7 +333,7 @@ export class Store extends DurableObject<Env> {
   // when the current one runs out, whichever is later. One synchronous step, so a double tap can't pay once and
   // extend twice. Its ledger rows (source 'chart') never show on the card's activity line (see card).
   async buyTideChart(input: { userId: number; firstName: string }): Promise<TideChartBuyResult> {
-    const now = Math.floor(Date.now() / 1000);
+    const now = nowSec();
     const charged = this.debit({ ...input, amount: TIDE_CHART_ITEM.price, source: "chart", label: "Tide chart" });
     if (!charged.ok) {
       return { ok: false, reason: "CANT_AFFORD", balance: charged.balance };
@@ -492,10 +493,8 @@ export class Store extends DurableObject<Env> {
   }
 
   private fishPrice(chatId: number): StoreFishPrice {
-    const row = this.ctx.storage.sql.exec<{ lat: number | null; lon: number | null }>(`SELECT lat, lon FROM store_settings WHERE id = 1`).one();
-    const location = row.lat !== null && row.lon !== null ? { lat: row.lat, lon: row.lon } : defaultLocation(this.env);
-    const now = new Date();
-    const { dayNumber } = fishingDay(easternParts(now), Math.floor(now.getTime() / 1000), location);
+    const stored = this.ctx.storage.sql.exec<{ lat: number | null; lon: number | null }>(`SELECT lat, lon FROM store_settings WHERE id = 1`).one();
+    const { dayNumber } = fishingDayNow(storedOrDefaultLocation(stored, this.env));
     return {
       perLb: fishPricePerLb(this.fishPriceIndex(chatId, dayNumber)),
       yesterdayPerLb: fishPricePerLb(this.fishPriceIndex(chatId, dayNumber - 1)),

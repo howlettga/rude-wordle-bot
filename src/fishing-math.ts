@@ -423,6 +423,15 @@ export function defaultLocation(env: { FISHING_LOCATION?: string | undefined }):
   return parseLocation(env.FISHING_LOCATION) ?? DEFAULT_LOCATION;
 }
 
+// A chat's stored location (both columns set), or the default if it hasn't set one. The Fishing and Store DOs each
+// keep a copy (see /setlocation) and both resolve it here.
+export function storedOrDefaultLocation(
+  stored: { lat: number | null; lon: number | null } | undefined,
+  env: { FISHING_LOCATION?: string | undefined }
+): GeoLocation {
+  return stored && stored.lat !== null && stored.lon !== null ? { lat: stored.lat, lon: stored.lon } : defaultLocation(env);
+}
+
 // "35.8775,-78.7875" (spaces allowed) to a location, or null if it isn't one.
 export function parseLocation(text: string | undefined | null): GeoLocation | null {
   const match = text?.trim().match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);

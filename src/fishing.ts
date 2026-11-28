@@ -4,7 +4,7 @@ import type { StorageService } from "./storage-service.js";
 import type { BottleListing, FishingLeaderboardEntry } from "./durable-objects/fishing.js";
 import type { FeatureFlags } from "./features.js";
 import { FISHING_CONFIG, parseLocation, rotatingLine, sunriseUtc, type GeoLocation } from "./fishing-math.js";
-import { easternParts } from "./eastern-time.js";
+import { easternParts, formatEasternClock, formatEasternDateTime } from "./eastern-time.js";
 import { HIGH_TIDE_LINES, HINT_LINES, JUNK_LINES, LAKE_LINES } from "./fishing-lines.js";
 import { petDesireLine } from "./pet.js";
 import { fishingSellButton } from "./store.js";
@@ -43,14 +43,6 @@ const MAX_WINDOW_DAYS = 36500;
 // it left off.
 const MAX_MESSAGE_CHARS = 3900;
 const MEDALS = ["🥇", "🥈", "🥉"];
-// "Nov 26, 3:42 PM", for the owner's /bottles.
-const EASTERN_TIME = new Intl.DateTimeFormat("en-US", {
-  timeZone: "America/New_York",
-  month: "short",
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-});
 
 export class FishingComposer extends Composer<MyContext> {
   constructor(
@@ -342,7 +334,7 @@ function bottleIdArg(ctx: MyContext): number | null {
 }
 
 function easternTime(epochSec: number): string {
-  return `${EASTERN_TIME.format(new Date(epochSec * 1000))} ET`;
+  return `${formatEasternDateTime(epochSec)} ET`;
 }
 
 // The owner's /bottles, in plain text. Kept under Telegram's limit like the leaderboard: whatever doesn't fit is
@@ -390,10 +382,6 @@ function describeLocation(location: GeoLocation, isDefault: boolean): string {
   const when =
     sunrise === null
       ? `No sunrise there today, so the fishing day turns over at ${FISHING_CONFIG.DAY_STARTS_HOUR_ET} AM ET.`
-      : `Today's sunrise, when the fishing day turns over: ${new Date(sunrise * 1000).toLocaleTimeString("en-US", {
-          timeZone: "America/New_York",
-          hour: "numeric",
-          minute: "2-digit",
-        })} ET.`;
+      : `Today's sunrise, when the fishing day turns over: ${formatEasternClock(sunrise)} ET.`;
   return `${where} ${when}`;
 }

@@ -6,8 +6,8 @@ import type { StoreCard, StoreItem, StoreTapResult } from "./durable-objects/sto
 import { GEAR_LINES, WORMS, type AnglerGear } from "./gear.js";
 import { STORE_CONFIG, formatBeanPrice, formatBeans } from "./store-math.js";
 import type { LinkPreviewOptions } from "grammy/types";
-import { escapeHtml, random, weightArticle } from "./util.js";
-import { storeAppUrl } from "./webapp/store-link.js";
+import { escapeHtml, nowSec, random, weightArticle } from "./util.js";
+import { signStoreLink, storeAppUrl } from "./webapp/store-link.js";
 
 // The "store" feature (see features.ts): a shared General Store card, built like the pet card, so the
 // chat only ever sees one message whose buttons update it in place. Anything personal comes back as a pop-up
@@ -64,6 +64,16 @@ const BANNER_PATH = "/app/general_store.png";
 const BANNER_VERSION = 1;
 export function storeBannerUrl(publicUrl: string | undefined): string | null {
   return publicUrl ? `${publicUrl.replace(/\/+$/, "")}${BANNER_PATH}?v=${BANNER_VERSION}` : null;
+}
+
+// StoreLinks for a bot: built in one place for both the composer (bot.ts) and card edits made from the page
+// (webapp/api.ts). Each link is signed at the moment a card is posted or edited.
+export function buildStoreLinks(input: { token: string; botUsername: string | undefined; publicUrl: string | undefined }): StoreLinks {
+  return {
+    botUsername: input.botUsername,
+    signLink: (chatId) => signStoreLink(chatId, nowSec(), input.token),
+    bannerUrl: storeBannerUrl(input.publicUrl),
+  };
 }
 
 // The Open store button's URL for this chat, or null (no button) if the bot has no username or signing fails, so

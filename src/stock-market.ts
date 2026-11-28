@@ -3,7 +3,7 @@ import type { Api, Context, Filter, NextFunction } from "grammy";
 import { createConversation } from "@grammyjs/conversations";
 import type { Conversation } from "@grammyjs/conversations";
 import { type MyContext, replyToMessage, replyInThread, replyHTML, realReplyTo, isNotCommand, CONVERSATION_TIMEOUT_MS } from "./context.js";
-import { random } from "./util.js";
+import { nowSec, random } from "./util.js";
 import { easternParts, easternToUtc } from "./eastern-time.js";
 import { MARKET_INSTRUCTIONS } from "./replies.js";
 import type { StorageService } from "./storage-service.js";
@@ -1469,7 +1469,7 @@ export class StockMarketComposer extends Composer<MyContext> {
   // Generous to anyone already inactive going in — a deliberate trade for not tracking switch history.
   async runDailyCleanup(): Promise<void> {
     const chatIds = await this.storage.listStockMarketChats();
-    const nowEpochSec = Math.floor(Date.now() / 1000);
+    const nowEpochSec = nowSec();
     for (const chatId of chatIds) {
       const { enabled, changedAtEpochSec } = (await this.storage.getChatFeatures(chatId)).market;
       if (!enabled) {

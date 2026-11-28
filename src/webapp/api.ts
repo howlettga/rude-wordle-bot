@@ -10,10 +10,10 @@ import { bestCastDay, lakeTier, spotRest, tideForecast, type SpotRest } from "..
 import { BOTTLE_CONFIG, BOTTLE_DISTANCES, LITTER_LINES, cleanBottleText, isBottleDistance } from "../bottles.js";
 import { PET_FUND } from "../pet-config.js";
 import { formatBeans } from "../store-math.js";
-import { renderStoreCard, storeBannerUrl, storeUrlFor, type StoreLinks } from "../store.js";
-import { random } from "../util.js";
+import { buildStoreLinks, renderStoreCard, storeUrlFor, type StoreLinks } from "../store.js";
+import { nowSec, random } from "../util.js";
 import { validateInitData } from "./init-data.js";
-import { signStoreLink, verifyStoreLink } from "./store-link.js";
+import { verifyStoreLink } from "./store-link.js";
 
 // The store page's API (public/app/ is the page; main.ts sends /app/api/* here). Same origin as the page, JSON
 // in and out, never cached. Every request carries "Authorization: tma <Telegram.WebApp.initData>", and is checked
@@ -104,11 +104,11 @@ export async function handleStoreApi(request: Request, env: Env, ctx: ExecutionC
 
 // The four checks, in order. Returns the error response for the first one that fails.
 async function authenticate(request: Request, env: Env, ctx: ExecutionContext): Promise<Session | Response> {
-  const nowSec = Math.floor(Date.now() / 1000);
+  const now = nowSec();
 
   const auth = request.headers.get("Authorization") ?? "";
   const initData = auth.startsWith("tma ") ? auth.slice("tma ".length) : null;
-  const validated = initData ? await validateInitData(initData, env.BOT_TOKEN, nowSec) : null;
+  const validated = initData ? await validateInitData(initData, env.BOT_TOKEN, now) : null;
   if (!validated?.ok) {
     return validated?.reason === "EXPIRED"
       ? fail(401, "SESSION_EXPIRED", MESSAGES.SESSION_EXPIRED)
@@ -116,7 +116,7 @@ async function authenticate(request: Request, env: Env, ctx: ExecutionContext): 
   }
   const { user, startParam } = validated;
 
-  const link = startParam === null ? null : await verifyStoreLink(startParam, env.BOT_TOKEN, nowSec);
+  const link = startParam === null ? null : await verifyStoreLink(startParam, env.BOT_TOKEN, now);
   if (!link?.ok) {
     return link?.reason === "EXPIRED" ? fail(401, "LINK_EXPIRED", MESSAGES.LINK_EXPIRED) : fail(403, "BAD_LINK", MESSAGES.BAD_LINK);
   }
@@ -231,8 +231,8 @@ const RESTED_AFTER_DAYS = 4;
 // the lake never leave the server unpaid for.
 function tideChartJson(session: Session, chartUntil: number | null, angler: AnglerStatus) {
   const { price, days } = TIDE_CHART_ITEM;
-  const nowSec = Math.floor(Date.now() / 1000);
-  if (chartUntil === null || chartUntil <= nowSec) {
+  const now = nowSec();
+  if (chartUntil === null || chartUntil <= now) {
     return { price, days, active: false };
   }
   // Today's fishing day comes from the Fishing DO, which knows the chat's location (the day turns over at sunrise).
@@ -246,7 +246,7 @@ function tideChartJson(session: Session, chartUntil: number | null, angler: Angl
     days,
     active: true,
     until: chartUntil,
-    daysLeft: daysLeft(chartUntil, nowSec),
+    daysLeft: daysLeft(chartUntil, now),
     forecast: forecast.map((day, i) => ({ weekday: weekdayOf(day.dayNumber), tide: day.tide, exact: day.exact, best: i === best })),
     spot: {
       rest,
@@ -261,8 +261,8 @@ function tideChartJson(session: Session, chartUntil: number | null, angler: Angl
 }
 
 // Whole days left on a chart, rounded up, so a chart bought just now says the full 7.
-function daysLeft(until: number, nowSec: number): number {
-  return Math.ceil((until - nowSec) / 86_400);
+function daysLeft(until: number, now: number): number {
+  return Math.ceil((until - now) / 86_400);
 }
 
 // The page's petFund block: the fund's status plus the amounts it offers. goal is null once every slot is unlocked.
@@ -461,7 +461,7 @@ async function buyTideChart(session: Session): Promise<Response> {
       `A tide chart costs ${formatBeans(TIDE_CHART_ITEM.price)}. You have ${formatBeans(result.balance)}. Sell some fish.`
     );
   }
-  return json(200, { balance: result.balance, until: result.until, daysLeft: daysLeft(result.until, Math.floor(Date.now() / 1000)) });
+  return json(200, { balance: result.balance, until: result.until, daysLeft: daysLeft(result.until, nowSec()) });
 }
 
 // Plain text:
@@ -527,9 +527,5 @@ function storeLinks(env: Env): StoreLinks {
   } catch (err) {
     console.error("BOT_INFO is not valid JSON", err);
   }
-  return {
-    botUsername,
-    signLink: (chatId) => signStoreLink(chatId, Math.floor(Date.now() / 1000), env.BOT_TOKEN),
-    bannerUrl: storeBannerUrl(env.PUBLIC_URL),
-  };
+  return buildStoreLinks({ token: env.BOT_TOKEN, botUsername, publicUrl: env.PUBLIC_URL });
 }
